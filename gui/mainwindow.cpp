@@ -383,8 +383,13 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
         QMenu menu;
         menu.addAction(tr("打开声明"), this, [this, id] { navigateTo(id); });
         menu.addAction(tr("查找引用"), this, [this, id] { showReferences(id); });
-        if (id.contains("->") && id.contains('('))
-            menu.addAction(tr("查看函数调用图"), this, [this, id] { showCallGraph(id); });
+        if (id.contains("->") && id.contains('(')) {
+            auto graph = menu.addAction(NodeIcons::icon("methodReference"),
+                                        tr("查看函数调用图"), this,
+                                        [this, id] { showCallGraph(id); });
+            graph->setShortcut(QKeySequence("G"));
+            graph->setShortcutVisibleInContextMenu(true);
+        }
         menu.addAction(tr("重命名…"), this, [this, id] { renameSymbol(id); });
         menu.exec(tree_->viewport()->mapToGlobal(pos));
     });

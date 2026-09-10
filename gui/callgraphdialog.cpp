@@ -7,6 +7,32 @@
 #include <functional>
 
 namespace {
+class CallGraphView final : public QGraphicsView {
+  public:
+    explicit CallGraphView(QGraphicsScene *scene, QWidget *parent = nullptr)
+        : QGraphicsView(scene, parent) {
+        setDragMode(QGraphicsView::ScrollHandDrag);
+        setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
+        setResizeAnchor(QGraphicsView::AnchorUnderMouse);
+        setToolTip(QObject::tr("滚动鼠标滚轮缩放；按住鼠标左键拖动画布平移。"));
+    }
+
+  protected:
+    void wheelEvent(QWheelEvent *event) override {
+        const int delta = event->angleDelta().y();
+        if (!delta) {
+            QGraphicsView::wheelEvent(event);
+            return;
+        }
+        const qreal current = transform().m11();
+        const qreal factor = delta > 0 ? 1.16 : 1.0 / 1.16;
+        const qreal next = current * factor;
+        if (next >= 0.12 && next <= 5.0)
+            scale(factor, factor);
+        event->accept();
+    }
+};
+
 class GraphNode : public QGraphicsRectItem {
   public:
     GraphNode(const QString &id, const QString &label, const QColor &color,
@@ -68,11 +94,9 @@ CallGraphDialog::CallGraphDialog(const std::shared_ptr<Project> &project, const 
     controls->addWidget(status_, 1);
     root->addLayout(controls);
     scene_ = new QGraphicsScene(this);
-    view_ = new QGraphicsView(scene_);
+    view_ = new CallGraphView(scene_);
     view_->setObjectName("callGraphView");
     view_->setRenderHint(QPainter::Antialiasing);
-    view_->setDragMode(QGraphicsView::ScrollHandDrag);
-    view_->setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
     root->addWidget(view_, 1);
     auto close = new QPushButton(tr("关闭"));
     auto footer = new QHBoxLayout;

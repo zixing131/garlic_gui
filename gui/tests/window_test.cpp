@@ -43,8 +43,14 @@ class WindowTest : public QObject {
         QTRY_VERIFY(renameOpened);
         window.showCallGraph("Ldemo/Main;->greet(I)Ljava/lang/String;");
         QTRY_VERIFY_WITH_TIMEOUT(window.findChild<QGraphicsView *>("callGraphView"), 5000);
-        QTRY_VERIFY_WITH_TIMEOUT(
-            !window.findChild<QGraphicsView *>("callGraphView")->scene()->items().isEmpty(), 5000);
+        auto graph = window.findChild<QGraphicsView *>("callGraphView");
+        QTRY_VERIFY_WITH_TIMEOUT(!graph->scene()->items().isEmpty(), 5000);
+        const auto beforeZoom = graph->transform().m11();
+        QWheelEvent zoom(graph->viewport()->rect().center(), graph->mapToGlobal(graph->viewport()->rect().center()),
+                         QPoint(), QPoint(0, 120), Qt::NoButton, Qt::NoModifier,
+                         Qt::ScrollUpdate, false);
+        QCoreApplication::sendEvent(graph->viewport(), &zoom);
+        QVERIFY(graph->transform().m11() > beforeZoom);
         window.findChild<QGraphicsView *>("callGraphView")->window()->close();
         auto tree = window.findChild<QTreeView *>("classTree");
         auto filter = window.findChild<QLineEdit *>("classFilter");
