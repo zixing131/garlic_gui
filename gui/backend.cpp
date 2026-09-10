@@ -497,6 +497,7 @@ void Backend::applyEnvironment(QProcess &process, const QString &directory) {
     env.insert("GARLIC_SOURCE_MAP_DIR", directory);
     env.insert("GARLIC_ESCAPE_UNICODE", settings_.escapeUnicode ? "1" : "0");
     env.insert("GARLIC_SIMPLIFY_CONTROL_FLOW", settings_.simplifyControlFlow ? "1" : "0");
+    env.insert("GARLIC_UNFLATTEN", settings_.unflatten ? "1" : "0");
     env.insert("GARLIC_EXCLUDED_PACKAGES", settings_.excluded.join(';').replace('.', '/'));
     process.setProcessEnvironment(env);
 }
@@ -504,6 +505,7 @@ void Backend::configure(const AppSettings &settings) {
     const bool engineChange = settings_.escapeUnicode != settings.escapeUnicode ||
                               settings_.excluded != settings.excluded ||
                               settings_.simplifyControlFlow != settings.simplifyControlFlow ||
+                              settings_.unflatten != settings.unflatten ||
                               settings_.cacheMode != settings.cacheMode;
     settings_ = settings;
     if (engineChange && !busy() && !preparing_)

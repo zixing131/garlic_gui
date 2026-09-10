@@ -153,8 +153,9 @@ void MainWindow::settingsDialog() {
     deobfuscate->setObjectName("deobfuscate");
     auto controlFlow = check(decompile, tr("控制流整理（DEX 跳转链和共享代码块）"), settings.simplifyControlFlow);
     controlFlow->setObjectName("simplifyControlFlow");
-    auto unflatten = check(decompile, tr("反平坦化（当前引擎尚不支持状态机恢复）"), false);
-    unflatten->setEnabled(false);
+    auto unflatten = check(decompile, tr("反控制流平坦化（DEX 常量状态 switch 调度器）"), settings.unflatten);
+    unflatten->setObjectName("unflatten");
+    unflatten->setToolTip(tr("恢复 const → goto → switch 的确定跳转；复杂状态计算和带异常处理的方法保持原样。"));
     decompile->addRow(new QLabel(tr("反混淆选项在重新打开文件后生效；生成别名不会恢复原始名称。")));
     auto unicode =
         check(decompile, tr("Unicode 字符转义（保留正常中文可不勾选）"), settings.escapeUnicode);
@@ -338,6 +339,7 @@ void MainWindow::settingsDialog() {
                 background->setChecked(false);
                 deobfuscate->setChecked(false);
                 controlFlow->setChecked(false);
+                unflatten->setChecked(false);
                 unicode->setChecked(false);
                 metadata->setChecked(true);
                 notice->setChecked(true);
@@ -364,6 +366,7 @@ void MainWindow::settingsDialog() {
     settings.background = background->isChecked();
     settings.deobfuscate = deobfuscate->isChecked();
     settings.simplifyControlFlow = controlFlow->isChecked();
+    settings.unflatten = unflatten->isChecked();
     settings.escapeUnicode = unicode->isChecked();
     settings.showMetadata = metadata->isChecked();
     settings.showNotice = notice->isChecked();

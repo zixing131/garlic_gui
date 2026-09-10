@@ -25,9 +25,9 @@ class WindowTest : public QObject {
     }
     void deobfuscationSettingsAndAliases() {
         AppSettings settings;
-        settings.deobfuscate = settings.simplifyControlFlow = true;
+        settings.deobfuscate = settings.simplifyControlFlow = settings.unflatten = true;
         const auto restored = AppSettings::fromJson(settings.toJson());
-        QVERIFY(restored.deobfuscate && restored.simplifyControlFlow);
+        QVERIFY(restored.deobfuscate && restored.simplifyControlFlow && restored.unflatten);
         Project project;
         project.addClass(QJsonObject{{"name", "demo/a"}, {"kind", "class"}});
         project.deobfuscateNames();

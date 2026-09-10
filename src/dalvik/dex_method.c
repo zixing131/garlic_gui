@@ -4,6 +4,83 @@
 #include "dex_exception.h"
 #include "parser/dex/metadata.h"
 #include "dex_annotation.h"
+#include <stdlib.h>
+#include <stdint.h>
+
+// Specialize a dispatcher edge only when its state assignment is the unique
+// predecessor. No instruction with side effects is skipped. Inspired by the
+// constant-state edge specialization described by eShard's D810 (not copied).
+static int unflatten_constant_dispatchers(jd_method *m)
+{
+    int changed = 0;
+    for (int i = 1; i < m->instructions->size; ++i) {
+        jd_dex_ins *jump = lget_obj(m->instructions, i);
+        if (!dex_ins_is_goto_jump(jump) || jump->comings->size != 0)
+            continue;
+        jd_dex_ins *assignment = jump->prev;
+        if (!assignment || assignment->next != jump)
+            continue;
+        uint32_t value;
+        unsigned reg;
+        switch (assignment->code) {
+            case 0x12: // const/4
+                reg = (assignment->param[0] >> 8) & 15;
+                value = (uint32_t)((int32_t)(assignment->param[0] >> 12) -
+                                  ((assignment->param[0] & 0x8000) ? 16 : 0));
+                break;
+            case 0x13: // const/16
+                reg = assignment->param[0] >> 8;
+                value = (uint32_t)(int32_t)(int16_t)assignment->param[1];
+                break;
+            case 0x14: // const
+                reg = assignment->param[0] >> 8;
+                value = (uint32_t)assignment->param[1] | ((uint32_t)assignment->param[2] << 16);
+                break;
+            case 0x15: // const/high16
+                reg = assignment->param[0] >> 8;
+                value = (uint32_t)assignment->param[1] << 16;
+                break;
+            default: continue;
+        }
+        jd_dex_ins *dispatcher = dex_ins_of_offset(m, dex_goto_offset(jump));
+        if (!dispatcher || !dex_ins_is_switch(dispatcher) ||
+            (dispatcher->param[0] >> 8) != reg)
+            continue;
+        uint32_t payloadOffset = dispatcher->offset + (uint32_t)dispatcher->param[1] +
+                                 ((uint32_t)dispatcher->param[2] << 16);
+        jd_dex_ins *payload = dex_ins_of_offset(m, payloadOffset);
+        if (!payload || payload->param_length < 2) continue;
+        unsigned count = payload->param[1];
+        bool packed = dex_ins_is_packed_switch(dispatcher);
+        if (payload->param[0] != (packed ? 0x0100 : 0x0200) ||
+            (unsigned)payload->param_length < (packed ? 4 + count * 2 : 2 + count * 4))
+            continue;
+        jd_dex_ins *target = dispatcher->next;
+        for (unsigned k = 0; k < count; ++k) {
+            unsigned keyIndex = packed ? 2 : 2 + k * 2;
+            uint32_t key = (uint32_t)payload->param[keyIndex] |
+                           ((uint32_t)payload->param[keyIndex + 1] << 16);
+            if (packed) key += k;
+            if (key != value) continue;
+            unsigned targetIndex = packed ? 4 + k * 2 : 2 + count * 2 + k * 2;
+            uint32_t relative = (uint32_t)payload->param[targetIndex] |
+                                ((uint32_t)payload->param[targetIndex + 1] << 16);
+            target = dex_ins_of_offset(m, dispatcher->offset + relative);
+            break;
+        }
+        if (!target || target == dispatcher || target->param[0] == 0x0100 ||
+            target->param[0] == 0x0200 || target->param[0] == 0x0300)
+            continue;
+        dex_setup_goto_offset(jump, target->offset);
+        if (target == jump->next) {
+            jump->code = 0;
+            jump->name = "nop";
+            jump->param[0] = 0;
+        }
+        ++changed;
+    }
+    return changed;
+}
 
 void dex_method_access_flag_with_flags(u4 flags, str_list *list)
 {
@@ -243,6 +320,19 @@ void dex_method_init(jsource_file *jf, jd_method *m, encoded_method *em)
     dex_code_item_instruction(m, em->code);
 
     init_dex_instruction_graph(m);
+
+    const char *unflatten = getenv("GARLIC_UNFLATTEN");
+    // Exception handlers introduce implicit predecessors: leave such methods intact.
+    if (unflatten && strcmp(unflatten, "1") == 0 && em->code->tries_size == 0 &&
+        unflatten_constant_dispatchers(m)) {
+        for (int i = 0; i < m->instructions->size; ++i) {
+            jd_dex_ins *ins = lget_obj(m->instructions, i);
+            lclear_object(ins->targets);
+            lclear_object(ins->jumps);
+            lclear_object(ins->comings);
+        }
+        init_dex_instruction_graph(m);
+    }
 
     dex_method_exception_init(m, em);
 }

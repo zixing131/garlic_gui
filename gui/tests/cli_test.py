@@ -13,6 +13,28 @@ files = [fixtures / 'demo.jar', fixtures / 'demo.zip', fixtures / 'Main.class', 
 files += [p for p in (fixtures / 'classes.dex', fixtures / '示例 app.apk', fixtures / 'nested.apks') if p.exists()]
 with tempfile.TemporaryDirectory(prefix='garlic-cli-test-') as temp:
     root = Path(temp)
+    # Owned smali fixture: constant dispatcher specialization must preserve
+    # results, including sparse negative keys and switch default paths.
+    flattened = root / 'unflattened'
+    env = dict(os.environ, GARLIC_UNFLATTEN='1')
+    subprocess.run([str(engine), str(fixtures / 'flattened.dex'), '-o', str(flattened), '-t', '1'],
+                   check=True, capture_output=True, timeout=20, env=env)
+    source = flattened / 'demo/Flattened.java'
+    code = source.read_text(encoding='utf-8')
+    assert code.count('switch(') == 1, code  # Only the unknown parameter dispatcher remains.
+    runner = flattened / 'Check.java'
+    runner.write_text('''import demo.Flattened;
+public class Check {
+    public static void main(String[] args) {
+        if (Flattened.run() != 7 || Flattened.sparse() != 5 || Flattened.fallback() != 3
+            || Flattened.unknown(0) != 5 || Flattened.unknown(8) != 3)
+            throw new AssertionError("Dispatcher specialization changed behavior");
+    }
+}''', encoding='utf-8')
+    subprocess.run(['javac', '-d', str(flattened), str(source), str(runner)], check=True,
+                   capture_output=True, timeout=30)
+    subprocess.run(['java', '-cp', str(flattened), 'Check'], check=True,
+                   capture_output=True, timeout=20)
     # Use non-ASCII input, output, index and environment paths on every runner,
     # including Windows ARM64 where an ANSI argv previously disagreed with miniz.
     unicode_root = root / ('中文路径 测试' * 10)

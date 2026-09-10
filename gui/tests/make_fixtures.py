@@ -13,6 +13,7 @@ parser.add_argument("--d8", help="Android SDK build-tools d8 executable")
 args = parser.parse_args()
 out = args.output.resolve()
 out.mkdir(parents=True, exist_ok=True)
+shutil.copyfile(Path(__file__).parent / 'fixtures/flattened.dex', out / 'flattened.dex')
 classes = out / "classes"
 classes.mkdir(exist_ok=True)
 sources = sorted((Path(__file__).parent / "fixtures").rglob("*.java"))
