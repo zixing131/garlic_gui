@@ -62,6 +62,9 @@ def linux_dependencies(folder):
         if binary in seen:
             continue
         seen.add(binary)
+        with binary.open('rb') as candidate:
+            if candidate.read(4) != b'\x7fELF':
+                continue  # qt.conf and launcher scripts have no ELF dependencies.
         output = subprocess.check_output(['ldd', str(binary)], text=True)
         if 'not found' in output:
             raise RuntimeError(f'Unresolved dependency for {binary}:\n{output}')

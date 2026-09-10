@@ -133,7 +133,8 @@ static void dex_methods(jsource_file *jf)
 static void dex_class_source_save_dir(jd_dex *dex, jsource_file *jf)
 {
     jd_meta_dex *meta = dex->meta;
-    if (meta->source_dir == NULL || jf->is_anonymous || jf->is_inner)
+    if (meta->source_dir == NULL || ((jf->is_anonymous || jf->is_inner) &&
+        (!class_selection_explicit() || jf->parent != NULL)))
         return;
     string full_dir = str_create("%s/%s", meta->source_dir, jf->pname);
     mkdir_p(full_dir);
@@ -403,8 +404,8 @@ void dex_decompile_threadpool_start(jd_dex *dex)
     jd_meta_dex *meta = dex->meta;
     for (int i = 0; i < meta->header->class_defs_size; ++i) {
         dex_class_def *cf = &meta->class_defs[i];
-        if (dex_class_is_inner_class(dex->meta, cf) ||
-            dex_class_is_anonymous_class(dex->meta, cf))
+        if (!class_selection_explicit() && (dex_class_is_inner_class(dex->meta, cf) ||
+            dex_class_is_anonymous_class(dex->meta, cf)))
             continue;
 
         if (!class_selection_accept(dex_str_of_type_id(meta, cf->class_idx)))
@@ -434,8 +435,8 @@ void dex_decompile_main_thread_start(jd_dex *dex)
     mem_pool *parse_pool = global_pool;
     for (int i = 0; i < meta->header->class_defs_size; ++i) {
         dex_class_def *cf = &meta->class_defs[i];
-        if (dex_class_is_inner_class(dex->meta, cf) ||
-            dex_class_is_anonymous_class(dex->meta, cf))
+        if (!class_selection_explicit() && (dex_class_is_inner_class(dex->meta, cf) ||
+            dex_class_is_anonymous_class(dex->meta, cf)))
             continue;
 
         if (!class_selection_accept(dex_str_of_type_id(meta, cf->class_idx)))
@@ -581,8 +582,8 @@ void dex_analyse_in_apk_task(jd_meta_dex *meta)
 
     for (int i = 0; i < meta->header->class_defs_size; ++i) {
         dex_class_def *cf = &meta->class_defs[i];
-        if (dex_class_is_inner_class(dex->meta, cf) ||
-            dex_class_is_anonymous_class(dex->meta, cf))
+        if (!class_selection_explicit() && (dex_class_is_inner_class(dex->meta, cf) ||
+            dex_class_is_anonymous_class(dex->meta, cf)))
             continue;
 
         jsource_file *jf = dex_class_inside(dex, cf, NULL);

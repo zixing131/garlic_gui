@@ -88,5 +88,41 @@
     <file>png/staticMark@2x.png</file>
     <file>png/staticMark@3x.png</file>
     <file>png/staticMark@4x.png</file>
+    <file>png/toolandroidManifest@1x.png</file>
+    <file>png/toolandroidManifest@2x.png</file>
+    <file>png/toolandroidManifest@3x.png</file>
+    <file>png/toolandroidManifest@4x.png</file>
+    <file>png/toolapplication@1x.png</file>
+    <file>png/toolapplication@2x.png</file>
+    <file>png/toolapplication@3x.png</file>
+    <file>png/toolapplication@4x.png</file>
+    <file>png/toolclose@1x.png</file>
+    <file>png/toolclose@2x.png</file>
+    <file>png/toolclose@3x.png</file>
+    <file>png/toolclose@4x.png</file>
+    <file>png/toolexport@1x.png</file>
+    <file>png/toolexport@2x.png</file>
+    <file>png/toolexport@3x.png</file>
+    <file>png/toolexport@4x.png</file>
+    <file>png/toolfind@1x.png</file>
+    <file>png/toolfind@2x.png</file>
+    <file>png/toolfind@3x.png</file>
+    <file>png/toolfind@4x.png</file>
+    <file>png/toolleft@1x.png</file>
+    <file>png/toolleft@2x.png</file>
+    <file>png/toolleft@3x.png</file>
+    <file>png/toolleft@4x.png</file>
+    <file>png/toolopenDisk@1x.png</file>
+    <file>png/toolopenDisk@2x.png</file>
+    <file>png/toolopenDisk@3x.png</file>
+    <file>png/toolopenDisk@4x.png</file>
+    <file>png/toolright@1x.png</file>
+    <file>png/toolright@2x.png</file>
+    <file>png/toolright@3x.png</file>
+    <file>png/toolright@4x.png</file>
+    <file>png/toolsettings@1x.png</file>
+    <file>png/toolsettings@2x.png</file>
+    <file>png/toolsettings@3x.png</file>
+    <file>png/toolsettings@4x.png</file>
   </qresource>
 </RCC>

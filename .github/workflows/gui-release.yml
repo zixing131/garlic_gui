@@ -23,19 +23,19 @@ jobs:
         include:
           - {os: macos-15, platform: macos-arm64, qt-host: mac, qt-arch: clang_64, arch: arm64}
           - {os: macos-15-intel, platform: macos-x64, qt-host: mac, qt-arch: clang_64, arch: x86_64}
-          - {os: ubuntu-24.04, platform: linux-x64, qt-host: linux, qt-arch: gcc_64, arch: x86_64}
+          - {os: ubuntu-24.04, platform: linux-x64, qt-host: linux, qt-arch: linux_gcc_64, arch: x86_64}
           - {os: ubuntu-24.04-arm, platform: linux-arm64, qt-host: linux_arm64, qt-arch: linux_gcc_arm64, arch: aarch64}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '21'
       - uses: jurplel/install-qt-action@v4
         with:
           version: '6.8.3'
@@ -87,11 +87,11 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '21'
       - uses: msys2/setup-msys2@v2
         with:
           msystem: ${{ matrix.msystem }}
@@ -99,6 +99,7 @@ jobs:
           install: >-
             ${{ matrix.prefix }}-clang
             ${{ matrix.prefix }}-llvm
+            ${{ matrix.prefix }}-winpthreads
             ${{ matrix.prefix }}-cmake
             ${{ matrix.prefix }}-ninja
             ${{ matrix.prefix }}-qt6-base

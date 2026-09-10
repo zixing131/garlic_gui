@@ -8,7 +8,10 @@
 #include <QJsonDocument>
 #include <QLocalSocket>
 #include <QPointer>
+#include <QTcpSocket>
 #include <QTimer>
+#include <QUrl>
+#include <QUuid>
 #include <QtConcurrent>
 #include <iostream>
 
@@ -133,6 +136,8 @@ QString memberId(Project *project, const QString &kind, const QJsonObject &args,
 }
 } // namespace
 McpServer::McpServer(MainWindow *window, QObject *parent) : QObject(parent), window_(window) {
+    httpToken_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    connect(&http_, &QTcpServer::newConnection, this, &McpServer::acceptHttp);
     endpoint_ =
         "garlic-gui-" + QString::fromLatin1(QCryptographicHash::hash(QDir::homePath().toUtf8(),
                                                                      QCryptographicHash::Sha256)
@@ -168,6 +173,17 @@ McpServer::McpServer(MainWindow *window, QObject *parent) : QObject(parent), win
     });
 }
 bool McpServer::start(QString *error) {
+    const auto settings = window_->backend()->settings();
+    if (settings.mcpTransport == "http") {
+        if (http_.isListening() && http_.serverPort() != settings.mcpPort)
+            http_.close();
+        if (!http_.isListening() && !http_.listen(QHostAddress::LocalHost, settings.mcpPort)) {
+            if (error)
+                *error = tr("MCP HTTP 启动失败：%1").arg(http_.errorString());
+            return false;
+        }
+    } else
+        http_.close();
     if (server_.isListening())
         return true;
     if (server_.listen(endpoint_))
@@ -185,11 +201,16 @@ bool McpServer::start(QString *error) {
     return false;
 }
 void McpServer::stop() {
+    http_.close();
+    for (auto socket : http_.findChildren<QTcpSocket *>())
+        socket->disconnectFromHost();
     server_.close();
     for (auto socket : server_.findChildren<QLocalSocket *>())
         socket->disconnectFromServer();
 }
 QJsonObject McpServer::clientConfig() const {
+    if (window_->backend()->settings().mcpTransport == "http")
+        return httpConfig();
     return {{"mcpServers",
              QJsonObject{
                  {"garlic", QJsonObject{{"command", QCoreApplication::applicationFilePath()},
@@ -232,7 +253,7 @@ void McpServer::dispatch(QLocalSocket *socket, const QJsonObject &request) {
                              ? version
                              : "2024-11-05"},
                         {"capabilities", QJsonObject{{"tools", QJsonObject{}}}},
-                        {"serverInfo", QJsonObject{{"name", "garlic-gui"}, {"version", "0.2.0"}}}});
+                        {"serverInfo", QJsonObject{{"name", "garlic-gui"}, {"version", "0.4.0"}}}});
         return;
     }
     if (method == "ping") {
@@ -534,6 +555,159 @@ void McpServer::dispatch(QLocalSocket *socket, const QJsonObject &request) {
                     deliver(path);
             });
     backend->request(clazz, smali);
+}
+
+QString McpServer::httpUrl() const {
+    return QString("http://127.0.0.1:%1/mcp")
+        .arg(http_.isListening() ? http_.serverPort() : window_->backend()->settings().mcpPort);
+}
+QJsonObject McpServer::httpConfig(int port) const {
+    return {
+        {"mcpServers",
+         QJsonObject{
+             {"garlic",
+              QJsonObject{{"url", port ? QString("http://127.0.0.1:%1/mcp").arg(port) : httpUrl()},
+                          {"headers", QJsonObject{{"Authorization", "Bearer " + httpToken_}}}}}}}};
+}
+void McpServer::acceptHttp() {
+    while (http_.hasPendingConnections()) {
+        auto socket = http_.nextPendingConnection();
+        if (http_.findChildren<QTcpSocket *>().size() > 32) {
+            socket->abort();
+            socket->deleteLater();
+            continue;
+        }
+        connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+        auto timeout = new QTimer(socket);
+        timeout->setSingleShot(true);
+        timeout->start(310000);
+        connect(timeout, &QTimer::timeout, socket, &QTcpSocket::abort);
+        auto reply = [guard = QPointer<QTcpSocket>(socket)](int status, const QByteArray &body) {
+            if (!guard)
+                return;
+            QByteArray reason = status == 200   ? "OK"
+                                : status == 202 ? "Accepted"
+                                : status == 401 ? "Unauthorized"
+                                : status == 403 ? "Forbidden"
+                                : status == 405 ? "Method Not Allowed"
+                                : status == 413 ? "Payload Too Large"
+                                                : "Bad Request";
+            guard->write("HTTP/1.1 " + QByteArray::number(status) + " " + reason +
+                         "\r\nContent-Type: application/json\r\nConnection: close\r\nAllow: "
+                         "POST\r\nContent-Length: " +
+                         QByteArray::number(body.size()) + "\r\n\r\n" + body);
+            guard->disconnectFromHost();
+        };
+        connect(socket, &QTcpSocket::readyRead, socket, [this, socket, reply] {
+            if (socket->property("dispatched").toBool())
+                return;
+            auto buffer = socket->property("httpBuffer").toByteArray() + socket->readAll();
+            if (buffer.size() > 4 * 1024 * 1024) {
+                reply(413, {});
+                return;
+            }
+            int headerEnd = buffer.indexOf("\r\n\r\n");
+            if (headerEnd < 0) {
+                if (buffer.size() > 16384) {
+                    reply(413, {});
+                    return;
+                }
+                socket->setProperty("httpBuffer", buffer);
+                return;
+            }
+            auto lines = buffer.left(headerEnd).split('\n');
+            auto request = lines.takeFirst().trimmed().split(' ');
+            QMap<QByteArray, QByteArray> headers;
+            for (const auto &line : lines) {
+                int sep = line.indexOf(':');
+                if (sep > 0) {
+                    auto key = line.left(sep).trimmed().toLower();
+                    if (headers.contains(key)) {
+                        reply(400, {});
+                        return;
+                    }
+                    headers[key] = line.mid(sep + 1).trimmed();
+                }
+            }
+            if (request.size() != 3 || request[1] != "/mcp") {
+                reply(400, {});
+                return;
+            }
+            const QUrl host("http://" + QString::fromLatin1(headers.value("host")));
+            if (host.host() != "127.0.0.1" && host.host() != "localhost") {
+                reply(403, {});
+                return;
+            }
+            if (headers.contains("origin")) {
+                QUrl origin(QString::fromLatin1(headers["origin"]));
+                if (origin.scheme() != "http" || origin.host() != host.host() ||
+                    origin.port(80) != host.port(80)) {
+                    reply(403, {});
+                    return;
+                }
+            }
+            if (headers.value("authorization") != ("Bearer " + httpToken_).toUtf8()) {
+                reply(401, {});
+                return;
+            }
+            if (request[0] != "POST") {
+                reply(405, {});
+                return;
+            }
+            bool ok;
+            auto size = headers.value("content-length").toLongLong(&ok);
+            if (!ok || size < 0 || headers.contains("transfer-encoding")) {
+                reply(400, {});
+                return;
+            }
+            if (size > 4 * 1024 * 1024) {
+                reply(413, {});
+                return;
+            }
+            if (buffer.size() < headerEnd + 4 + size) {
+                socket->setProperty("httpBuffer", buffer);
+                return;
+            }
+            if (!headers.value("content-type").startsWith("application/json")) {
+                reply(400, {});
+                return;
+            }
+            auto protocol = headers.value("mcp-protocol-version");
+            if (!protocol.isEmpty() && protocol != "2025-03-26" && protocol != "2025-06-18") {
+                reply(400, {});
+                return;
+            }
+            QJsonParseError error;
+            auto doc = QJsonDocument::fromJson(buffer.mid(headerEnd + 4, size), &error);
+            if (error.error != QJsonParseError::NoError || !doc.isObject()) {
+                reply(400, "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32700,"
+                           "\"message\":\"Parse error\"}}");
+                return;
+            }
+            socket->setProperty("dispatched", true);
+            socket->setProperty("httpBuffer", QByteArray());
+            if (!doc.object().contains("id")) {
+                reply(202, {});
+                return;
+            }
+            auto bridge = new QLocalSocket(socket);
+            connect(bridge, &QLocalSocket::connected, bridge,
+                    [bridge, doc] { bridge->write(doc.toJson(QJsonDocument::Compact) + '\n'); });
+            connect(bridge, &QLocalSocket::readyRead, bridge, [bridge, reply] {
+                auto b = bridge->property("response").toByteArray() + bridge->readAll();
+                int nl = b.indexOf('\n');
+                if (nl >= 0)
+                    reply(200, b.left(nl));
+                else
+                    bridge->setProperty("response", b);
+            });
+            connect(bridge, &QLocalSocket::errorOccurred, bridge,
+                    [reply](QLocalSocket::LocalSocketError) {
+                        reply(400, "{\"error\":\"MCP bridge disconnected\"}");
+                    });
+            bridge->connectToServer(endpoint_);
+        });
+    }
 }
 int runMcpBridge(int argc, char **argv) {
     QCoreApplication app(argc, argv);

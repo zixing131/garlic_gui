@@ -29,9 +29,13 @@ class Backend : public QObject {
     void setEngine(const QString &path) { engine_ = path; }
     QString engine() const { return engine_; }
     QString input() const { return input_; }
-    bool busy() const { return job_ != Job::None || indexing_ || postprocessing_; }
-    bool supportsSmali() const;
+    QStringList inputs() const { return inputs_; }
+    QString classInput(const QString &name) const;
+    QString workspacePath() const { return workspace_ ? workspace_->path() : QString(); }
+    bool busy() const { return job_ != Job::None || indexing_ || postprocessing_ || clearing_; }
+    bool supportsSmali(const QString &name = {}) const;
     void open(const QString &path);
+    void openPaths(const QStringList &paths);
     void request(const QString &name, bool smali);
     void exportSources(const QString &directory, bool smali);
     void cancel();
@@ -59,7 +63,10 @@ class Backend : public QObject {
     std::shared_ptr<SearchControl> searchControl_;
     std::shared_ptr<std::atomic_bool> sourceGenerating_ = std::make_shared<std::atomic_bool>(false);
     void applyEnvironment(QProcess &process, const QString &directory);
-    QString argumentClass_;
+    QString argumentClass_, activeInput_;
+    QStringList inputs_, indexQueue_, exportQueue_, backgroundQueue_;
+    void nextIndex();
+    void nextBackground();
     Project project_;
     AppSettings settings_;
     QProcess background_;
@@ -72,7 +79,7 @@ class Backend : public QObject {
     QString engine_, input_, currentName_, jobDir_, exportDir_;
     QString errorTail_;
     std::shared_ptr<QTemporaryDir> workspace_;
-    bool indexing_ = false, postprocessing_ = false;
+    bool indexing_ = false, postprocessing_ = false, clearing_ = false;
     std::shared_ptr<SearchControl> exportControl_;
     int projectGeneration_ = 0;
     QHash<QString, QString> cache_;

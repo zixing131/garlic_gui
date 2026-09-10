@@ -1,6 +1,9 @@
 #include "mainwindow.h"
+#include "mcpserver.h"
 #include <QJsonDocument>
 #include <QLocalSocket>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
 #include <QProcess>
 #include <QSettings>
 #include <QtTest>
@@ -37,6 +40,53 @@ class McpTest : public QObject {
         return result;
     }
   private slots:
+    void httpTransport() {
+        QCoreApplication::setOrganizationName("GarlicTests");
+        QCoreApplication::setApplicationName("McpTest");
+        QSettings().clear();
+        MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
+        QTcpServer reservation;
+        QVERIFY(reservation.listen(QHostAddress::LocalHost, 0));
+        auto port = reservation.serverPort();
+        reservation.close();
+        auto settings = window.backend()->settings();
+        settings.mcpEnabled = true;
+        settings.mcpTransport = "http";
+        settings.mcpPort = port;
+        window.applySettings(settings);
+        auto server = window.findChild<McpServer *>();
+        QVERIFY(server);
+        auto config =
+            server->httpConfig().value("mcpServers").toObject().value("garlic").toObject();
+        QNetworkAccessManager manager;
+        QNetworkRequest request(QUrl(config.value("url").toString()));
+        request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+        QByteArray body =
+            R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1"}}})";
+        auto denied = manager.post(request, body);
+        QTRY_VERIFY_WITH_TIMEOUT(denied->isFinished(), 5000);
+        QCOMPARE(denied->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(), 401);
+        denied->deleteLater();
+        request.setRawHeader(
+            "Authorization",
+            config.value("headers").toObject().value("Authorization").toString().toUtf8());
+        auto reply = manager.post(request, body);
+        QTRY_VERIFY_WITH_TIMEOUT(reply->isFinished(), 5000);
+        QCOMPARE(reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(), 200);
+        auto json = QJsonDocument::fromJson(reply->readAll()).object();
+        QVERIFY(json.value("result").toObject().contains("serverInfo"));
+        reply->deleteLater();
+        request.setRawHeader("Origin", "https://untrusted.example");
+        auto origin = manager.post(request, body);
+        QTRY_VERIFY_WITH_TIMEOUT(origin->isFinished(), 5000);
+        QCOMPARE(origin->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(), 403);
+        origin->deleteLater();
+        request.setRawHeader("Origin", {});
+        auto notification =
+            manager.post(request, R"({"jsonrpc":"2.0","method":"notifications/initialized"})");
+        QTRY_VERIFY_WITH_TIMEOUT(notification->isFinished(), 5000);
+        QCOMPARE(notification->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(), 202);
+    }
     void toolsAndBridge() {
         QCoreApplication::setOrganizationName("GarlicTests");
         QCoreApplication::setApplicationName("McpTest");

@@ -1,13 +1,18 @@
 #include "mainwindow.h"
+#include "theme.h"
 #include "mcpserver.h"
+#include <QtConcurrent>
 #include <QtWidgets>
 
 void MainWindow::applySettings(const AppSettings &settings) {
     backend_.configure(settings);
     for (int i = 0; i < tabs_->count(); i++)
-        qobject_cast<ClassView *>(tabs_->widget(i))->applySettings(settings);
+        if (auto page = qobject_cast<ClassView *>(tabs_->widget(i)))
+            page->applySettings(settings);
+        else if (auto code = tabs_->widget(i)->findChild<CodeEditor *>())
+            code->setTheme(settings.theme == "light");
     if (!qApp->property("garlicDarkStyle").isValid())
-        qApp->setProperty("garlicDarkStyle", qApp->styleSheet());
+        qApp->setProperty("garlicDarkStyle", garlicStyleSheet());
     const QString dark = qApp->property("garlicDarkStyle").toString();
     if (settings.theme == "light") {
         QPalette lightPalette;
@@ -27,11 +32,13 @@ void MainWindow::applySettings(const AppSettings &settings) {
         lightPalette.setColor(QPalette::Disabled, QPalette::ButtonText, QColor("#8a98a3"));
         qApp->setPalette(lightPalette);
         QString light = dark;
+        light.replace("#243446", "#e8edf3");
         const QList<QPair<QString, QString>> colors = {
             {"#17212d", "#f5f7fa"}, {"#1b2937", "#e8edf3"}, {"#14202b", "#eef2f6"},
             {"#111b26", "#ffffff"}, {"#dce5ee", "#243446"}, {"#e0ebf3", "#243446"},
             {"#8c9dad", "#617183"}, {"#95a8b9", "#53677a"}, {"#b2c3d3", "#34475a"},
-            {"#a4e4bd", "#267650"}};
+            {"#a4e4bd", "#267650"}, {"#304354", "#dae6f0"}, {"#28534d", "#c5dff5"},
+            {"#38635b", "#b9d8ef"}, {"#354454", "#b8c7d5"}, {"#2a3949", "#d0d9e2"}};
         for (const auto &c : colors)
             light.replace(c.first, c.second);
         qApp->setStyleSheet(light);
@@ -133,6 +140,38 @@ void MainWindow::settingsDialog() {
         spin(cache, tr("单文件查看 / 搜索大小限制（MiB）"), settings.sourceMiB, 1, 64);
     cache->addRow(new QLabel(tr("全项目搜索源码保留到关闭项目，不计入按类缓存上限。")));
     auto clear = new QPushButton(tr("清理当前源码缓存"));
+    auto usage = new QLabel(tr("正在统计磁盘缓存…"));
+    usage->setObjectName("cacheUsage");
+    cache->addRow(usage);
+    auto timer = new QTimer(&dialog);
+    auto scanning = std::make_shared<bool>(false);
+    auto refreshUsage = [this, usage, scanning, &dialog] {
+        if (*scanning)
+            return;
+        *scanning = true;
+        auto path = backend_.workspacePath();
+        auto task = new QFutureWatcher<qint64>(&dialog);
+        connect(task, &QFutureWatcher<qint64>::finished, &dialog, [task, usage, scanning] {
+            usage->setText(QObject::tr("当前项目磁盘缓存：%1 MiB（包含源码、映射与索引）")
+                               .arg(task->result() / 1048576., 0, 'f', 2));
+            *scanning = false;
+            task->deleteLater();
+        });
+        task->setFuture(QtConcurrent::run([path] {
+            qint64 n = 0;
+            if (!path.isEmpty()) {
+                QDirIterator it(path, QDir::Files, QDirIterator::Subdirectories);
+                while (it.hasNext()) {
+                    it.next();
+                    n += it.fileInfo().size();
+                }
+            }
+            return n;
+        }));
+    };
+    connect(timer, &QTimer::timeout, &dialog, refreshUsage);
+    timer->start(2000);
+    refreshUsage();
     cache->addRow(clear);
     connect(clear, &QPushButton::clicked, &dialog, [this] { backend_.clearCache(); });
     auto appearance = page(tr("界面"));
@@ -155,16 +194,39 @@ void MainWindow::settingsDialog() {
         }
     auto mcp = page("MCP");
     auto enabled = check(mcp, tr("启用当前 GUI 项目的 MCP 服务"), settings.mcpEnabled);
+    auto transport = new QComboBox;
+    transport->addItem("stdio", "stdio");
+    transport->addItem("HTTP (Streamable HTTP)", "http");
+    transport->setCurrentIndex(settings.mcpTransport == "http" ? 1 : 0);
+    mcp->addRow(tr("传输模式"), transport);
+    auto port = spin(mcp, tr("HTTP 本机端口"), settings.mcpPort, 1024, 65535);
     auto config = new QPlainTextEdit;
     config->setReadOnly(true);
     config->setPlainText(QJsonDocument(mcp_->clientConfig()).toJson(QJsonDocument::Indented));
-    mcp->addRow(tr("客户端 stdio 配置"), config);
+    mcp->addRow(tr("客户端配置"), config);
+    auto updateConfig = [this, config, transport, port] {
+        port->setEnabled(transport->currentData() == "http");
+        QJsonObject value;
+        if (transport->currentData() == "http")
+            value = mcp_->httpConfig(port->value());
+        else
+            value = {{"mcpServers",
+                      QJsonObject{{"garlic",
+                                   QJsonObject{{"command", QCoreApplication::applicationFilePath()},
+                                               {"args", QJsonArray{"--mcp", "--socket",
+                                                                   mcp_->endpoint()}}}}}}};
+        config->setPlainText(QJsonDocument(value).toJson(QJsonDocument::Indented));
+    };
+    connect(transport, &QComboBox::currentIndexChanged, &dialog, updateConfig);
+    connect(port, &QSpinBox::valueChanged, &dialog, updateConfig);
+    updateConfig();
     auto copy = new QPushButton(tr("复制配置"));
     mcp->addRow(copy);
     connect(copy, &QPushButton::clicked, &dialog,
             [config] { QApplication::clipboard()->setText(config->toPlainText()); });
-    auto mcpNote = new QLabel(tr("使用当前用户的本地套接字，不监听网络端口。\nGUI 需保持打开；AI "
-                                 "的重命名会同步到当前项目，可撤销。"));
+    auto mcpNote = new QLabel(
+        tr("stdio 使用本地套接字；HTTP 仅监听 127.0.0.1，配置含访问令牌。\nGUI 需保持打开；AI "
+           "的重命名会同步到当前项目，可撤销。"));
     mcpNote->setWordWrap(true);
     mcp->addRow(mcpNote);
     auto capabilities = page(tr("引擎能力"));
@@ -199,6 +261,8 @@ void MainWindow::settingsDialog() {
                 notice->setChecked(true);
                 wrap->setChecked(false);
                 enabled->setChecked(false);
+                transport->setCurrentIndex(0);
+                port->setValue(8650);
                 theme->setCurrentIndex(0);
             });
     if (dialog.exec() != QDialog::Accepted)
@@ -215,6 +279,8 @@ void MainWindow::settingsDialog() {
     settings.showNotice = notice->isChecked();
     settings.wordWrap = wrap->isChecked();
     settings.theme = theme->currentData().toString();
+    settings.mcpTransport = transport->currentData().toString();
+    settings.mcpPort = port->value();
     settings.mcpEnabled = enabled->isChecked();
     for (const auto &edit : edits) {
         edit.first->setShortcut(edit.second->keySequence());

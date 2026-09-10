@@ -50,6 +50,8 @@ class Project : public QObject {
     static QString classId(const QString &name) { return "L" + normalize(name) + ";"; }
     static QString classOf(const QString &id);
     QString input() const { return input_; }
+    void setInputs(const QStringList &inputs) { inputs_ = inputs; }
+    QStringList inputs() const { return inputs_; }
   signals:
     void renamed();
 
@@ -59,4 +61,5 @@ class Project : public QObject {
     QHash<QString, QStringList> classNames_;
     QVector<QHash<QString, QString>> undo_;
     QString input_;
+    QStringList inputs_;
 };

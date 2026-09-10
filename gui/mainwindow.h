@@ -2,6 +2,8 @@
 #include "backend.h"
 #include "classview.h"
 #include <QMainWindow>
+class QMenu;
+class QStandardItem;
 class QTreeView;
 class QStandardItemModel;
 class QSortFilterProxyModel;
@@ -20,6 +22,7 @@ class MainWindow : public QMainWindow {
   public:
     explicit MainWindow(const QString &engine = {}, QWidget *parent = nullptr);
     void openPath(const QString &path);
+    void openPaths(const QStringList &paths);
     Backend *backend() { return &backend_; }
     QString selectedClass() const;
     CodeEditor *editor() const;
@@ -37,6 +40,16 @@ class MainWindow : public QMainWindow {
   private:
     ClassView *view() const;
     void chooseFile();
+    void projectNodes();
+    void openResource(const QString &path, const QString &entry);
+    void showOverview(const QString &path, bool signature = false);
+    void goApplication();
+    void goManifest();
+    void refreshRecent();
+    void closeTabs(int index, const QString &mode);
+    QMenu *recentMenu_;
+    QStandardItem *sourceRoot_ = nullptr, *resourceRoot_ = nullptr;
+    QHash<QString, QJsonObject> resourceInfo_;
     void populate(const QStringList &classes);
     void populateMembers(const QModelIndex &index);
     int treeGeneration_ = 0;

@@ -113,6 +113,7 @@ static void apk_process_dex_from_zip(jd_apk *apk, struct zip_t *zip)
             continue;
         }
 
+        class_selection_origin(path_in_zip);
         size_t buf_size = zip_entry_size(zip);
         char *buf = x_alloc_in(apk->pool, buf_size * sizeof(unsigned char));
         zip_entry_noallocread(zip, (void *)buf, buf_size);
@@ -125,7 +126,7 @@ static void apk_process_dex_from_zip(jd_apk *apk, struct zip_t *zip)
         for (int j = 0; j < meta->header->class_defs_size; ++j) {
             dex_class_def *cf = &meta->class_defs[j];
             if (class_selection_indexing()) { browse_index_dex(meta, cf); continue; }
-            if (apk->type == JD_DEX_TASK_DECOMPILE) {
+            if (apk->type == JD_DEX_TASK_DECOMPILE && !class_selection_explicit()) {
                 if (dex_class_is_inner_class(dex->meta, cf) ||
                     dex_class_is_anonymous_class(dex->meta, cf))
                     continue;

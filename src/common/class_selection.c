@@ -8,9 +8,13 @@ static FILE *index_stream;
 static const char *selected_class;
 static int selection_error;
 static int matched;
+static char *origin;
+int class_selection_explicit(void) { return selected_class != NULL; }
+void class_selection_origin(const char *name) { free(origin); origin = name ? strdup(name) : NULL; }
 
 int class_selection_open(const char *index_path, const char *class_name)
 {
+    class_selection_origin(NULL);
     selected_class = class_name;
     selection_error = matched = 0;
     if (index_path) {
@@ -73,6 +77,7 @@ int class_selection_close(void)
         fprintf(stderr, "[garlic] Class not found: %s\n", selected_class);
         selection_error = 1;
     }
+    class_selection_origin(NULL);
     return selection_error ? 1 : 0;
 }
 
@@ -81,6 +86,7 @@ void class_selection_write(cJSON *entry)
     if (!index_stream) return;
     const cJSON *name=cJSON_GetObjectItem(entry,"name");
     if(name && name->valuestring && excluded(name->valuestring,strlen(name->valuestring))) return;
+    if (origin) cJSON_AddStringToObject(entry, "origin", origin);
     char *json=cJSON_PrintUnformatted(entry);
     if (!json || fprintf(index_stream,"%s\n",json)<0) selection_error=1;
     free(json);

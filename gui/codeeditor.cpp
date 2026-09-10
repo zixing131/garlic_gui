@@ -199,6 +199,10 @@ void CodeEditor::goToLine(int line) {
         centerCursor();
     }
 }
+void CodeEditor::mouseDoubleClickEvent(QMouseEvent *event) {
+    QPlainTextEdit::mouseDoubleClickEvent(event);
+    if (event->button() == Qt::LeftButton && !symbolAtCursor().isEmpty()) emit navigateRequested();
+}
 void CodeEditor::mousePressEvent(QMouseEvent *event) {
     QPlainTextEdit::mousePressEvent(event);
     if (event->button() == Qt::LeftButton &&
@@ -211,8 +215,8 @@ void CodeEditor::contextMenuEvent(QContextMenuEvent *event) {
     auto menu = createStandardContextMenu();
     menu->addSeparator();
     auto go = menu->addAction(tr("跳转到声明  F12"), this, &CodeEditor::navigateRequested);
-    auto refs = menu->addAction(tr("查找引用  Shift+F12"), this, &CodeEditor::referencesRequested);
-    auto rename = menu->addAction(tr("重命名  F2"), this, &CodeEditor::renameRequested);
+    auto refs = menu->addAction(tr("查找引用  X"), this, &CodeEditor::referencesRequested);
+    auto rename = menu->addAction(tr("重命名  N"), this, &CodeEditor::renameRequested);
     const bool known = !symbolAtCursor().isEmpty();
     go->setEnabled(known);
     refs->setEnabled(known);

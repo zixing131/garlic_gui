@@ -21,6 +21,7 @@ QString Project::classOf(const QString &id) {
 }
 void Project::reset(const QString &input) {
     input_ = input;
+    inputs_ = {input};
     classes_.clear();
     symbols_.clear();
     classNames_.clear();
@@ -29,6 +30,12 @@ void Project::reset(const QString &input) {
 }
 void Project::addClass(const QJsonObject &entry) {
     const auto name = entry.value("name").toString();
+    if (classes_.contains(name)) {
+        const auto old = classes_.value(name);
+        for (const auto &kind : {"methods", "fields"})
+            for (const auto &member : old.value(kind).toArray())
+                symbols_.remove(member.toObject().value("id").toString());
+    }
     classes_.insert(name, entry);
     for (const auto &simple :
          QSet<QString>{name.section('/', -1), name.section('/', -1).section('$', -1)})
@@ -176,6 +183,15 @@ bool Project::save(const QString &path, QString *error) const {
         {"size", double(QFileInfo(input_).size())},
         {"modified", QString::number(QFileInfo(input_).lastModified().toMSecsSinceEpoch())},
         {"aliases", aliases()}};
+    QJsonArray inputs;
+    for (const auto &input : inputs_) {
+        QFileInfo info(input);
+        inputs.append(
+            QJsonObject{{"path", input},
+                        {"size", double(info.size())},
+                        {"modified", QString::number(info.lastModified().toMSecsSinceEpoch())}});
+    }
+    data["inputs"] = inputs;
     file.write(QJsonDocument(data).toJson());
     if (file.commit())
         return true;
@@ -201,6 +217,26 @@ bool Project::loadAliases(const QString &path, QString *error) {
         if (error)
             *error = tr("项目与当前输入文件不匹配。");
         return false;
+    }
+    if (data.contains("inputs")) {
+        QStringList paths;
+        for (const auto &value : data.value("inputs").toArray()) {
+            const auto item = value.toObject();
+            QFileInfo info(item.value("path").toString());
+            paths << info.absoluteFilePath();
+            if (!info.isFile() || double(info.size()) != item.value("size").toDouble() ||
+                QString::number(info.lastModified().toMSecsSinceEpoch()) !=
+                    item.value("modified").toString()) {
+                if (error)
+                    *error = tr("项目输入文件已经变更。");
+                return false;
+            }
+        }
+        if (paths != inputs_) {
+            if (error)
+                *error = tr("项目输入文件列表不匹配。");
+            return false;
+        }
     }
     const auto previous = aliases_;
     const auto oldUndo = undo_;
@@ -479,6 +515,7 @@ std::shared_ptr<Project> Project::snapshot() const {
 }
 void Project::replaceData(const Project &other) {
     input_ = other.input_;
+    inputs_ = other.inputs_;
     classes_ = other.classes_;
     symbols_ = other.symbols_;
     classNames_ = other.classNames_;

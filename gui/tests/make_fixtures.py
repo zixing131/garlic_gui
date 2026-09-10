@@ -17,6 +17,7 @@ classes.mkdir(exist_ok=True)
 sources = sorted((Path(__file__).parent / "fixtures").rglob("*.java"))
 subprocess.run(["javac", "--release", "8", "-g", "-d", str(classes), *map(str, sources)], check=True)
 with zipfile.ZipFile(out / "demo.jar", "w") as jar:
+    jar.writestr("layout/main.xml", '<layout><text>中文 resource preview</text></layout>')
     for path in classes.rglob("*.class"):
         jar.write(path, path.relative_to(classes).as_posix())
 shutil.copyfile(classes / "demo/Main.class", out / "Main.class")

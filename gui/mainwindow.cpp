@@ -1,6 +1,8 @@
 #include "mainwindow.h"
 #include "mcpserver.h"
 #include "nodeicons.h"
+#include "referencesdialog.h"
+#include "resources.h"
 #include "searchdialog.h"
 #include <QFutureWatcher>
 #include <QtConcurrent>
@@ -22,6 +24,15 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     auto file = menuBar()->addMenu(tr("文件"));
     openAction_ =
         file->addAction(tr("打开文件…"), QKeySequence::Open, this, &MainWindow::chooseFile);
+    recentMenu_ = file->addMenu(tr("最近打开"));
+    refreshRecent();
+    file->addAction(tr("添加文件…"), this, [this] {
+        auto paths = QFileDialog::getOpenFileNames(
+            this, tr("添加输入文件"), {},
+            tr("字节码 (*.apk *.dex *.jar *.war *.class *.xapk *.apks)"));
+        if (!paths.isEmpty())
+            openPaths(backend_.inputs() + paths);
+    });
     file->addAction(tr("打开项目…"), this, &MainWindow::openProject);
     file->addAction(tr("保存项目…"), QKeySequence::Save, this, &MainWindow::saveProject);
     exportAction_ = file->addAction(tr("导出源码…"), QKeySequence("Ctrl+Shift+E"), this,
@@ -42,12 +53,16 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
         if (editor())
             navigateTo(editor()->symbolAtCursor());
     });
-    edit->addAction(tr("查找引用"), QKeySequence("Shift+F12"), this, [this] {
-        if (editor())
+    edit->addAction(tr("查找引用"), QKeySequence("X"), this, [this] {
+        if (tree_->hasFocus())
+            showReferences(tree_->currentIndex().data(Qt::UserRole + 1).toString());
+        else if (editor())
             showReferences(editor()->symbolAtCursor());
     });
-    edit->addAction(tr("重命名"), QKeySequence(Qt::Key_F2), this, [this] {
-        if (editor())
+    edit->addAction(tr("重命名"), QKeySequence("N"), this, [this] {
+        if (tree_->hasFocus())
+            renameSymbol(tree_->currentIndex().data(Qt::UserRole + 1).toString());
+        else if (editor())
             renameSymbol(editor()->symbolAtCursor());
     });
     edit->addAction(tr("撤销重命名"), QKeySequence::Undo, backend_.project(), &Project::undoRename);
@@ -106,6 +121,23 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     toolbar->addSeparator();
     stopAction_ = toolbar->addAction(tr("停止"), &backend_, &Backend::cancel);
     toolbar->addAction(settingsAction_);
+    auto applicationAction =
+        edit->addAction(tr("前往 Application"), this, &MainWindow::goApplication);
+    auto manifestAction =
+        edit->addAction(tr("前往 AndroidManifest.xml"), this, &MainWindow::goManifest);
+    toolbar->addAction(applicationAction);
+    toolbar->addAction(manifestAction);
+    toolbar->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    toolbar->setIconSize(QSize(22, 22));
+    const QStringList toolIcons{"toolopenDisk", "toolexport",      "toolfind",
+                                "toolleft",     "toolright",       "toolclose",
+                                "toolsettings", "toolapplication", "toolandroidManifest"};
+    int ti = 0;
+    for (auto action : toolbar->actions())
+        if (!action->isSeparator() && !qobject_cast<QWidgetAction *>(action)) {
+            action->setIcon(NodeIcons::icon(toolIcons.value(ti++)));
+            action->setToolTip(action->text());
+        }
     auto central = new QWidget;
     auto layout = new QVBoxLayout(central);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -193,6 +225,27 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     splitter->setSizes({310, 1050});
     splitter->setStretchFactor(1, 1);
     setCentralWidget(central);
+    tabs_->tabBar()->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(tabs_->tabBar(), &QTabBar::customContextMenuRequested, this, [this](const QPoint &p) {
+        int i = tabs_->tabBar()->tabAt(p);
+        if (i < 0)
+            return;
+        QMenu menu;
+        const QList<QPair<QString, QString>> actions = {{tr("关闭"), "one"},
+                                                        {tr("关闭其他"), "others"},
+                                                        {tr("关闭左侧"), "left"},
+                                                        {tr("关闭右侧"), "right"},
+                                                        {tr("关闭全部"), "all"}};
+        for (const auto &a : actions)
+            menu.addAction(a.first, this, [this, i, a] { closeTabs(i, a.second); });
+        menu.exec(tabs_->tabBar()->mapToGlobal(p));
+    });
+    for (auto action : edit->actions())
+        if (action->text() == tr("查找引用") || action->text() == tr("重命名")) {
+            action->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+            tree_->addAction(action);
+            tabs_->addAction(action);
+        }
     connect(tabs_, &QTabWidget::tabCloseRequested, this,
             [this](int i) { delete tabs_->widget(i); });
     connect(tabs_, &QTabWidget::currentChanged, this, [this](int i) {
@@ -204,6 +257,16 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     });
     connect(filter_, &QLineEdit::textChanged, proxy_, &QSortFilterProxyModel::setFilterFixedString);
     auto activate = [this](const QModelIndex &index) {
+        const auto kind = index.data(Qt::UserRole + 4).toString(),
+                   path = index.data(Qt::UserRole + 5).toString();
+        if (kind == "resource") {
+            openResource(path, index.data(Qt::UserRole + 6).toString());
+            return;
+        }
+        if (kind == "summary" || kind == "input" || kind == "signature") {
+            showOverview(path, kind == "signature");
+            return;
+        }
         const auto id = index.data(Qt::UserRole + 1).toString();
         if (!id.isEmpty())
             navigateTo(id);
@@ -272,6 +335,8 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
         logs_->appendPlainText(text);
         logDock_->show();
         status_->setText(tr("操作失败，详情见日志"));
+        if (view() && !view()->loaded(view()->smali()))
+            editor()->setPlainText(text);
     });
     connect(&backend_, &Backend::projectSourcesReady, this,
             [this] { status_->setText(tr("项目源码已就绪，可以全文搜索。")); });
@@ -310,25 +375,37 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
 }
 
 ClassView *MainWindow::view() const { return qobject_cast<ClassView *>(tabs_->currentWidget()); }
-CodeEditor *MainWindow::editor() const { return view() ? view()->editor() : nullptr; }
+CodeEditor *MainWindow::editor() const {
+    return view()                   ? view()->editor()
+           : tabs_->currentWidget() ? tabs_->currentWidget()->findChild<CodeEditor *>()
+                                    : nullptr;
+}
 QString MainWindow::selectedClass() const { return view() ? view()->name() : QString(); }
 QString MainWindow::mcpEndpoint() const { return mcp_->endpoint(); }
 void MainWindow::chooseFile() {
     if (backend_.busy())
         return;
-    const auto path = QFileDialog::getOpenFileName(
+    const auto paths = QFileDialog::getOpenFileNames(
         this, tr("打开字节码"), QSettings().value("lastDirectory").toString(),
         tr("字节码 (*.apk *.xapk *.apks *.dex *.jar *.war *.class)"));
-    if (!path.isEmpty())
-        openPath(path);
+    if (!paths.isEmpty())
+        openPaths(paths);
 }
-void MainWindow::openPath(const QString &path) {
+void MainWindow::openPath(const QString &path) { openPaths({path}); }
+void MainWindow::openPaths(const QStringList &paths) {
+    if (paths.isEmpty())
+        return;
+    const auto path = paths.first();
     if (backend_.busy())
         return;
-    if (!QFileInfo(path).isFile()) {
-        status_->setText(tr("文件不存在：%1").arg(path));
-        return;
+    for (const auto &input : paths) {
+        if (!QFileInfo(input).isFile()) {
+            status_->setText(tr("文件不存在：%1").arg(input));
+            return;
+        }
     }
+    for (auto dialog : findChildren<ReferencesDialog *>())
+        delete dialog;
     while (tabs_->count())
         delete tabs_->widget(0);
     if (searchDialog_) {
@@ -348,11 +425,26 @@ void MainWindow::openPath(const QString &path) {
     fileLabel_->setToolTip(QFileInfo(path).absoluteFilePath());
     QSettings().setValue("lastDirectory", QFileInfo(path).absolutePath());
     status_->setText(tr("正在读取类与符号索引…"));
-    backend_.open(path);
+    resourceInfo_.clear();
+    backend_.openPaths(paths);
+    QStringList recent = QSettings().value("recentFiles").toStringList();
+    for (const auto &p : paths) {
+        recent.removeAll(p);
+        recent.prepend(p);
+    }
+    while (recent.size() > 20)
+        recent.removeLast();
+    QSettings().setValue("recentFiles", recent);
+    refreshRecent();
+    fileLabel_->setText(
+        paths.size() > 1
+            ? tr("%1 等 %2 个输入文件").arg(QFileInfo(path).fileName()).arg(paths.size())
+            : QFileInfo(path).fileName());
 }
 void MainWindow::populate(const QStringList &classes) {
     const int generation = ++treeGeneration_;
     model_->clear();
+    projectNodes();
     struct State {
         QStringList names;
         int offset = 0;
@@ -375,7 +467,7 @@ void MainWindow::populate(const QStringList &classes) {
             if (!state->packages.contains(pkg)) {
                 auto p = new QStandardItem(NodeIcons::icon("package"), pkg);
                 p->setData(pkg, Qt::UserRole + 2);
-                model_->appendRow(p);
+                sourceRoot_->appendRow(p);
                 state->packages[pkg] = p;
             }
             auto info = backend_.project()->info(name);
@@ -404,7 +496,7 @@ void MainWindow::populate(const QStringList &classes) {
             return;
         }
         if (state->packages.size() <= 12)
-            tree_->expandToDepth(0);
+            tree_->expand(proxy_->mapFromSource(sourceRoot_->index()));
         countLabel_->setText(
             tr("%1 个包 / %2 个类与接口  ").arg(state->packages.size()).arg(state->names.size()));
         status_->setText(tr("目录就绪，展开类加载成员。"));
@@ -448,7 +540,7 @@ void MainWindow::openClass(const QString &name, bool smali) {
     }
     for (int i = 0; i < tabs_->count(); i++) {
         auto current = qobject_cast<ClassView *>(tabs_->widget(i));
-        if (current->name() == n) {
+        if (current && current->name() == n) {
             tabs_->setCurrentIndex(i);
             current->selectMode(smali);
             loadCurrent();
@@ -457,7 +549,7 @@ void MainWindow::openClass(const QString &name, bool smali) {
     }
     if (tabs_->count() >= backend_.settings().maxTabs)
         delete tabs_->widget(0);
-    auto page = new ClassView(n, backend_.supportsSmali(), backend_.settings());
+    auto page = new ClassView(n, backend_.supportsSmali(n), backend_.settings());
     connect(page, &ClassView::modeChanged, this, [this, page] {
         if (page == view())
             loadCurrent();
@@ -510,6 +602,8 @@ void MainWindow::showSource(const QString &name, bool smali, const QString &path
     }
     for (int i = 0; i < tabs_->count(); i++) {
         auto page = qobject_cast<ClassView *>(tabs_->widget(i));
+        if (!page)
+            continue;
         if (page->name() != name)
             continue;
         const auto key = smali ? "loadingSmali" : "loadingJava";
@@ -562,7 +656,7 @@ void MainWindow::updateBusy() {
     settingsAction_->setEnabled(!busy && !backend_.preparing());
     exportAction_->setEnabled(!busy && !backend_.input().isEmpty());
     stopAction_->setEnabled(busy || backend_.preparing());
-    tree_->setEnabled(!busy);
+    tree_->setEnabled(true);
     progress_->setRange(0, 0);
     progress_->setVisible(busy || backend_.preparing());
 }
@@ -592,40 +686,8 @@ void MainWindow::navigateTo(const QString &id, int line) {
 void MainWindow::showReferences(const QString &id) {
     if (id.isEmpty())
         return;
-    auto snapshot = backend_.project()->snapshot();
-    const auto input = backend_.input();
-    auto watcher = new QFutureWatcher<QJsonArray>(this);
-    status_->setText(tr("正在查询引用…"));
-    connect(watcher, &QFutureWatcher<QJsonArray>::finished, this, [this, watcher, id, input] {
-        const auto refs = watcher->result();
-        watcher->deleteLater();
-        if (input != backend_.input())
-            return;
-        results_->setRowCount(0);
-        for (const auto &v : refs) {
-            if (results_->rowCount() >= 2000)
-                break;
-            auto r = v.toObject();
-            int row = results_->rowCount();
-            results_->insertRow(row);
-            auto item = new QTableWidgetItem(r.value("from").toString());
-            item->setData(Qt::UserRole, r.value("from"));
-            results_->setItem(row, 0, item);
-            results_->setItem(
-                row, 1,
-                new QTableWidgetItem(r.value("offset").toInt() < 0
-                                         ? r.value("kind").toString()
-                                         : tr("字节码 +%1").arg(r.value("offset").toInt())));
-            results_->setItem(row, 2, new QTableWidgetItem(r.value("target").toString()));
-        }
-        resultDock_->setWindowTitle(
-            tr("引用：%1（%2）").arg(backend_.project()->symbolName(id)).arg(refs.size()));
-        resultDock_->show();
-        if (refs.size() > 2000)
-            status_->setText(
-                tr("共 %1 处引用，界面显示前 2000 处；MCP 支持分页读取。").arg(refs.size()));
-    });
-    watcher->setFuture(QtConcurrent::run([snapshot, id] { return snapshot->xrefs(id); }));
+    auto dialog = new ReferencesDialog(this, id);
+    dialog->show();
 }
 void MainWindow::renameSymbol(const QString &id) {
     if (id.isEmpty())
@@ -646,6 +708,8 @@ void MainWindow::refreshAliases() {
     populate(backend_.project()->classes());
     for (int i = 0; i < tabs_->count(); i++) {
         auto page = qobject_cast<ClassView *>(tabs_->widget(i));
+        if (!page)
+            continue;
         tabs_->setTabText(i, backend_.project()->displayName(page->name()));
         for (int mode = 0; mode < 2; mode++)
             if (page->loaded(mode)) {
@@ -679,7 +743,12 @@ void MainWindow::openProject() {
     if (j.value("version").toInt() != 1)
         return;
     pendingProject_ = path;
-    openPath(j.value("input").toString());
+    QStringList inputs;
+    for (const auto &item : j.value("inputs").toArray())
+        inputs << item.toObject().value("path").toString();
+    if (inputs.isEmpty())
+        inputs << j.value("input").toString();
+    openPaths(inputs);
 }
 void MainWindow::searchDialog() {
     if (backend_.project()->classes().isEmpty())
@@ -704,8 +773,13 @@ void MainWindow::dragEnterEvent(QDragEnterEvent *event) {
         event->acceptProposedAction();
 }
 void MainWindow::dropEvent(QDropEvent *event) {
-    if (!event->mimeData()->urls().isEmpty())
-        openPath(event->mimeData()->urls().first().toLocalFile());
+    if (!event->mimeData()->urls().isEmpty()) {
+        QStringList paths;
+        for (const auto &u : event->mimeData()->urls())
+            if (u.isLocalFile())
+                paths << u.toLocalFile();
+        openPaths(paths);
+    }
 }
 void MainWindow::closeEvent(QCloseEvent *event) {
     QSettings().setValue("geometry", saveGeometry());
@@ -730,6 +804,25 @@ SourceDocument MainWindow::present(const SourceDocument &raw, bool smali) const 
             for (int j = 0; j < line.size(); j++)
                 doc.text[offset + j] = ' ';
         offset += line.size() + 1;
+    }
+    if (backend_.settings().showNotice) {
+        const auto classComment = QRegularExpression("// class:\\s*(\\S+)").match(doc.text);
+        const auto name = classComment.hasMatch() ? classComment.captured(1) : selectedClass();
+        auto info = backend_.project()->info(name);
+        int comment = doc.text.indexOf("// class:");
+        int end = comment < 0 ? -1 : doc.text.indexOf('\n', comment);
+        if (!info.isEmpty() && end >= 0) {
+            const auto file = QFileInfo(info.value("input").toString()).fileName();
+            const auto source = info.value("origin").toString();
+            QString origin =
+                " · loaded from: " + file + (source == file ? QString() : " / " + source);
+            doc.text.insert(end, origin);
+            for (auto &span : doc.spans)
+                if (span.start >= end) {
+                    span.start += origin.size();
+                    span.end += origin.size();
+                }
+        }
     }
     return doc;
 }

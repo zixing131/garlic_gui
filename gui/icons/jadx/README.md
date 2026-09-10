@@ -20,3 +20,6 @@ classes. Method visibility overrides constructor/abstract variants, and
 synchronized methods use methodReference. Final and static overlays apply to
 fields and methods only, in that order. Annotation types use the original green
 @ icon; ordinary classes use C. Package nodes use the original gray package.
+
+Toolbar assets prefixed `tool` come from the same commit’s `icons/ui` directory.
+The SVG contents and copyright headers are unchanged.

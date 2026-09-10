@@ -7,6 +7,8 @@ static void initNodeResources() { Q_INIT_RESOURCE(jadx_icons); }
 
 namespace NodeIcons {
 QString baseName(const QString &kind, quint32 flags, bool constructor) {
+    if (kind.startsWith("tool"))
+        return kind;
     if (kind == "package")
         return "package";
     if (kind == "method") {

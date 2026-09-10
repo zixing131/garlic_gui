@@ -50,7 +50,8 @@ Backend::Backend(QObject *parent)
 }
 
 Backend::~Backend() {
-    if(exportControl_)exportControl_->canceled=true;
+    if (exportControl_)
+        exportControl_->canceled = true;
     cancelSearch();
     sourceGenerating_->store(false);
     disconnect(&background_, nullptr, this, nullptr);
@@ -63,8 +64,11 @@ Backend::~Backend() {
     }
 }
 
-bool Backend::supportsSmali() const {
-    const auto ext = QFileInfo(input_).suffix().toLower();
+QString Backend::classInput(const QString &name) const {
+    return project_.info(name).value("input").toString(input_);
+}
+bool Backend::supportsSmali(const QString &name) const {
+    const auto ext = QFileInfo(name.isEmpty() ? input_ : classInput(name)).suffix().toLower();
     return ext == "apk" || ext == "dex" || ext == "xapk" || ext == "apks";
 }
 
@@ -87,14 +91,26 @@ void Backend::start(Job job, const QStringList &arguments) {
     process_.setWorkingDirectory(workspace_->path());
     applyEnvironment(process_, jobDir_);
     process_.setStandardOutputFile(
-        QFileInfo(input_).suffix().compare("class", Qt::CaseInsensitive) == 0 && job != Job::Index
+        QFileInfo(arguments.value(0)).suffix().compare("class", Qt::CaseInsensitive) == 0 &&
+                job != Job::Index
             ? jobDir_ + "/source.java"
             : QString());
     emit busyChanged(true);
     process_.start(engine_, arguments);
 }
 
-void Backend::open(const QString &path) {
+void Backend::open(const QString &path) { openPaths({path}); }
+void Backend::openPaths(const QStringList &paths) {
+    if (paths.isEmpty())
+        return;
+    const auto path = paths.first();
+    for (const auto &p : paths)
+        if (!QFileInfo(p).isFile() ||
+            !QStringList{"apk", "dex", "jar", "war", "class", "xapk", "apks"}.contains(
+                QFileInfo(p).suffix().toLower())) {
+            emit failed(tr("不支持或不存在的文件：%1").arg(p));
+            return;
+        }
     if (busy())
         return;
     if (!QFileInfo(path).isFile()) {
@@ -106,7 +122,9 @@ void Backend::open(const QString &path) {
         emit failed(tr("请选择 APK、DEX、JAR、WAR 或 CLASS 文件。"));
         return;
     }
-    auto workspace = std::make_shared<QTemporaryDir>(QDir::tempPath() + "/garlic-gui-XXXXXX");
+    auto workspace = std::shared_ptr<QTemporaryDir>(
+        new QTemporaryDir(QDir::tempPath() + "/garlic-gui-XXXXXX"),
+        [](QTemporaryDir *dir) { QThreadPool::globalInstance()->start([dir] { delete dir; }); });
     if (!workspace->isValid()) {
         emit failed(tr("无法创建临时工作目录。"));
         return;
@@ -126,13 +144,23 @@ void Backend::open(const QString &path) {
     fullReady_ = false;
     workspace_ = std::move(workspace);
     input_ = QFileInfo(path).absoluteFilePath();
+    inputs_.clear();
+    for (const auto &p : paths)
+        if (!inputs_.contains(QFileInfo(p).absoluteFilePath()))
+            inputs_ << QFileInfo(p).absoluteFilePath();
+    indexQueue_ = inputs_;
     cache_.clear();
     cacheOrder_.clear();
     project_.reset(input_);
+    project_.setInputs(inputs_);
+    nextIndex();
+}
+void Backend::nextIndex() {
+    activeInput_ = indexQueue_.takeFirst();
     jobDir_ = workspace_->path() + "/index";
     QDir().mkpath(jobDir_);
-    start(Job::Index, {input_, "-I", workspace_->path() + "/classes.jsonl", "-o", jobDir_, "-t",
-                       QString::number(settings_.threads)});
+    start(Job::Index, {activeInput_, "-I", workspace_->path() + "/classes.jsonl", "-o", jobDir_,
+                       "-t", QString::number(settings_.threads)});
 }
 
 void Backend::request(const QString &name, bool smali) {
@@ -142,7 +170,7 @@ void Backend::request(const QString &name, bool smali) {
         emit failed(tr("类名包含无效路径。"));
         return;
     }
-    if (smali && !supportsSmali()) {
+    if (smali && !supportsSmali(name)) {
         emit failed(tr("Smali 仅适用于 APK / DEX。"));
         return;
     }
@@ -161,8 +189,13 @@ void Backend::request(const QString &name, bool smali) {
     smali_ = smali;
     jobDir_ = workspace_->path() + "/" + QUuid::createUuid().toString(QUuid::WithoutBraces);
     QDir().mkpath(jobDir_);
-    QStringList args{
-        input_, "-c", argumentClass_, "-o", jobDir_, "-t", QString::number(settings_.threads)};
+    QStringList args{classInput(name),
+                     "-c",
+                     argumentClass_,
+                     "-o",
+                     jobDir_,
+                     "-t",
+                     QString::number(settings_.threads)};
     if (smali)
         args << "-s";
     start(Job::Source, args);
@@ -179,15 +212,22 @@ void Backend::exportSources(const QString &directory, bool smali) {
     }
     exportDir_ = directory;
     jobDir_ = directory;
-    QStringList args{input_, "-o", directory, "-t", QString::number(settings_.threads)};
+    exportQueue_ = inputs_;
+    QStringList args{exportQueue_.takeFirst(), "-o", directory, "-t",
+                     QString::number(settings_.threads)};
     if (smali)
         args << "-s";
     start(Job::Export, args);
 }
 
 void Backend::cancel() {
-    if(exportControl_)exportControl_->canceled=true;
-    if(postprocessing_){postprocessing_=false;emit busyChanged(false);emit log(tr("已取消导出处理，保留部分结果。"));}
+    if (exportControl_)
+        exportControl_->canceled = true;
+    if (postprocessing_) {
+        postprocessing_ = false;
+        emit busyChanged(false);
+        emit log(tr("已取消导出处理，保留部分结果。"));
+    }
     cancelSearch();
     ++projectGeneration_;
     if (indexing_) {
@@ -241,7 +281,7 @@ void Backend::finish(int code, QProcess::ExitStatus status) {
         emit busyChanged(true);
         const int generation = projectGeneration_;
         const auto workspace = workspace_;
-        const auto input = input_;
+        const auto input = activeInput_;
         using IndexResult = QPair<std::shared_ptr<Project>, QString>;
         auto watcher = new QFutureWatcher<IndexResult>(this);
         connect(watcher, &QFutureWatcher<IndexResult>::finished, this, [this, watcher, generation] {
@@ -255,7 +295,12 @@ void Backend::finish(int code, QProcess::ExitStatus status) {
                 emit failed(result.second);
                 return;
             }
-            project_.replaceData(*result.first);
+            for (const auto &name : result.first->classes())
+                project_.addClass(result.first->info(name));
+            if (!indexQueue_.isEmpty()) {
+                nextIndex();
+                return;
+            }
             emit indexed(project_.classes());
             emit busyChanged(false);
             if (settings_.background)
@@ -271,6 +316,9 @@ void Backend::finish(int code, QProcess::ExitStatus status) {
                 auto object = QJsonDocument::fromJson(file.readLine()).object();
                 if (!Backend::safeClassName(object.value("name").toString()))
                     return IndexResult{{}, QStringLiteral("引擎返回了无效的类索引。")};
+                object["input"] = input;
+                if (!object.contains("origin"))
+                    object["origin"] = QFileInfo(input).fileName();
                 project->addClass(object);
             }
             if (project->classes().isEmpty())
@@ -279,7 +327,7 @@ void Backend::finish(int code, QProcess::ExitStatus status) {
         }));
     } else if (completed == Job::Source) {
         QString path = jobDir_ + "/" + argumentClass_ + (smali_ ? ".smali" : ".java");
-        if (QFileInfo(input_).suffix().compare("class", Qt::CaseInsensitive) == 0)
+        if (QFileInfo(classInput(currentName_)).suffix().compare("class", Qt::CaseInsensitive) == 0)
             path = jobDir_ + "/source.java";
         if (!QFileInfo(path).isFile() || QFileInfo(path).size() == 0) {
             emit failed(
@@ -303,6 +351,22 @@ void Backend::finish(int code, QProcess::ExitStatus status) {
         }
         emit sourceReady(currentName_, smali_, path);
     } else {
+        if (inputs_.size() > 1 && QFileInfo(process_.arguments().value(0)).suffix() == "class") {
+            for (const auto &name : project_.classes())
+                if (classInput(name) == process_.arguments().value(0)) {
+                    QString dest = exportDir_ + "/" + name + ".java";
+                    QDir().mkpath(QFileInfo(dest).absolutePath());
+                    QFile::remove(dest);
+                    QFile::rename(exportDir_ + "/source.java", dest);
+                    break;
+                }
+        }
+        if (!exportQueue_.isEmpty()) {
+            auto args = process_.arguments();
+            args[0] = exportQueue_.takeFirst();
+            start(Job::Export, args);
+            return;
+        }
         QDirIterator files(exportDir_, {"*.java", "*.smali"}, QDir::Files,
                            QDirIterator::Subdirectories);
         if (!files.hasNext()) {
@@ -310,50 +374,70 @@ void Backend::finish(int code, QProcess::ExitStatus status) {
             return;
         }
         if (!project_.aliases().isEmpty()) {
-            postprocessing_=true;emit busyChanged(true);exportControl_=std::make_shared<SearchControl>();
-            auto control=exportControl_;auto snapshot=project_.snapshot();const auto directory=exportDir_,input=input_;
-            const int generation=projectGeneration_,limit=settings_.sourceMiB;const bool exportSmali=process_.arguments().contains("-s");
-            auto watcher=new QFutureWatcher<QString>(this);
-            connect(watcher,&QFutureWatcher<QString>::finished,this,[this,watcher,generation,directory,control]{
-                auto error=watcher->result();watcher->deleteLater();if(generation!=projectGeneration_||control->canceled)return;
-                postprocessing_=false;emit busyChanged(false);if(error.isEmpty())emit exported(directory);else emit failed(error);
-            });
-            watcher->setFuture(QtConcurrent::run([snapshot,directory,input,limit,exportSmali,control]{
-            QSet<QString> done;
-            for (const auto &name : snapshot->classes()) {
-                if(control->canceled)return QString();
-                const QString owner = exportSmali ? name : snapshot->owner(name);
-                if (done.contains(owner))
-                    continue;
-                done.insert(owner);
-                const QString oldPath =
-                    directory + "/" +
-                    (QFileInfo(input).suffix() == "class" ? QString("source") : owner) +
-                    (exportSmali ? ".smali" : ".java");
-                if (!QFileInfo::exists(oldPath))
-                    continue;
-                if (QFileInfo(oldPath).size() > qint64(limit) * 1024 * 1024) {
-                    return QStringLiteral("导出文件超过别名处理限制，已保留原始输出：%1").arg(oldPath);
-                }
-                const auto document = snapshot->document(owner, exportSmali, oldPath);
-                const auto renamed = snapshot->renamedClass(owner);
-                const QString target = renamed == owner ? oldPath
-                                                        : QFileInfo(oldPath).absolutePath() + "/" +
-                                                              renamed.section('/', -1) +
-                                                              (exportSmali ? ".smali" : ".java");
-                QSaveFile file(target);
-                if (!file.open(QIODevice::WriteOnly) || file.write(document.text.toUtf8()) < 0 ||
-                    !file.commit()) {
-                    return QStringLiteral("无法保存重命名后的导出文件：%1").arg(target);
-                }
-                if (target != oldPath)
-                    QFile::remove(oldPath);
-                QString map = oldPath;
-                map.chop(exportSmali ? 6 : 5);
-                QFile::remove(map + ".map.json");
-            }
-                return QString();
-            }));
+            postprocessing_ = true;
+            emit busyChanged(true);
+            exportControl_ = std::make_shared<SearchControl>();
+            auto control = exportControl_;
+            auto snapshot = project_.snapshot();
+            const auto directory = exportDir_, input = input_;
+            const int generation = projectGeneration_, limit = settings_.sourceMiB;
+            const bool exportSmali = process_.arguments().contains("-s");
+            auto watcher = new QFutureWatcher<QString>(this);
+            connect(watcher, &QFutureWatcher<QString>::finished, this,
+                    [this, watcher, generation, directory, control] {
+                        auto error = watcher->result();
+                        watcher->deleteLater();
+                        if (generation != projectGeneration_ || control->canceled)
+                            return;
+                        postprocessing_ = false;
+                        emit busyChanged(false);
+                        if (error.isEmpty())
+                            emit exported(directory);
+                        else
+                            emit failed(error);
+                    });
+            watcher->setFuture(
+                QtConcurrent::run([snapshot, directory, input, limit, exportSmali, control] {
+                    QSet<QString> done;
+                    for (const auto &name : snapshot->classes()) {
+                        if (control->canceled)
+                            return QString();
+                        const QString owner = exportSmali ? name : snapshot->owner(name);
+                        if (done.contains(owner))
+                            continue;
+                        done.insert(owner);
+                        const QString oldPath =
+                            directory + "/" +
+                            (snapshot->inputs().size() == 1 && QFileInfo(input).suffix() == "class"
+                                 ? QString("source")
+                                 : owner) +
+                            (exportSmali ? ".smali" : ".java");
+                        if (!QFileInfo::exists(oldPath))
+                            continue;
+                        if (QFileInfo(oldPath).size() > qint64(limit) * 1024 * 1024) {
+                            return QStringLiteral("导出文件超过别名处理限制，已保留原始输出：%1")
+                                .arg(oldPath);
+                        }
+                        const auto document = snapshot->document(owner, exportSmali, oldPath);
+                        const auto renamed = snapshot->renamedClass(owner);
+                        const QString target = renamed == owner
+                                                   ? oldPath
+                                                   : QFileInfo(oldPath).absolutePath() + "/" +
+                                                         renamed.section('/', -1) +
+                                                         (exportSmali ? ".smali" : ".java");
+                        QSaveFile file(target);
+                        if (!file.open(QIODevice::WriteOnly) ||
+                            file.write(document.text.toUtf8()) < 0 || !file.commit()) {
+                            return QStringLiteral("无法保存重命名后的导出文件：%1").arg(target);
+                        }
+                        if (target != oldPath)
+                            QFile::remove(oldPath);
+                        QString map = oldPath;
+                        map.chop(exportSmali ? 6 : 5);
+                        QFile::remove(map + ".map.json");
+                    }
+                    return QString();
+                }));
             return;
         }
         emit exported(exportDir_);
@@ -381,7 +465,8 @@ QString Backend::cachedPath(const QString &name, bool smali) const {
     if (fullReady_ && !smali && workspace_) {
         const auto path =
             workspace_->path() + "/all-java/" +
-            (QFileInfo(input_).suffix() == "class" ? QString("source") : project_.owner(name)) +
+            (inputs_.size() == 1 && QFileInfo(input_).suffix() == "class" ? QString("source")
+                                                                          : project_.owner(name)) +
             ".java";
         if (QFileInfo::exists(path))
             return path;
@@ -401,23 +486,47 @@ void Backend::clearCache() {
     if (busy() || preparing_)
         return;
     ++searchGeneration_;
-    for (const auto &path : cache_)
-        QFile::remove(path);
+    cancelSearch();
     cache_.clear();
     cacheOrder_.clear();
-    if (workspace_)
-        QDir(workspace_->path() + "/all-java").removeRecursively();
     fullReady_ = false;
+    if (!workspace_)
+        return;
+    clearing_ = true;
+    emit busyChanged(true);
+    auto workspace = workspace_;
+    auto task = new QFutureWatcher<void>(this);
+    connect(task, &QFutureWatcher<void>::finished, this, [this, task] {
+        task->deleteLater();
+        clearing_ = false;
+        emit busyChanged(false);
+        emit log(tr("源码缓存已清理。"));
+    });
+    task->setFuture(QtConcurrent::run([workspace] {
+        QDir dir(workspace->path());
+        for (const auto &name : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot))
+            if (name != "index")
+                QDir(dir.filePath(name)).removeRecursively();
+    }));
 }
 void Backend::prepareSources() {
-    if (preparing_ || fullReady_ || !workspace_ || project_.classes().isEmpty())
+    if (clearing_ || preparing_ || fullReady_ || !workspace_ || project_.classes().isEmpty())
         return;
     if (background_.state() != QProcess::NotRunning) {
         QTimer::singleShot(20, this, &Backend::prepareSources);
         return;
     }
     const QString directory = workspace_->path() + "/all-java";
-    QDir(directory).removeRecursively();
+    if (QDir(directory).exists()) {
+        const auto previous = directory + "-" + QUuid::createUuid().toString(QUuid::WithoutBraces);
+        if (!QDir().rename(directory, previous)) {
+            emit failed(tr("无法重建源码目录，请重新打开项目。"));
+            return;
+        }
+        auto workspace = workspace_;
+        QThreadPool::globalInstance()->start(
+            [workspace, previous] { QDir(previous).removeRecursively(); });
+    }
     QDir().mkpath(directory);
     cancelPreparing_ = false;
     preparing_ = true;
@@ -427,11 +536,36 @@ void Backend::prepareSources() {
     background_.setWorkingDirectory(workspace_->path());
     background_.setStandardOutputFile(
         QFileInfo(input_).suffix() == "class" ? directory + "/source.java" : QString());
-    background_.start(engine_, {input_, "-o", directory, "-t", QString::number(settings_.threads)});
+    backgroundQueue_ = inputs_;
+    nextBackground();
+}
+void Backend::nextBackground() {
+    const auto input = backgroundQueue_.takeFirst();
+    const auto directory = workspace_->path() + "/all-java";
+    background_.setStandardOutputFile(
+        QFileInfo(input).suffix() == "class" ? directory + "/source.java" : QString());
+    background_.start(engine_, {input, "-o", directory, "-t", QString::number(settings_.threads)});
 }
 void Backend::prepareFinished(int code, QProcess::ExitStatus status) {
     if (!preparing_)
         return;
+    if (code == 0 && inputs_.size() > 1 &&
+        QFileInfo(background_.arguments().value(0)).suffix() == "class") {
+        const auto input = background_.arguments().value(0);
+        for (const auto &name : project_.classes())
+            if (classInput(name) == input) {
+                QString dest = workspace_->path() + "/all-java/" + name + ".java";
+                QDir().mkpath(QFileInfo(dest).absolutePath());
+                QFile::remove(dest);
+                QFile::rename(workspace_->path() + "/all-java/source.java", dest);
+                break;
+            }
+    }
+    if (code == 0 && status == QProcess::NormalExit && !cancelPreparing_ &&
+        !backgroundQueue_.isEmpty()) {
+        nextBackground();
+        return;
+    }
     preparing_ = false;
     sourceGenerating_->store(false);
     emit preparationChanged(false);
@@ -495,7 +629,7 @@ int Backend::search(const SearchOptions &options) {
     });
     auto settings = options;
     settings.sourceMiB = settings_.sourceMiB;
-    const bool single = QFileInfo(input_).suffix() == "class";
+    const bool single = inputs_.size() == 1 && QFileInfo(input_).suffix() == "class";
     watcher->setFuture(QtConcurrent::run(
         [snapshot, settings, control, generating, workspace, single, events, request] {
             return searchProject(snapshot, settings,

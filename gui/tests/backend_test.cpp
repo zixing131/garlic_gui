@@ -8,6 +8,37 @@ class BackendTest : public QObject {
     QString fixtures_ = qEnvironmentVariable("GARLIC_TEST_FIXTURES");
     QString engine_ = qEnvironmentVariable("GARLIC_TEST_ENGINE");
   private slots:
+    void multipleInputs() {
+        Backend backend;
+        backend.setEngine(engine_);
+        const QStringList inputs{fixtures_ + "/Main.class", fixtures_ + "/demo.jar"};
+        QSignalSpy indexed(&backend, &Backend::indexed), source(&backend, &Backend::sourceReady),
+            errors(&backend, &Backend::failed);
+        backend.openPaths(inputs);
+        QTRY_VERIFY_WITH_TIMEOUT(!backend.busy(), 15000);
+        QCOMPARE(indexed.count(), 1);
+        QVERIFY(errors.isEmpty());
+        QCOMPARE(backend.inputs(), inputs);
+        QCOMPARE(backend.classInput("demo/Main"), inputs.last());
+        QVERIFY(backend.project()->classes().size() >= 8);
+        backend.request("demo/Use", false);
+        QTRY_COMPARE_WITH_TIMEOUT(source.count(), 1, 15000);
+        QTemporaryDir save;
+        QString error;
+        QVERIFY(backend.project()->save(save.path() + "/project.json", &error));
+        QVERIFY2(backend.project()->loadAliases(save.path() + "/project.json", &error),
+                 qPrintable(error));
+        backend.clearCache();
+        QTRY_VERIFY_WITH_TIMEOUT(!backend.busy(), 5000);
+        QVERIFY(backend.cachedPath("demo/Use", false).isEmpty());
+        if (QFileInfo::exists(fixtures_ + "/classes.dex")) {
+            backend.openPaths({inputs.last(), fixtures_ + "/classes.dex"});
+            QTRY_VERIFY_WITH_TIMEOUT(!backend.busy(), 15000);
+            QVERIFY(backend.supportsSmali("demo/Main"));
+            backend.request("demo/Main", true);
+            QTRY_COMPARE_WITH_TIMEOUT(source.count(), 2, 15000);
+        }
+    }
     void safeNames() {
         QVERIFY(Backend::safeClassName("demo/Main$Inner"));
         QVERIFY(Backend::safeClassName("测试/示例"));

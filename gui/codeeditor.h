@@ -20,6 +20,7 @@ class CodeEditor : public QPlainTextEdit {
     void renameRequested();
 
   protected:
+    void mouseDoubleClickEvent(QMouseEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
     void contextMenuEvent(QContextMenuEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;

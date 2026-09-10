@@ -10,5 +10,7 @@ int class_selection_open(const char *index_path, const char *class_name);
 int class_selection_accept(const char *name);
 int class_selection_close(void);
 int class_selection_indexing(void);
+int class_selection_explicit(void);
+void class_selection_origin(const char *name);
 
 #endif

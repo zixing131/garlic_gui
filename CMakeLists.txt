@@ -209,7 +209,7 @@ elseif (CMAKE_SYSTEM_NAME STREQUAL "Android")
   # libdl is only needed when the embedded ELF analyzer is present.
   target_link_libraries(garlic dl)
 elseif (WIN32)
-  target_link_libraries(garlic ws2_32 advapi32)
+  target_link_libraries(garlic ws2_32 advapi32 winpthread)
 endif ()
 
 
@@ -249,9 +249,9 @@ if (RELEASE)
         endif()
     elseif (WIN32)
         if (DEFINED PLATFORM_NAME)
-            target_link_libraries(garlic-${PLATFORM_NAME} ws2_32 advapi32)
+            target_link_libraries(garlic-${PLATFORM_NAME} ws2_32 advapi32 winpthread)
         else()
-             target_link_libraries(garlic ws2_32 advapi32)
+             target_link_libraries(garlic ws2_32 advapi32 winpthread)
         endif()
     endif ()
 

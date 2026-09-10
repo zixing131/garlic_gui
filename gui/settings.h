@@ -3,9 +3,11 @@
 #include <QSettings>
 #include <QStringList>
 struct AppSettings {
-    int threads = 4, maxTabs = 12, fontSize = 13, cacheMiB = 256, sourceMiB = 8;
+    int threads = 4, maxTabs = 12, fontSize = 13, cacheMiB = 2048, sourceMiB = 8;
     bool escapeUnicode = false, background = false, wordWrap = false, showMetadata = true;
     bool showNotice = true, mcpEnabled = false;
+    int mcpPort = 8650;
+    QString mcpTransport = "stdio";
     QStringList excluded;
     QString theme = "dark";
     QJsonObject toJson() const;

@@ -13,6 +13,8 @@ QJsonObject AppSettings::toJson() const {
             {"showMetadata", showMetadata},
             {"showNotice", showNotice},
             {"mcpEnabled", mcpEnabled},
+            {"mcpPort", mcpPort},
+            {"mcpTransport", mcpTransport},
             {"excluded", QJsonArray::fromStringList(excluded)},
             {"theme", theme}};
 }
@@ -28,6 +30,8 @@ AppSettings AppSettings::fromJson(const QJsonObject &j) {
     s.wordWrap = j.value("wordWrap").toBool(s.wordWrap);
     s.showMetadata = j.value("showMetadata").toBool(s.showMetadata);
     s.showNotice = j.value("showNotice").toBool(s.showNotice);
+    s.mcpPort = qBound(1024, j.value("mcpPort").toInt(s.mcpPort), 65535);
+    s.mcpTransport = j.value("mcpTransport").toString() == "http" ? "http" : "stdio";
     s.mcpEnabled = j.value("mcpEnabled").toBool(s.mcpEnabled);
     for (const auto &v : j.value("excluded").toArray()) {
         const auto p = v.toString().trimmed();
