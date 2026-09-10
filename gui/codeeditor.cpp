@@ -7,6 +7,7 @@
 #include <QRegularExpression>
 #include <QSyntaxHighlighter>
 #include <QTextBlock>
+#include <algorithm>
 
 namespace {
 class Gutter : public QWidget {
@@ -161,7 +162,22 @@ void CodeEditor::paintGutter(QPaintEvent *event) {
     }
 }
 
-void CodeEditor::setSource(const SourceDocument &document) {
+void CodeEditor::setSource(const SourceDocument &source) {
+    // QTextDocument collapses CRLF; adjust symbol positions before handing text to Qt.
+    SourceDocument document = source;
+    QVector<int> removed;
+    for (int i = 0; i + 1 < source.text.size(); ++i)
+        if (source.text[i] == '\r' && source.text[i + 1] == '\n')
+            removed << i;
+    if (!removed.isEmpty()) {
+        document.text.replace("\r\n", "\n");
+        for (auto &span : document.spans) {
+            span.start -=
+                std::lower_bound(removed.begin(), removed.end(), span.start) - removed.begin();
+            span.end -=
+                std::lower_bound(removed.begin(), removed.end(), span.end) - removed.begin();
+        }
+    }
     const int position = textCursor().position();
     highlighter_->setDocument(nullptr);
     setPlainText(document.text);
@@ -201,7 +217,8 @@ void CodeEditor::goToLine(int line) {
 }
 void CodeEditor::mouseDoubleClickEvent(QMouseEvent *event) {
     QPlainTextEdit::mouseDoubleClickEvent(event);
-    if (event->button() == Qt::LeftButton && !symbolAtCursor().isEmpty()) emit navigateRequested();
+    if (event->button() == Qt::LeftButton && !symbolAtCursor().isEmpty())
+        emit navigateRequested();
 }
 void CodeEditor::mousePressEvent(QMouseEvent *event) {
     QPlainTextEdit::mousePressEvent(event);

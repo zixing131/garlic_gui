@@ -62,7 +62,8 @@ if(GARLIC_GUI_TESTS)
     set_target_properties(garlic-gui-tests garlic-gui-window-tests garlic-gui-project-tests
         garlic-gui-interaction-tests garlic-gui-mcp-tests garlic-gui-fake-engine
         PROPERTIES WIN32_EXECUTABLE FALSE)
-    add_test(NAME garlic-gui-window COMMAND garlic-gui-window-tests)
+    add_test(NAME garlic-gui-window COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_qttest.py $<TARGET_FILE:garlic-gui-window-tests>)
     set_tests_properties(garlic-gui-window PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;GARLIC_TEST_ENGINE=$<TARGET_FILE:garlic>;GARLIC_TEST_FIXTURES=${CMAKE_BINARY_DIR}/fixtures")
     add_test(NAME garlic-gui-backend COMMAND garlic-gui-tests)
     add_test(NAME garlic-gui-cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_test.py $<TARGET_FILE:garlic> ${CMAKE_BINARY_DIR}/fixtures)

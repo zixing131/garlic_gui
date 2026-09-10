@@ -6,6 +6,17 @@
 class WindowTest : public QObject {
     Q_OBJECT
   private slots:
+    void crlfSymbolPositions() {
+        CodeEditor editor(false);
+        const QString text = "// 中文\r\npublic class Example {\r\n    void greet() {}\r\n}\r\n";
+        const int start = text.indexOf("greet");
+        const QString id = "LExample;->greet()V";
+        editor.setSource({text, {{start, start + 5, id, true}}});
+        QVERIFY(editor.goToSymbol(id));
+        QCOMPARE(editor.textCursor().selectedText(), QString("greet"));
+        QCOMPARE(editor.symbolAtCursor(), id);
+        QVERIFY(!editor.toPlainText().contains('\r'));
+    }
     void browseSwitchFindRenameAndReopen() {
         QCoreApplication::setOrganizationName("GarlicTests");
         QCoreApplication::setApplicationName("WindowTest");
