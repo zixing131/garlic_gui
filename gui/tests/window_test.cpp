@@ -41,12 +41,20 @@ class WindowTest : public QObject {
         });
         QTest::keyClick(editor, Qt::Key_N);
         QTRY_VERIFY(renameOpened);
+        window.showCallGraph("Ldemo/Main;->greet(I)Ljava/lang/String;");
+        QTRY_VERIFY_WITH_TIMEOUT(window.findChild<QGraphicsView *>("callGraphView"), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(
+            !window.findChild<QGraphicsView *>("callGraphView")->scene()->items().isEmpty(), 5000);
+        window.findChild<QGraphicsView *>("callGraphView")->window()->close();
         auto tree = window.findChild<QTreeView *>("classTree");
         auto filter = window.findChild<QLineEdit *>("classFilter");
-        auto matches =
-            tree->model()->match(tree->model()->index(0, 0), Qt::UserRole + 1, "Ldemo/Main;", 1,
-                                 Qt::MatchExactly | Qt::MatchRecursive);
-        QVERIFY(!matches.isEmpty());
+        QModelIndexList matches;
+        QTRY_VERIFY_WITH_TIMEOUT(
+            !(matches = tree->model()->match(tree->model()->index(0, 0), Qt::UserRole + 1,
+                                             "Ldemo/Main;", 1,
+                                             Qt::MatchExactly | Qt::MatchRecursive))
+                 .isEmpty(),
+            5000);
         auto idx = matches.first();
         tree->expand(idx.parent());
         tree->expand(idx);

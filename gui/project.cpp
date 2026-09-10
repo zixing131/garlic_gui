@@ -25,6 +25,7 @@ void Project::reset(const QString &input) {
     documents_.clear();
     referenceIndex_ = std::make_shared<ReferenceIndex>();
     overrideIndex_ = std::make_shared<OverrideIndex>();
+    symbolIndex_ = std::make_shared<SymbolIndex>();
     classes_.clear();
     symbols_.clear();
     classNames_.clear();
@@ -36,6 +37,8 @@ void Project::addClass(const QJsonObject &entry) {
     referenceIndex_ = std::make_shared<ReferenceIndex>();
     if (overrideIndex_->ready)
         overrideIndex_ = std::make_shared<OverrideIndex>();
+    if (symbolIndex_->ready)
+        symbolIndex_ = std::make_shared<SymbolIndex>();
     const auto name = entry.value("name").toString();
     if (classes_.contains(name)) {
         const auto old = classes_.value(name);
@@ -49,8 +52,9 @@ void Project::addClass(const QJsonObject &entry) {
     if (refs.isObject()) {
         for (const auto &v : refs.toObject().value(classId(name)).toArray()) {
             const auto row = v.toArray();
-            if (row[2] == "extends" || row[2] == "implements")
-                parents_[name] << classOf(row[0].toString());
+            const auto kind = row.size() > 2 ? row.at(2).toString() : QString();
+            if ((kind == "extends" || kind == "implements") && !row.isEmpty())
+                parents_[name] << classOf(row.at(0).toString());
         }
     } else
         for (const auto &v : refs.toArray()) {
@@ -116,12 +120,15 @@ QJsonArray Project::xrefs(const QString &id) const {
             const auto refs = it.value().value("refs");
             if (refs.isObject()) {
                 const auto groups = refs.toObject();
-                for (auto group = groups.begin(); group != groups.end(); ++group) {
-                    const auto rows = group.value().toArray();
+                const auto groupNames = groups.keys();
+                for (const auto &from : groupNames) {
+                    const auto rows = groups.value(from).toArray();
                     for (int i = 0; i < rows.size(); i++) {
                         const auto row = rows[i].toArray();
-                        add(group.key(), row[0].toString(), row[1].toInt(),
-                            {it.key(), group.key(), i});
+                        if (row.size() < 2 || !row.at(0).isString())
+                            continue;
+                        add(from, row.at(0).toString(), row.at(1).toInt(),
+                            {it.key(), from, i});
                     }
                 }
             } else {
@@ -140,12 +147,16 @@ QJsonArray Project::xrefs(const QString &id) const {
         const auto refs = classes_.value(position.owner).value("refs");
         QJsonObject ref;
         if (refs.isObject()) {
-            const auto row =
-                refs.toObject().value(position.from).toArray().at(position.index).toArray();
+            const auto rows = refs.toObject().value(position.from).toArray();
+            if (position.index < 0 || position.index >= rows.size())
+                continue;
+            const auto row = rows.at(position.index).toArray();
+            if (row.size() < 2)
+                continue;
             ref = {{"from", position.from},
-                   {"target", row[0]},
-                   {"offset", row[1]},
-                   {"kind", row.size() > 2 ? row[2] : QJsonValue("bytecode")}};
+                   {"target", row.at(0)},
+                   {"offset", row.at(1)},
+                   {"kind", row.size() > 2 ? row.at(2) : QJsonValue("bytecode")}};
         } else
             ref = refs.toArray().at(position.index).toObject();
         ref["class"] = position.owner;
@@ -154,12 +165,63 @@ QJsonArray Project::xrefs(const QString &id) const {
     return result;
 }
 
+QJsonArray Project::callees(const QString &id) const {
+    QJsonArray result;
+    if (!id.contains("->"))
+        return result;
+    const auto ownerName = classOf(id);
+    const auto refs = classes_.value(ownerName).value("refs");
+    QSet<QString> seen;
+    auto append = [&](const QString &raw, int offset, const QString &kind) {
+        if (!raw.contains("->") || (kind != "bytecode" && !kind.isEmpty()))
+            return;
+        const auto target = canonicalId(raw);
+        const auto key = target + ':' + QString::number(offset);
+        if (seen.contains(key))
+            return;
+        seen.insert(key);
+        result.append(QJsonObject{{"from", id},
+                                  {"target", target},
+                                  {"offset", offset},
+                                  {"kind", kind.isEmpty() ? "bytecode" : kind},
+                                  {"class", ownerName}});
+    };
+    if (refs.isObject()) {
+        const auto rows = refs.toObject().value(id).toArray();
+        for (const auto &value : rows) {
+            const auto row = value.toArray();
+            if (row.size() >= 2)
+                append(row.at(0).toString(), row.at(1).toInt(),
+                       row.size() > 2 ? row.at(2).toString() : QStringLiteral("bytecode"));
+        }
+    } else {
+        for (const auto &value : refs.toArray()) {
+            const auto ref = value.toObject();
+            if (canonicalId(ref.value("from").toString()) == canonicalId(id))
+                append(ref.value("target").toString(), ref.value("offset").toInt(),
+                       ref.value("kind").toString());
+        }
+    }
+    return result;
+}
+
 QJsonArray Project::symbols(const QString &query) const {
+    std::lock_guard<std::mutex> guard(symbolIndex_->lock);
+    if (!symbolIndex_->ready) {
+        for (auto it = symbols_.cbegin(); it != symbols_.cend(); ++it)
+            symbolIndex_->entries.append(it.value());
+        symbolIndex_->ready = true;
+    }
+    if (query.isEmpty())
+        return symbolIndex_->entries;
     QJsonArray out;
-    for (auto it = symbols_.cbegin(); it != symbols_.cend(); ++it)
-        if (query.isEmpty() || it.key().contains(query, Qt::CaseInsensitive) ||
-            symbolName(it.key()).contains(query, Qt::CaseInsensitive))
-            out.append(it.value());
+    for (const auto &value : symbolIndex_->entries) {
+        const auto symbol = value.toObject();
+        const auto id = symbol.value("id").toString();
+        if (id.contains(query, Qt::CaseInsensitive) ||
+            symbolName(id).contains(query, Qt::CaseInsensitive))
+            out.append(symbol);
+    }
     return out;
 }
 QString Project::displayName(const QString &name) const {
@@ -658,6 +720,7 @@ void Project::replaceData(const Project &other) {
     documents_ = other.documents_;
     referenceIndex_ = other.referenceIndex_;
     overrideIndex_ = other.overrideIndex_;
+    symbolIndex_ = other.symbolIndex_;
     input_ = other.input_;
     inputs_ = other.inputs_;
     classes_ = other.classes_;

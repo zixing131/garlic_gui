@@ -228,9 +228,27 @@ class BackendTest : public QObject {
         QTRY_COMPARE_WITH_TIMEOUT(completed.count(), 2, 30000);
         const auto warmMs = elapsed.elapsed();
         const auto warm = qvariant_cast<SearchResult>(completed.last()[1]);
+        elapsed.restart();
+        options.query = "public";
+        options.limit = 1000;
+        backend.search(options);
+        QTRY_COMPARE_WITH_TIMEOUT(completed.count(), 3, 30000);
+        const auto commonMs = elapsed.elapsed();
+        elapsed.restart();
+        options.query = "Main";
+        options.code = options.comments = false;
+        options.classes = options.methods = options.fields = true;
+        backend.search(options);
+        QTRY_COMPARE_WITH_TIMEOUT(completed.count(), 4, 30000);
+        const auto symbolMs = elapsed.elapsed();
         QVERIFY(errors.isEmpty());
         QVERIFY(warm.indexRejected > 0);
-        qInfo() << "Full source search cold/warm ms:" << coldMs << warmMs
+        QVERIFY2(warmMs < 1000, qPrintable(QString("Warm search took %1 ms").arg(warmMs)));
+        QVERIFY2(commonMs < 1000,
+                 qPrintable(QString("Common-term search took %1 ms").arg(commonMs)));
+        QVERIFY2(symbolMs < 1000, qPrintable(QString("Symbol search took %1 ms").arg(symbolMs)));
+        qInfo() << "Full source search cold/warm/common/symbol ms:" << coldMs << warmMs
+                << commonMs << symbolMs
                 << "classes:" << backend.project()->classes().size()
                 << "Bloom rejects:" << warm.indexRejected;
     }

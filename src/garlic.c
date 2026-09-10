@@ -439,6 +439,7 @@ int main(int argc, char **argv)
             free_opt(opt);
             return 1;
         }
+        jd_dump_all_csv(elf);
         printf("\n[Done]\n");
         free_opt(opt);
         return 0;

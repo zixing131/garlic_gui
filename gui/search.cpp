@@ -114,6 +114,11 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
     }
     if (o.query.isEmpty())
         return result;
+    const auto contains = [&](const QString &text) {
+        return o.regex ? re.match(text).hasMatch()
+                       : text.contains(o.query, o.caseSensitive ? Qt::CaseSensitive
+                                                               : Qt::CaseInsensitive);
+    };
     QString package = o.package.trimmed();
     package.replace('.', '/');
     while (package.endsWith('/'))
@@ -163,7 +168,7 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
             QString text = kind == "method" || kind == "field"
                                ? project->symbolName(id)
                                : QString(project->renamedClass(owner)).replace('/', '.');
-            if (nameEnabled && re.match(text).hasMatch())
+            if (nameEnabled && contains(text))
                 append({{"class", owner},
                         {"id", id},
                         {"node", QString(owner).replace('/', '.') +
@@ -193,7 +198,7 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
                 searchable = annotation.left(commentAt).trimmed();
             if (o.comments)
                 searchable += (searchable.isEmpty() ? QString() : " ") + annotation.mid(commentAt);
-            if (re.match(searchable).hasMatch())
+            if (contains(searchable))
                 append({{"class", owner},
                         {"id", id},
                         {"node", QString(owner).replace('/', '.') + "." +
@@ -309,9 +314,14 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
                     const auto &line = document->lines[row];
                     const auto &searchable = document->searchable[row];
                     const int lineNumber = row + 1;
-                    auto match = re.match(searchable);
-                    if (match.hasMatch()) {
-                        const int crop = qMax(0, int(match.capturedStart()) - 200);
+                    const int matchStart = o.regex
+                                               ? re.match(searchable).capturedStart()
+                                               : searchable.indexOf(
+                                                     o.query, 0,
+                                                     o.caseSensitive ? Qt::CaseSensitive
+                                                                     : Qt::CaseInsensitive);
+                    if (matchStart >= 0) {
+                        const int crop = qMax(0, matchStart - 200);
                         append({{"class", name},
                                 {"node", QString(name).replace('/', '.')},
                                 {"kind", "code"},

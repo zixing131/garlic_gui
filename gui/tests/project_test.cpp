@@ -17,12 +17,26 @@ class ProjectTest : public QObject {
         QJsonObject entry{{"name", "demo/Main"}, {"refs", QJsonArray{inherited, called}}};
         Project legacy, compact;
         legacy.addClass(entry);
-        entry["refs"] =
-            QJsonObject{{"Ldemo/Main;", QJsonArray{QJsonArray{"Ldemo/Base;", -1, "extends"}}},
-                        {from, QJsonArray{QJsonArray{target, 3}}}};
+        QJsonArray inheritanceRow;
+        inheritanceRow.append("Ldemo/Base;");
+        inheritanceRow.append(-1);
+        inheritanceRow.append("extends");
+        QJsonArray callRow;
+        callRow.append(target);
+        callRow.append(3);
+        QJsonArray inheritanceRows;
+        inheritanceRows.append(inheritanceRow);
+        QJsonArray callRows;
+        callRows.append(callRow);
+        QJsonObject compactRefs;
+        compactRefs.insert("Ldemo/Main;", inheritanceRows);
+        compactRefs.insert(from, callRows);
+        entry["refs"] = compactRefs;
         compact.addClass(entry);
         QCOMPARE(compact.xrefs(target), legacy.xrefs(target));
         QCOMPARE(compact.xrefs("Ldemo/Base;").size(), legacy.xrefs("Ldemo/Base;").size());
+        QCOMPARE(compact.callees(from), legacy.callees(from));
+        QCOMPARE(compact.callees(from).size(), 1);
     }
     void applicationInheritance() {
         Project p;

@@ -66,6 +66,10 @@ Backend::~Backend() {
     if (exportControl_)
         exportControl_->canceled = true;
     cancelSearch();
+    if (searchWarmControl_)
+        searchWarmControl_->canceled = true;
+    searchControl_.reset();
+    searchWarmControl_.reset();
     sourceGenerating_->store(false);
     disconnect(&background_, nullptr, this, nullptr);
     background_.kill();
@@ -156,6 +160,10 @@ void Backend::openPaths(const QStringList &paths) {
         return;
     }
     cancelSearch();
+    if (searchWarmControl_)
+        searchWarmControl_->canceled = true;
+    searchControl_.reset();
+    searchWarmControl_.reset();
     sourceGenerating_->store(false);
     sourceGenerating_ = std::make_shared<std::atomic_bool>(false);
     ++projectGeneration_;
@@ -255,6 +263,8 @@ void Backend::cancel() {
         indexCanceled_->store(true);
     if (exportControl_)
         exportControl_->canceled = true;
+    if (searchWarmControl_)
+        searchWarmControl_->canceled = true;
     if (postprocessing_) {
         postprocessing_ = false;
         emit busyChanged(false);
@@ -532,6 +542,8 @@ void Backend::clearCache() {
     }
     ++searchGeneration_;
     cancelSearch();
+    if (searchWarmControl_)
+        searchWarmControl_->canceled = true;
     cache_.clear();
     searchIndex_ = std::make_shared<SearchIndex>();
     project_.clearDocuments();
@@ -592,6 +604,8 @@ void Backend::prepareSources() {
         QFileInfo(input_).suffix() == "class" ? directory + "/source.java" : QString());
     backgroundQueue_ = inputs_;
     nextBackground();
+    if (!searchControl_)
+        warmSearchIndex();
 }
 void Backend::nextBackground() {
     const auto input = backgroundQueue_.takeFirst();
@@ -635,6 +649,34 @@ void Backend::prepareFinished(int code, QProcess::ExitStatus status) {
     }
     fullReady_ = true;
     emit projectSourcesReady();
+    if ((!searchControl_ || searchControl_->canceled) &&
+        (!searchWarmControl_ || searchWarmControl_->canceled))
+        warmSearchIndex();
+}
+
+void Backend::warmSearchIndex() {
+    if (!workspace_ || project_.classes().isEmpty())
+        return;
+    if (searchWarmControl_)
+        searchWarmControl_->canceled = true;
+    searchWarmControl_ = std::make_shared<SearchControl>();
+    const auto control = searchWarmControl_;
+    const auto snapshot = project_.snapshot();
+    const auto index = searchIndex_;
+    const auto directory = workspace_->path() + "/all-java";
+    const bool single = inputs_.size() == 1 && QFileInfo(input_).suffix() == "class";
+    SearchOptions options;
+    options.query = "__garlic_background_search_index_probe__";
+    options.code = options.comments = true;
+    options.limit = 1;
+    options.sourceMiB = settings_.sourceMiB;
+    auto generating = sourceGenerating_;
+    auto events = std::make_shared<SearchEvents>();
+    QThreadPool::globalInstance()->start(
+        [snapshot, options, directory, single, control, generating, events, index] {
+            searchProject(snapshot, options, directory, single, generating, control, events, 0,
+                          index, true);
+        });
 }
 
 void Backend::cancelSearch(int request) {
@@ -663,6 +705,8 @@ void Backend::search(const QString &query, bool regex, bool caseSensitive) {
 }
 int Backend::search(const SearchOptions &options) {
     cancelSearch();
+    if (searchWarmControl_)
+        searchWarmControl_->canceled = true;
     const int request = ++searchGeneration_;
     searchControl_ = std::make_shared<SearchControl>();
     if ((options.code || options.comments) && !fullReady_ && !options.query.isEmpty() &&
@@ -681,6 +725,8 @@ int Backend::search(const SearchOptions &options) {
         auto result = watcher->result();
         watcher->deleteLater();
         emit searchCompleted(request, result);
+        if (request == searchGeneration_)
+            searchControl_.reset();
     });
     auto settings = options;
     settings.sourceMiB = settings_.sourceMiB;
@@ -726,8 +772,11 @@ void Backend::readIndex() {
                     return;
                 }
                 const auto referenceSnapshot = project_.snapshot();
-                QThreadPool::globalInstance()->start(
-                    [referenceSnapshot] { referenceSnapshot->xrefs(QString()); });
+                QThreadPool::globalInstance()->start([referenceSnapshot] {
+                    referenceSnapshot->xrefs(QString());
+                    referenceSnapshot->symbols();
+                    referenceSnapshot->overrideAnnotations();
+                });
                 emit indexed(project_.classes());
                 emit busyChanged(false);
                 if (settings_.background)

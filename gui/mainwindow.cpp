@@ -1,6 +1,8 @@
 #include "mainwindow.h"
+#include "callgraphdialog.h"
 #include "mcpserver.h"
 #include "memoryusage.h"
+#include "nativeanalysisdialog.h"
 #include "nodeicons.h"
 #include "referencesdialog.h"
 #include "resources.h"
@@ -29,7 +31,7 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     file->addAction(tr("添加文件…"), this, [this] {
         auto paths = QFileDialog::getOpenFileNames(
             this, tr("添加输入文件"), {},
-            tr("字节码 (*.apk *.dex *.jar *.war *.zip *.class *.xapk *.apks)"));
+            tr("可分析文件 (*.apk *.dex *.jar *.war *.zip *.class *.xapk *.apks *.so *.dylib)"));
         if (!paths.isEmpty())
             openPaths(backend_.inputs() + paths);
     });
@@ -51,6 +53,15 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
             showReferences(tree_->currentIndex().data(Qt::UserRole + 1).toString());
         else if (editor())
             showReferences(editor()->symbolAtCursor());
+    });
+    auto callGraphAction =
+        edit->addAction(NodeIcons::icon("methodReference"), tr("查看函数调用图"));
+    callGraphAction->setShortcut(QKeySequence("G"));
+    connect(callGraphAction, &QAction::triggered, this, [this] {
+        const auto id = tree_->hasFocus()
+                            ? tree_->currentIndex().data(Qt::UserRole + 1).toString()
+                            : editor() ? editor()->symbolAtCursor() : QString();
+        showCallGraph(id);
     });
     edit->addAction(tr("重命名"), QKeySequence("N"), this, [this] {
         if (tree_->hasFocus())
@@ -117,6 +128,7 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     toolbar->addAction(openAction_);
     toolbar->addAction(exportAction_);
     toolbar->addAction(tr("项目搜索"), this, &MainWindow::searchDialog);
+    toolbar->addAction(callGraphAction);
     toolbar->addAction(back);
     toolbar->addAction(forward);
     toolbar->addSeparator();
@@ -345,7 +357,12 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
             return;
         }
         if (kind == "resource" || kind == "resource-table") {
-            openResource(path, index.data(Qt::UserRole + 6).toString());
+            const auto entry = index.data(Qt::UserRole + 6).toString();
+            if (entry.endsWith(".so", Qt::CaseInsensitive) ||
+                entry.endsWith(".dylib", Qt::CaseInsensitive))
+                showNativeAnalysis(path, entry);
+            else
+                openResource(path, entry);
             return;
         }
         if (kind == "summary" || kind == "input" || kind == "signature") {
@@ -366,6 +383,8 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
         QMenu menu;
         menu.addAction(tr("打开声明"), this, [this, id] { navigateTo(id); });
         menu.addAction(tr("查找引用"), this, [this, id] { showReferences(id); });
+        if (id.contains("->") && id.contains('('))
+            menu.addAction(tr("查看函数调用图"), this, [this, id] { showCallGraph(id); });
         menu.addAction(tr("重命名…"), this, [this, id] { renameSymbol(id); });
         menu.exec(tree_->viewport()->mapToGlobal(pos));
     });
@@ -462,7 +481,7 @@ void MainWindow::chooseFile() {
         return;
     const auto paths = QFileDialog::getOpenFileNames(
         this, tr("打开字节码"), QSettings().value("lastDirectory").toString(),
-        tr("字节码 (*.apk *.xapk *.apks *.dex *.jar *.war *.zip *.class)"));
+        tr("可分析文件 (*.apk *.xapk *.apks *.dex *.jar *.war *.zip *.class *.so *.dylib)"));
     if (!paths.isEmpty())
         openPaths(paths);
 }
@@ -478,6 +497,30 @@ void MainWindow::openPaths(const QStringList &paths) {
             status_->setText(tr("文件不存在：%1").arg(input));
             return;
         }
+    }
+    QStringList nativeInputs;
+    for (const auto &input : paths)
+        if (QStringList{"so", "dylib"}.contains(QFileInfo(input).suffix().toLower()))
+            nativeInputs.append(input);
+    if (!nativeInputs.isEmpty()) {
+        for (const auto &input : nativeInputs)
+            showNativeAnalysis(input);
+        QStringList recent = QSettings().value("recentFiles").toStringList();
+        for (const auto &input : nativeInputs) {
+            recent.removeAll(input);
+            recent.prepend(input);
+        }
+        while (recent.size() > 20)
+            recent.removeLast();
+        QSettings().setValue("recentFiles", recent);
+        refreshRecent();
+        if (nativeInputs.size() == paths.size())
+            return;
+        QStringList bytecodeInputs = paths;
+        for (const auto &input : nativeInputs)
+            bytecodeInputs.removeAll(input);
+        openPaths(bytecodeInputs);
+        return;
     }
     for (auto dialog : findChildren<ReferencesDialog *>())
         delete dialog;
@@ -831,6 +874,23 @@ void MainWindow::showReferences(const QString &id) {
     if (id.isEmpty())
         return;
     auto dialog = new ReferencesDialog(this, id);
+    dialog->show();
+}
+void MainWindow::showCallGraph(const QString &id) {
+    const auto method = backend_.project()->canonicalId(id);
+    if (!method.contains("->") || !method.contains('(')) {
+        status_->setText(tr("请先选择一个方法，再查看函数调用图。"));
+        return;
+    }
+    auto dialog = new CallGraphDialog(backend_.project()->snapshot(), method, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    connect(dialog, &CallGraphDialog::navigationRequested, this,
+            [this](const QString &target) { navigateTo(target); });
+    dialog->show();
+}
+void MainWindow::showNativeAnalysis(const QString &path, const QString &entry) {
+    auto dialog = new NativeAnalysisDialog(backend_.engine(), path, entry, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->show();
 }
 void MainWindow::renameSymbol(const QString &id) {

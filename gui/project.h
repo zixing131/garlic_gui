@@ -30,6 +30,7 @@ class Project : public QObject {
     QString owner(const QString &name) const;
     QJsonArray members(const QString &name, bool methods) const;
     QJsonArray xrefs(const QString &id) const;
+    QJsonArray callees(const QString &id) const;
     QJsonArray symbols(const QString &query = {}) const;
     QString displayName(const QString &name) const;
     QString renamedClass(const QString &name) const;
@@ -76,6 +77,8 @@ class Project : public QObject {
     std::shared_ptr<ReferenceIndex> referenceIndex_ = std::make_shared<ReferenceIndex>();
     struct OverrideIndex { std::mutex lock; bool ready = false; QJsonArray entries; };
     std::shared_ptr<OverrideIndex> overrideIndex_ = std::make_shared<OverrideIndex>();
+    struct SymbolIndex { std::mutex lock; bool ready = false; QJsonArray entries; };
+    std::shared_ptr<SymbolIndex> symbolIndex_ = std::make_shared<SymbolIndex>();
     QString input_;
     QStringList inputs_;
 };

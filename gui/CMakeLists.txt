@@ -6,7 +6,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 qt_add_library(garlic-gui-core STATIC
     memoryusage.cpp memoryusage.h mainwindow.cpp mainwindow.h backend.cpp backend.h codeeditor.cpp codeeditor.h
     settings.cpp settings.h project.cpp project.h classview.cpp classview.h
-    referencesdialog.cpp referencesdialog.h projectbrowser.cpp resources.cpp resources.h ${CMAKE_CURRENT_SOURCE_DIR}/../src/libs/zip/zip.c
+    referencesdialog.cpp referencesdialog.h callgraphdialog.cpp callgraphdialog.h
+    nativeanalysisdialog.cpp nativeanalysisdialog.h projectbrowser.cpp resources.cpp resources.h ${CMAKE_CURRENT_SOURCE_DIR}/../src/libs/zip/zip.c
     nodeicons.cpp nodeicons.h preferences.cpp mcpserver.cpp mcpserver.h search.cpp search.h searchdialog.cpp searchdialog.h)
 qt_add_resources(NODE_ICON_RESOURCES icons/jadx/jadx_icons.qrc)
 target_sources(garlic-gui-core PRIVATE ${NODE_ICON_RESOURCES})
@@ -33,8 +34,8 @@ target_link_libraries(garlic-gui PRIVATE garlic-gui-core)
 set_target_properties(garlic-gui PROPERTIES
     MACOSX_BUNDLE_BUNDLE_NAME "Garlic"
     MACOSX_BUNDLE_GUI_IDENTIFIER "org.garlic.gui"
-    MACOSX_BUNDLE_BUNDLE_VERSION "0.5.6"
-    MACOSX_BUNDLE_SHORT_VERSION_STRING "0.5.6")
+    MACOSX_BUNDLE_BUNDLE_VERSION "0.5.7"
+    MACOSX_BUNDLE_SHORT_VERSION_STRING "0.5.7")
 # Refresh the adjacent engine even when only C sources have changed.
 add_custom_target(garlic-gui-engine
     COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:garlic-gui>
