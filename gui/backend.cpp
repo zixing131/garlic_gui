@@ -49,14 +49,12 @@ Backend::Backend(QObject *parent)
     connect(&process_, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this,
             &Backend::finish);
     connect(&process_, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
-        if (error == QProcess::FailedToStart && busy()) {
-            if (indexProducer_)
-                indexProducer_->store(-1);
-            job_ = Job::None;
-            emit busyChanged(false);
-            emit failed(tr("无法启动 garlic：%1\n请检查安装包内的 garlic 引擎是否完整。")
-                            .arg(process_.errorString()));
-        }
+        // FailedToStart can arrive before (or without) finished(), depending on
+        // the platform.  Use the normal completion path so indexing_ is cleared
+        // together with job_; otherwise busy() can remain true after reporting
+        // the launch error.
+        if (error == QProcess::FailedToStart && job_ != Job::None)
+            finish(-1, QProcess::CrashExit);
     });
 }
 
