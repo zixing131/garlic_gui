@@ -1,5 +1,7 @@
 #include "mainwindow.h"
 #include "hookcode.h"
+#include "elfsummary.h"
+#include "nativeanalysisdialog.h"
 #include "referencesdialog.h"
 #include "resources.h"
 #include "searchdialog.h"
@@ -8,6 +10,47 @@
 class InteractionTest : public QObject {
     Q_OBJECT
   private slots:
+    void ghidraDecompile() {
+        const auto home = qEnvironmentVariable("GARLIC_TEST_GHIDRA_HOME");
+        const auto input = qEnvironmentVariable("GARLIC_TEST_NATIVE_ELF");
+        if (home.isEmpty() || input.isEmpty()) QSKIP("Set Ghidra home and an ELF fixture for real headless decompilation");
+        QSettings().setValue("native/ghidraHome", home);
+        QSettings().setValue("native/backend", 1);
+        NativeAnalysisDialog dialog(qEnvironmentVariable("GARLIC_TEST_ENGINE"), input);
+        dialog.show();
+        auto tabs = dialog.findChild<QTabWidget *>();
+        auto pseudo = [&] { for (int i = 0; i < tabs->count(); ++i) if (tabs->tabText(i).contains("伪代码")) return i; return -1; };
+        auto failed = [&] { for (int i = 0; i < tabs->count(); ++i) if (tabs->tabText(i) == "错误") return true; return false; };
+        QTRY_VERIFY_WITH_TIMEOUT(pseudo() >= 0 || failed(), 180000);
+        if (failed()) {
+            for (auto editor : dialog.findChildren<QPlainTextEdit *>()) qWarning().noquote() << editor->toPlainText();
+        }
+        QVERIFY(pseudo() >= 0);
+        tabs->setCurrentIndex(pseudo());
+        auto editor = qobject_cast<QPlainTextEdit *>(tabs->currentWidget());
+        QVERIFY(editor);
+        QTRY_VERIFY_WITH_TIMEOUT(editor->toPlainText().contains("return"), 10000);
+        QSettings().remove("native/backend");
+        QSettings().remove("native/ghidraHome");
+    }
+    void elfHeaders() {
+        QTemporaryDir dir;
+        QFile file(dir.filePath("中文.elf"));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QByteArray header(64, '\0');
+        header.replace(0, 4, QByteArray::fromHex("7f454c46"));
+        header[4] = 2; header[5] = 1; header[18] = char(183); header[24] = 0x40;
+        file.write(header); file.close();
+        auto text = ElfSummary::read(file.fileName());
+        QVERIFY(text.contains("AArch64")); QVERIFY(text.contains("0x40"));
+        header[5] = 2; header[18] = 0; header[19] = 62; header[24] = 0; header[31] = 0x40;
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate)); file.write(header); file.close();
+        text = ElfSummary::read(file.fileName());
+        QVERIFY(text.contains("x86-64")); QVERIFY(text.contains("0x40"));
+        header[40] = char(0xff); // Out-of-file table, never allocate from this offset.
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate)); file.write(header); file.close();
+        QVERIFY(ElfSummary::read(file.fileName()).contains("节表损坏"));
+    }
     void hookTemplates() {
         const QString id = "Ldemo/Outer$Inner;->call(I[Ljava/lang/String;[[I)Ljava/lang/Object;";
         const auto frida = HookCode::generate(id, false);

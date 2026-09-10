@@ -183,6 +183,22 @@ class WindowTest : public QObject {
         flat->setChecked(false);
         QTRY_VERIFY(!matches("Ldemo/deep/nested/Leaf;").isEmpty());
         auto leaf = matches("Ldemo/deep/nested/Leaf;").first();
+        QVERIFY(window.windowTitle().contains("代码浏览器 v "));
+        auto copyMenu = [&](const QModelIndex &index, const QString &label, const QString &expected) {
+            tree->scrollTo(index);
+            bool triggered = false;
+            QTimer::singleShot(50, &window, [&] {
+                auto menu = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+                if (!menu) return;
+                for (auto action : menu->actions()) if (action->text() == label) { action->trigger(); triggered = true; break; }
+                menu->close();
+            });
+            QMetaObject::invokeMethod(tree, "customContextMenuRequested", Q_ARG(QPoint, tree->visualRect(index).center()));
+            QVERIFY(triggered);
+            QCOMPARE(QApplication::clipboard()->text(), expected);
+        };
+        copyMenu(leaf.parent(), "复制包名", "demo.deep.nested");
+        copyMenu(leaf, "复制类名", "demo.deep.nested.Leaf");
         QCOMPARE(leaf.parent().data().toString(), QString("nested"));
         QCOMPARE(leaf.parent().parent().data().toString(), QString("deep"));
         QCOMPARE(QSettings().value("view/flatPackages").toBool(), false);

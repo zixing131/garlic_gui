@@ -370,3 +370,24 @@ Linux 打包仅对 ELF 文件运行 ldd。`gui-v*` 标签在六个平台都成�
 - garlic 的 `-n` 模式现在会实际写出 rosemary 的全部分析文件，供 GUI 和命令行共同使用。没有内置 rosemary 库的平台会显示明确的分析失败信息。
 - 项目后台反编译时同步预热全文搜索过滤器，并缓存扁平符号列表。52,791 类的 `base.apk` 实测，索引就绪后的缺失词、常见代码词和符号查询分别约 0.21、0.16 和 0.79 秒；基准测试会直接检查三个查询都不超过 1 秒。
 - 紧凑引用索引改为显式、带边界检查的 JSON 读取，窗口异步目录测试等待目标节点发布，修复 Qt 6.8/macOS x64 Actions 中的两个偶发失败。
+
+### Native ELF 与 Ghidra 伪代码
+
+可以直接打开 ELF（包括无扩展名文件），也可以从资源树分析 SO。ELF 头、架构、入口和节表在后台独立读取，即使 Native 后端不可用也能查看。
+
+Native 窗口中选择“Ghidra 伪代码”，点击“配置 Ghidra…”选择安装目录，然后重新分析。需要自行安装 Ghidra、该版本要求的 JDK（通过 JAVA_HOME 或 PATH），以及对应平台的 Ghidra native decompiler。应用不会捆绑 Ghidra，也不会执行目标文件。参考 [Ghidra Headless API](https://ghidra.re/ghidra_docs/api/ghidra/app/util/headless/AnalyzeHeadless.html)。
+
+分析在独立进程进行，可停止；每个函数最多 10 秒，脚本最多 120 秒、2000 个函数、约 16 MiB 输出，整个进程最多 240 秒。达到限制会在结果中说明。界面按需读取前 8 MiB，可导出完整生成结果。伪代码属于静态分析结果，不保证等同于原始源码。
+
+Windows x64 发布包显式收集 Rosemary DLL 的 GCC 运行库；临时 DLL 创建和加载使用 Unicode Windows API。Windows ARM64 目前没有仓库配套的 Rosemary 库，可使用独立 ELF 概览或配置兼容运行环境的 Ghidra；这不代表已经提供 ARM64 原生 Rosemary。Windows 修复尚需实际 Windows 机器验证。
+
+### 算法助手样本开关对比（2026-09-10）
+
+用户提供 APK 的 SHA-256：`febdee12bc13c0f510553e9c3cb49a286fc58415098fe0834b6e583dd49336d3`。
+对 `com/junge/algorithmAidePro/` 下 106 个类分别启用和关闭 `GARLIC_DEOBFUSCATE`、`GARLIC_UNFLATTEN`、`GARLIC_SIMPLIFY_CONTROL_FLOW`，每次按类反编译，所有进程正常退出。
+
+- 13 个类输出发生变化，观察到计算常量简化。
+- 两组输出均有 432 处 `switch`，本样本的主要平坦化未消除。
+- 两组均没有 `decoded:` 标记，现有字符串恢复未命中。
+
+样本包含自定义字符串状态计算后进入 switch 的分发器，以及依赖静态字段的分支。现有常量状态分发器还原不能覆盖这种模式。输出差异只证明转换发生，不是语义等价验证；未执行 APK 或其中的解密方法。不要把启用选项理解为所有混淆均可自动还原。

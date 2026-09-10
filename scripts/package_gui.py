@@ -32,7 +32,8 @@ def architecture(path, platform):
 def windows_dependencies(folder, qt):
     """windeployqt does not copy every MSYS2 transitive library; inspect PE imports recursively."""
     objdump = qt / 'bin/llvm-objdump.exe'
-    available = {p.name.lower(): p for p in (qt / 'bin').glob('*.dll')}
+    available = {p.name.lower(): p for p in (qt.parent / 'mingw64/bin').glob('*.dll')}
+    available.update({p.name.lower(): p for p in (qt / 'bin').glob('*.dll')})
     queue = list(folder.rglob('*.dll')) + list(folder.rglob('*.exe'))
     inspected = set()
     while queue:
@@ -116,7 +117,15 @@ def main():
         if not deploy:
             raise RuntimeError('windeployqt executable not found')
         run(deploy, '--release', '--no-translations', '--compiler-runtime', gui)
+        if args.platform == 'windows-x64':
+            # The embedded DLL is invisible to PE dependency scanning. Include a copy
+            # so its GCC runtime imports are scanned and packaged as well.
+            shutil.copy2(root / 'libs/win64/librosemarylib.dll', folder / 'librosemarylib.dll')
         windows_dependencies(folder, qt)
+        if args.platform == 'windows-x64':
+            for name in ('libgcc_s_seh-1.dll', 'libwinpthread-1.dll'):
+                if not (folder / name).is_file():
+                    raise RuntimeError('Missing Rosemary runtime: ' + name)
         # Detect missing runtime DLLs rather than accidentally resolving them from the SDK PATH.
         env['PATH'] = os.pathsep.join([str(folder), str(Path(os.environ['SystemRoot']) / 'System32'), os.environ['SystemRoot']])
     else:

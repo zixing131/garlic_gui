@@ -15,7 +15,7 @@
 
 MainWindow::MainWindow(const QString &engine, QWidget *parent)
     : QMainWindow(parent), backend_(this) {
-    setWindowTitle("Garlic — 代码浏览器");
+    setWindowTitle(QString("Garlic - 代码浏览器 v %1").arg(QCoreApplication::applicationVersion().isEmpty() ? "0.5.7" : QCoreApplication::applicationVersion()));
     setMinimumSize(640, 440);
     resize(1360, 860);
     setAcceptDrops(true);
@@ -32,7 +32,7 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     file->addAction(tr("添加文件…"), this, [this] {
         auto paths = QFileDialog::getOpenFileNames(
             this, tr("添加输入文件"), {},
-            tr("可分析文件 (*.apk *.dex *.jar *.war *.zip *.class *.xapk *.apks *.so *.dylib)"));
+            tr("可分析文件 (*.apk *.dex *.jar *.war *.zip *.class *.xapk *.apks *.so *.elf *.dylib);;所有文件 (*)"));
         if (!paths.isEmpty())
             openPaths(backend_.inputs() + paths);
     });
@@ -390,9 +390,20 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     connect(tree_, &QTreeView::customContextMenuRequested, this, [this](const QPoint &pos) {
         const auto index = tree_->indexAt(pos);
         const auto id = index.data(Qt::UserRole + 1).toString();
-        if (id.isEmpty())
+        if (id.isEmpty() && index.data(Qt::UserRole + 4) != "package")
             return;
         QMenu menu;
+        if (index.data(Qt::UserRole + 4) == "package") {
+            const auto name = index.data(Qt::UserRole + 2).toString();
+            menu.addAction(tr("复制包名"), this, [name] { QApplication::clipboard()->setText(name); });
+            menu.exec(tree_->viewport()->mapToGlobal(pos));
+            return;
+        }
+        if (!id.contains("->")) {
+            const auto name = Project::classOf(id).replace('/', '.');
+            menu.addAction(tr("复制类名"), this, [name] { QApplication::clipboard()->setText(name); });
+            menu.addAction(tr("复制简单类名"), this, [name] { QApplication::clipboard()->setText(name.section('.', -1)); });
+        }
         menu.addAction(tr("打开声明"), this, [this, id] { navigateTo(id); });
         menu.addAction(tr("查找引用"), this, [this, id] { showReferences(id); });
         if (id.contains("->") && id.contains('(')) {
@@ -522,7 +533,9 @@ void MainWindow::openPaths(const QStringList &paths) {
     }
     QStringList nativeInputs;
     for (const auto &input : paths)
-        if (QStringList{"so", "dylib"}.contains(QFileInfo(input).suffix().toLower()))
+        if (QStringList{"so", "elf", "dylib"}.contains(QFileInfo(input).suffix().toLower()) || [&] {
+                QFile file(input); return file.open(QIODevice::ReadOnly) && file.read(4) == QByteArray::fromHex("7f454c46");
+            }())
             nativeInputs.append(input);
     if (!nativeInputs.isEmpty()) {
         for (const auto &input : nativeInputs)
@@ -617,6 +630,7 @@ void MainWindow::populate(const QStringList &classes) {
                     if (!state->packages.contains(full)) {
                         auto p = new QStandardItem(NodeIcons::icon("package"), part);
                         p->setData(full, Qt::UserRole + 2);
+                        p->setData("package", Qt::UserRole + 4);
                         parent->appendRow(p);
                         state->packages[full] = p;
                     }

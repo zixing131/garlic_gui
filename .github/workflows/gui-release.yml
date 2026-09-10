@@ -110,6 +110,9 @@ jobs:
             ${{ matrix.prefix }}-ninja
             ${{ matrix.prefix }}-qt6-base
             ${{ matrix.prefix }}-python
+      - name: Install Rosemary x64 runtime dependencies
+        if: matrix.platform == 'windows-x64'
+        run: pacman -S --needed --noconfirm mingw-w64-x86_64-gcc-libs
       - name: Configure and build native architecture
         env:
           TARGET_PLATFORM: ${{ matrix.platform }}
