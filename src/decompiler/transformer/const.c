@@ -1,3 +1,4 @@
+#include "java_string.h"
 #include "common/str_tools.h"
 #include "decompiler/transformer/transformer.h"
 #include "decompiler/klass.h"
@@ -50,7 +51,7 @@ static string get_const_value(jd_exp *expression)
             return str_dup("null");
         case JD_VAR_REFERENCE_T: {
             if (const_exp_is_string(const_exp)) {
-                string new_str = str_replace_nl(const_exp->val->data->val);
+                string new_str = java_escape_string(const_exp->val->data->val);
                 return str_create("\"%s\"", new_str);
             }
             else if (const_exp_is_class(const_exp))

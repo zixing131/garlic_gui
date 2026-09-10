@@ -1,20 +1,22 @@
-find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Network Concurrent)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-qt_add_executable(garlic-gui MACOSX_BUNDLE WIN32
-    main.cpp mainwindow.cpp mainwindow.h
-    backend.cpp backend.h codeeditor.cpp codeeditor.h)
-target_link_libraries(garlic-gui PRIVATE Qt6::Widgets)
-# The engine's global C include paths contain names such as string.h; keep the
-# C++ GUI isolated from them.
+qt_add_library(garlic-gui-core STATIC
+    mainwindow.cpp mainwindow.h backend.cpp backend.h codeeditor.cpp codeeditor.h
+    settings.cpp settings.h project.cpp project.h classview.cpp classview.h
+    preferences.cpp mcpserver.cpp mcpserver.h search.cpp search.h searchdialog.cpp searchdialog.h)
+set_property(TARGET garlic-gui-core PROPERTY INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(garlic-gui-core PUBLIC Qt6::Widgets Qt6::Network Qt6::Concurrent)
+qt_add_executable(garlic-gui MACOSX_BUNDLE WIN32 main.cpp)
 set_property(TARGET garlic-gui PROPERTY INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(garlic-gui PRIVATE garlic-gui-core)
 set_target_properties(garlic-gui PROPERTIES
     MACOSX_BUNDLE_BUNDLE_NAME "Garlic"
     MACOSX_BUNDLE_GUI_IDENTIFIER "org.garlic.gui"
-    MACOSX_BUNDLE_BUNDLE_VERSION "0.1.0"
-    MACOSX_BUNDLE_SHORT_VERSION_STRING "0.1.0")
+    MACOSX_BUNDLE_BUNDLE_VERSION "0.3.0"
+    MACOSX_BUNDLE_SHORT_VERSION_STRING "0.3.0")
 # Refresh the adjacent engine even when only C sources have changed.
 add_custom_target(garlic-gui-engine
     COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:garlic-gui>
@@ -31,13 +33,27 @@ if(GARLIC_GUI_TESTS)
     qt_add_executable(garlic-gui-fake-engine tests/fake_engine.cpp)
     set_property(TARGET garlic-gui-fake-engine PROPERTY INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(garlic-gui-fake-engine PRIVATE Qt6::Core)
-    qt_add_executable(garlic-gui-tests tests/backend_test.cpp backend.cpp backend.h)
+    qt_add_executable(garlic-gui-tests tests/backend_test.cpp)
     set_property(TARGET garlic-gui-tests PROPERTY INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}")
-    target_link_libraries(garlic-gui-tests PRIVATE Qt6::Widgets Qt6::Test)
-    qt_add_executable(garlic-gui-window-tests tests/window_test.cpp
-        mainwindow.cpp mainwindow.h backend.cpp backend.h codeeditor.cpp codeeditor.h)
+    target_link_libraries(garlic-gui-tests PRIVATE garlic-gui-core Qt6::Test)
+    qt_add_executable(garlic-gui-window-tests tests/window_test.cpp)
     set_property(TARGET garlic-gui-window-tests PROPERTY INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}")
-    target_link_libraries(garlic-gui-window-tests PRIVATE Qt6::Widgets Qt6::Test)
+    target_link_libraries(garlic-gui-window-tests PRIVATE garlic-gui-core Qt6::Test)
+    qt_add_executable(garlic-gui-project-tests tests/project_test.cpp)
+    set_property(TARGET garlic-gui-project-tests PROPERTY INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(garlic-gui-project-tests PRIVATE garlic-gui-core Qt6::Test)
+    qt_add_executable(garlic-gui-interaction-tests tests/interaction_test.cpp)
+    set_property(TARGET garlic-gui-interaction-tests PROPERTY INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(garlic-gui-interaction-tests PRIVATE garlic-gui-core Qt6::Test)
+    add_test(NAME garlic-gui-interaction COMMAND garlic-gui-interaction-tests)
+    set_tests_properties(garlic-gui-interaction PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;GARLIC_TEST_ENGINE=$<TARGET_FILE:garlic>;GARLIC_TEST_FIXTURES=${CMAKE_BINARY_DIR}/fixtures")
+    add_test(NAME garlic-gui-project COMMAND garlic-gui-project-tests)
+    set_tests_properties(garlic-gui-project PROPERTIES ENVIRONMENT "GARLIC_TEST_ENGINE=$<TARGET_FILE:garlic>;GARLIC_TEST_FIXTURES=${CMAKE_BINARY_DIR}/fixtures")
+    qt_add_executable(garlic-gui-mcp-tests tests/mcp_test.cpp)
+    set_property(TARGET garlic-gui-mcp-tests PROPERTY INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(garlic-gui-mcp-tests PRIVATE garlic-gui-core Qt6::Test)
+    add_test(NAME garlic-gui-mcp COMMAND garlic-gui-mcp-tests)
+    set_tests_properties(garlic-gui-mcp PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;GARLIC_TEST_ENGINE=$<TARGET_FILE:garlic>;GARLIC_TEST_FIXTURES=${CMAKE_BINARY_DIR}/fixtures;GARLIC_TEST_GUI=$<TARGET_FILE:garlic-gui>")
     add_test(NAME garlic-gui-window COMMAND garlic-gui-window-tests)
     set_tests_properties(garlic-gui-window PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;GARLIC_TEST_ENGINE=$<TARGET_FILE:garlic>;GARLIC_TEST_FIXTURES=${CMAKE_BINARY_DIR}/fixtures")
     add_test(NAME garlic-gui-backend COMMAND garlic-gui-tests)

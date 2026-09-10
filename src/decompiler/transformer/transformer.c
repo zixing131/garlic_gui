@@ -1,3 +1,4 @@
+#include "source_map.h"
 #include "decompiler/transformer/transformer.h"
 #include "jvm/jvm_ins_helper.h"
 
@@ -120,7 +121,7 @@ string exp_to_s(jd_exp *expression)
     }
 }
 
-void expression_to_stream(FILE *stream, jd_node *node, jd_exp *expression)
+static void expression_to_stream_impl(FILE *stream, jd_node *node, jd_exp *expression)
 {
     switch(expression->type) {
         case JD_EXPRESSION_INVOKE: {
@@ -283,4 +284,10 @@ void expression_to_stream(FILE *stream, jd_node *node, jd_exp *expression)
             return;
         }
     }
+}
+void expression_to_stream(FILE *stream, jd_node *node, jd_exp *expression)
+{
+    long start=getenv("GARLIC_SOURCE_MAP_DIR")?ftell(stream):-1;
+    expression_to_stream_impl(stream,node,expression);
+    source_map_expression(stream,start,expression);
 }

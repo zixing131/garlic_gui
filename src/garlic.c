@@ -1,3 +1,4 @@
+#include "browse_index.h"
 #include "parser/class/metadata.h"
 #include "jvm/jvm_decompile.h"
 #include "common/str_tools.h"
@@ -241,6 +242,7 @@ static void free_opt(jd_opt *opt) {
 static void run_for_jvm_class(jd_opt *opt) {
     mem_init_pool();
     jclass_file *jc = parse_class_file(opt->path);
+    if (class_selection_indexing()) { browse_index_jvm(jc, 0); mem_free_pool(); return; }
     if (!class_selection_accept(get_class_name(jc, pool_item(jc, jc->this_class)))) {
         mem_free_pool();
         return;

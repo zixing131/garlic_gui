@@ -1,3 +1,4 @@
+#include "java_string.h"
 #include "common/debug.h"
 #include "common/str_tools.h"
 #include "parser/class/class_tools.h"
@@ -27,7 +28,7 @@ static string element_value_to_s(jclass_file *jc, element_value *ev)
             jcp_info *cp_info = pool_item(jc, uval->const_value_index);
             string result = NULL;
             if (ev->tag == 's')
-                result = str_create("\"%s\"", cp_info->readable);
+                result = str_create("\"%s\"", java_escape_string(cp_info->readable));
             else
                 result = str_create("%s", cp_info->readable);
             return result;

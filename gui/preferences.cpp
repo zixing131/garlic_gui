@@ -1,0 +1,227 @@
+#include "mainwindow.h"
+#include "mcpserver.h"
+#include <QtWidgets>
+
+void MainWindow::applySettings(const AppSettings &settings) {
+    backend_.configure(settings);
+    for (int i = 0; i < tabs_->count(); i++)
+        qobject_cast<ClassView *>(tabs_->widget(i))->applySettings(settings);
+    if (!qApp->property("garlicDarkStyle").isValid())
+        qApp->setProperty("garlicDarkStyle", qApp->styleSheet());
+    const QString dark = qApp->property("garlicDarkStyle").toString();
+    if (settings.theme == "light") {
+        QPalette lightPalette;
+        lightPalette.setColor(QPalette::Window, QColor("#f5f7fa"));
+        lightPalette.setColor(QPalette::WindowText, QColor("#243446"));
+        lightPalette.setColor(QPalette::Base, Qt::white);
+        lightPalette.setColor(QPalette::AlternateBase, QColor("#f0f4f8"));
+        lightPalette.setColor(QPalette::Text, QColor("#243446"));
+        lightPalette.setColor(QPalette::Button, QColor("#e8edf3"));
+        lightPalette.setColor(QPalette::ButtonText, QColor("#243446"));
+        lightPalette.setColor(QPalette::PlaceholderText, QColor("#697e8f"));
+        lightPalette.setColor(QPalette::Highlight, QColor("#c5dff5"));
+        lightPalette.setColor(QPalette::HighlightedText, QColor("#173a59"));
+        lightPalette.setColor(QPalette::ToolTipBase, Qt::white);
+        lightPalette.setColor(QPalette::ToolTipText, QColor("#243446"));
+        lightPalette.setColor(QPalette::Disabled, QPalette::Text, QColor("#8a98a3"));
+        lightPalette.setColor(QPalette::Disabled, QPalette::ButtonText, QColor("#8a98a3"));
+        qApp->setPalette(lightPalette);
+        QString light = dark;
+        const QList<QPair<QString, QString>> colors = {
+            {"#17212d", "#f5f7fa"}, {"#1b2937", "#e8edf3"}, {"#14202b", "#eef2f6"},
+            {"#111b26", "#ffffff"}, {"#dce5ee", "#243446"}, {"#e0ebf3", "#243446"},
+            {"#8c9dad", "#617183"}, {"#95a8b9", "#53677a"}, {"#b2c3d3", "#34475a"},
+            {"#a4e4bd", "#267650"}};
+        for (const auto &c : colors)
+            light.replace(c.first, c.second);
+        qApp->setStyleSheet(light);
+    } else {
+        QPalette palette;
+        palette.setColor(QPalette::Window, QColor("#17212d"));
+        palette.setColor(QPalette::WindowText, QColor("#dce5ee"));
+        palette.setColor(QPalette::Base, QColor("#111b26"));
+        palette.setColor(QPalette::Text, QColor("#dce5ee"));
+        palette.setColor(QPalette::Button, QColor("#243446"));
+        palette.setColor(QPalette::ButtonText, QColor("#dce5ee"));
+        palette.setColor(QPalette::PlaceholderText, QColor("#8195a7"));
+        palette.setColor(QPalette::Highlight, QColor("#285f59"));
+        palette.setColor(QPalette::HighlightedText, Qt::white);
+        palette.setColor(QPalette::Disabled, QPalette::ButtonText, QColor("#637386"));
+        qApp->setPalette(palette);
+        qApp->setStyleSheet(dark);
+    }
+    QString error;
+    if (settings.mcpEnabled) {
+        if (!mcp_->start(&error)) {
+            logs_->appendPlainText(error);
+            status_->setText(error);
+        }
+    } else
+        mcp_->stop();
+    for (auto action : findChildren<QAction *>())
+        if (!action->text().isEmpty()) {
+            const auto shortcut = QSettings().value("shortcuts/" + action->text());
+            if (shortcut.isValid())
+                action->setShortcut(QKeySequence(shortcut.toString()));
+        }
+    updateBusy();
+}
+void MainWindow::settingsDialog() {
+    AppSettings settings = backend_.settings();
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Garlic 首选项"));
+    dialog.resize(850, 680);
+    auto root = new QVBoxLayout(&dialog);
+    auto navigation = new QListWidget;
+    navigation->setObjectName("preferencesNavigation");
+    navigation->setFixedWidth(160);
+    navigation->setStyleSheet("QListWidget::item { padding: 10px 14px; }");
+    auto tabs = new QStackedWidget;
+    auto body = new QHBoxLayout;
+    body->addWidget(navigation);
+    body->addWidget(tabs, 1);
+    root->addLayout(body, 1);
+    connect(navigation, &QListWidget::currentRowChanged, tabs, &QStackedWidget::setCurrentIndex);
+    auto page = [&](const QString &name) {
+        auto widget = new QWidget;
+        auto form = new QFormLayout(widget);
+        form->setVerticalSpacing(16);
+        auto scroll = new QScrollArea;
+        scroll->setWidgetResizable(true);
+        scroll->setFrameShape(QFrame::NoFrame);
+        scroll->setWidget(widget);
+        tabs->addWidget(scroll);
+        navigation->addItem(name);
+        if (navigation->currentRow() < 0)
+            navigation->setCurrentRow(0);
+        return form;
+    };
+    auto spin = [](QFormLayout *form, const QString &label, int value, int min, int max) {
+        auto box = new QSpinBox;
+        box->setRange(min, max);
+        box->setValue(value);
+        form->addRow(label, box);
+        return box;
+    };
+    auto check = [](QFormLayout *form, const QString &label, bool value) {
+        auto box = new QCheckBox(label);
+        box->setChecked(value);
+        form->addRow(box);
+        return box;
+    };
+    auto decompile = page(tr("反编译"));
+    auto threads = spin(decompile, tr("每个反编译任务的线程数"), settings.threads, 1, 16);
+    auto excluded = new QPlainTextEdit;
+    excluded->setPlaceholderText(tr("每行一个包前缀，例如 com.example.library"));
+    excluded->setPlainText(settings.excluded.join('\n'));
+    excluded->setMaximumHeight(100);
+    decompile->addRow(tr("排除的包"), excluded);
+    auto background = check(decompile, tr("打开文件后自动后台生成项目源码"), settings.background);
+    auto unicode =
+        check(decompile, tr("Unicode 字符转义（保留正常中文可不勾选）"), settings.escapeUnicode);
+    auto metadata = check(decompile, tr("显示 Kotlin Metadata 注解"), settings.showMetadata);
+    auto notice = check(decompile, tr("显示反编译器头部与类说明注释"), settings.showNotice);
+    auto note = new QLabel(
+        tr("控制字符始终合法转义。线程数会传给 garlic。\n排除包和 Unicode "
+           "设置修改后，重新打开输入文件生效。\n前台按类请求和后台索引是独立任务，可能同时运行。"));
+    note->setWordWrap(true);
+    decompile->addRow(note);
+    auto cache = page(tr("缓存"));
+    auto cacheLimit = spin(cache, tr("按类源码磁盘缓存上限（MiB）"), settings.cacheMiB, 16, 4096);
+    auto maxTabs = spin(cache, tr("最多打开的类标签"), settings.maxTabs, 1, 64);
+    auto sourceLimit =
+        spin(cache, tr("单文件查看 / 搜索大小限制（MiB）"), settings.sourceMiB, 1, 64);
+    cache->addRow(new QLabel(tr("全项目搜索源码保留到关闭项目，不计入按类缓存上限。")));
+    auto clear = new QPushButton(tr("清理当前源码缓存"));
+    cache->addRow(clear);
+    connect(clear, &QPushButton::clicked, &dialog, [this] { backend_.clearCache(); });
+    auto appearance = page(tr("界面"));
+    auto font = spin(appearance, tr("代码字号"), settings.fontSize, 8, 32);
+    auto wrap = check(appearance, tr("代码自动换行"), settings.wordWrap);
+    auto theme = new QComboBox;
+    theme->addItem(tr("深色"), "dark");
+    theme->addItem(tr("浅色"), "light");
+    theme->setCurrentIndex(settings.theme == "light" ? 1 : 0);
+    appearance->addRow(tr("界面主题"), theme);
+    auto shortcuts = page(tr("快捷键"));
+    QList<QPair<QAction *, QKeySequenceEdit *>> edits;
+    QSet<QString> seen;
+    for (auto action : findChildren<QAction *>())
+        if (!action->shortcut().isEmpty() && !seen.contains(action->text())) {
+            seen.insert(action->text());
+            auto edit = new QKeySequenceEdit(action->shortcut());
+            shortcuts->addRow(action->text(), edit);
+            edits.append({action, edit});
+        }
+    auto mcp = page("MCP");
+    auto enabled = check(mcp, tr("启用当前 GUI 项目的 MCP 服务"), settings.mcpEnabled);
+    auto config = new QPlainTextEdit;
+    config->setReadOnly(true);
+    config->setPlainText(QJsonDocument(mcp_->clientConfig()).toJson(QJsonDocument::Indented));
+    mcp->addRow(tr("客户端 stdio 配置"), config);
+    auto copy = new QPushButton(tr("复制配置"));
+    mcp->addRow(copy);
+    connect(copy, &QPushButton::clicked, &dialog,
+            [config] { QApplication::clipboard()->setText(config->toPlainText()); });
+    auto mcpNote = new QLabel(tr("使用当前用户的本地套接字，不监听网络端口。\nGUI 需保持打开；AI "
+                                 "的重命名会同步到当前项目，可撤销。"));
+    mcpNote->setWordWrap(true);
+    mcp->addRow(mcpNote);
+    auto capabilities = page(tr("引擎能力"));
+    auto supported = new QLabel(
+        tr("已接入：线程数、包排除、后台生成、Unicode 转义、\n注解显示、缓存、代码外观、快捷键和 "
+           "MCP。\n\njadx 的 AUTO / SIMPLE / FALLBACK、变量反混淆、\nKotlin "
+           "名称恢复、强制访问修饰符、常量替换、\n匿名类 / 方法 / Lambda 内联策略、finally / "
+           "switch\n恢复策略、dx/d8 输入转换、数值格式和类型迭代次数，\n目前没有可直接复用的 "
+           "garlic 运行时选项。\n这些处理仍使用 garlic 自身的默认流程。"));
+    supported->setWordWrap(true);
+    capabilities->addRow(supported);
+    auto buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel |
+                                        QDialogButtonBox::RestoreDefaults);
+    buttons->button(QDialogButtonBox::Save)->setText(tr("保存"));
+    buttons->button(QDialogButtonBox::Cancel)->setText(tr("取消"));
+    buttons->button(QDialogButtonBox::RestoreDefaults)->setText(tr("恢复默认设置"));
+    root->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    connect(buttons->button(QDialogButtonBox::RestoreDefaults), &QPushButton::clicked, &dialog,
+            [&] {
+                AppSettings defaults;
+                threads->setValue(defaults.threads);
+                cacheLimit->setValue(defaults.cacheMiB);
+                maxTabs->setValue(defaults.maxTabs);
+                sourceLimit->setValue(defaults.sourceMiB);
+                font->setValue(defaults.fontSize);
+                excluded->clear();
+                background->setChecked(false);
+                unicode->setChecked(false);
+                metadata->setChecked(true);
+                notice->setChecked(true);
+                wrap->setChecked(false);
+                enabled->setChecked(false);
+                theme->setCurrentIndex(0);
+            });
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    settings.threads = threads->value();
+    settings.cacheMiB = cacheLimit->value();
+    settings.maxTabs = maxTabs->value();
+    settings.sourceMiB = sourceLimit->value();
+    settings.fontSize = font->value();
+    settings.excluded = excluded->toPlainText().split('\n', Qt::SkipEmptyParts);
+    settings.background = background->isChecked();
+    settings.escapeUnicode = unicode->isChecked();
+    settings.showMetadata = metadata->isChecked();
+    settings.showNotice = notice->isChecked();
+    settings.wordWrap = wrap->isChecked();
+    settings.theme = theme->currentData().toString();
+    settings.mcpEnabled = enabled->isChecked();
+    for (const auto &edit : edits) {
+        edit.first->setShortcut(edit.second->keySequence());
+        QSettings().setValue("shortcuts/" + edit.first->text(),
+                             edit.second->keySequence().toString());
+    }
+    settings.save();
+    applySettings(settings);
+    refreshAliases();
+}

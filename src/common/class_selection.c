@@ -25,9 +25,19 @@ int class_selection_open(const char *index_path, const char *class_name)
 
 int class_selection_indexing(void) { return index_stream != NULL; }
 
+static int excluded(const char *name, size_t len)
+{
+    const char *list=getenv("GARLIC_EXCLUDED_PACKAGES");
+    while(list && *list) {
+        const char *end=strchr(list,';'); size_t n=end?(size_t)(end-list):strlen(list);
+        if(n && len>=n && !strncmp(name,list,n) && (len==n||name[n]=='/')) return 1;
+        list=end?end+1:NULL;
+    }
+    return 0;
+}
 int class_selection_accept(const char *name)
 {
-    if (!index_stream && !selected_class) return 1;
+    if (!index_stream && !selected_class && !getenv("GARLIC_EXCLUDED_PACKAGES")) return 1;
     size_t len = strlen(name);
     if (len > 2 && name[0] == 'L' && name[len - 1] == ';') {
         ++name;
@@ -35,6 +45,7 @@ int class_selection_accept(const char *name)
     } else if (len > 6 && strcmp(name + len - 6, ".class") == 0) {
         len -= 6;
     }
+    if (excluded(name,len)) return 0;
     char *normalized = malloc(len + 1);
     if (!normalized) { selection_error = 1; return 0; }
     memcpy(normalized, name, len);
@@ -63,4 +74,14 @@ int class_selection_close(void)
         selection_error = 1;
     }
     return selection_error ? 1 : 0;
+}
+
+void class_selection_write(cJSON *entry)
+{
+    if (!index_stream) return;
+    const cJSON *name=cJSON_GetObjectItem(entry,"name");
+    if(name && name->valuestring && excluded(name->valuestring,strlen(name->valuestring))) return;
+    char *json=cJSON_PrintUnformatted(entry);
+    if (!json || fprintf(index_stream,"%s\n",json)<0) selection_error=1;
+    free(json);
 }

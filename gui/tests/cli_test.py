@@ -20,7 +20,9 @@ with tempfile.TemporaryDirectory(prefix='garlic-cli-test-') as temp:
             args = [str(engine), str(source), '-o', str(out), '-t', str(threads)]
             subprocess.run([*args, '-I', str(index)], check=True, capture_output=True, timeout=20)
             names = [json.loads(line)['name'] for line in index.read_text().splitlines()]
-            assert 'demo/Main' in names and 'demo/Main$Details' not in names, names
+            assert 'demo/Main' in names, names
+            if source.suffix != '.class':
+                assert 'demo/Main$Details' in names
             assert not list(out.rglob('*.java')), 'Indexing must not decompile Java'
             assert not list(out.rglob('*.smali')), 'Indexing must not decompile Smali'
             result = subprocess.run([*args, '-c', 'demo/Main'], check=True, capture_output=True, timeout=20)

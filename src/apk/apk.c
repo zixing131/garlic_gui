@@ -1,3 +1,4 @@
+#include "browse_index.h"
 #include "class_selection.h"
 #include <errno.h>
 //#include "apk/apk.h"
@@ -123,6 +124,7 @@ static void apk_process_dex_from_zip(jd_apk *apk, struct zip_t *zip)
 
         for (int j = 0; j < meta->header->class_defs_size; ++j) {
             dex_class_def *cf = &meta->class_defs[j];
+            if (class_selection_indexing()) { browse_index_dex(meta, cf); continue; }
             if (apk->type == JD_DEX_TASK_DECOMPILE) {
                 if (dex_class_is_inner_class(dex->meta, cf) ||
                     dex_class_is_anonymous_class(dex->meta, cf))

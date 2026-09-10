@@ -184,7 +184,8 @@ static void dex_encoded_field_to_field(jd_dex *dex,
     field->access_flags = efield->access_flags;
     field->meta = efield;
     field->name = dex_field_name(meta, efield);
-    field->type = descriptor_to_s(dex_field_desc(meta, efield));
+    field->signature = dex_field_desc(meta, efield);
+    field->type = descriptor_to_s(field->signature);
     field->access_flags_fn = dex_filed_access_flag;
     if (instance)
         field->defination = str_create("%s %s",

@@ -1,3 +1,4 @@
+#include "java_string.h"
 #include "parser/dex/metadata.h"
 #include "dex_ins.h"
 #include "dex_meta_helper.h"
@@ -228,7 +229,7 @@ static void smali_write_method(jd_meta_dex *dex,
                 u1 v_a = (*item >> 8);
                 u2 string_index = code->insns[i+1];
                 string str = dex->strings[string_index].data;
-                fprintf(_smali_stream(stream), "v%d, \"%s\"\n", v_a, str);
+                fprintf(_smali_stream(stream), "v%d, \"%s\"\n", v_a, java_escape_string(str));
                 break;
             }
             case DEX_INS_CONST_STRING_JUMBO: { // const-string/jumbo
@@ -238,7 +239,7 @@ static void smali_write_method(jd_meta_dex *dex,
                 u2 index2 = code->insns[i+2];
                 u4 string_index = ((u4)index2 << 16) | index1;
                 string str = dex->strings[string_index].data;
-                fprintf(_smali_stream(stream), "v%d, \"%s\"\n", v_a, str);
+                fprintf(_smali_stream(stream), "v%d, \"%s\"\n", v_a, java_escape_string(str));
                 break;
             }
             case DEX_INS_CONST_CLASS: { // const-class

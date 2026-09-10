@@ -1,215 +1,757 @@
 #include "mainwindow.h"
-#include "codeeditor.h"
+#include "mcpserver.h"
+#include "searchdialog.h"
+#include <QFutureWatcher>
+#include <QtConcurrent>
 #include <QtWidgets>
 
-MainWindow::MainWindow(const QString &engine, QWidget *parent) : QMainWindow(parent), backend_(this) {
+MainWindow::MainWindow(const QString &engine, QWidget *parent)
+    : QMainWindow(parent), backend_(this) {
     setWindowTitle("Garlic — 代码浏览器");
-    setMinimumSize(850, 580); resize(1280, 820); setAcceptDrops(true);
-    QSettings settings;
-    restoreGeometry(settings.value("geometry").toByteArray());
-    const auto savedEngine = settings.value("engine").toString();
-    if (!savedEngine.isEmpty() && QFileInfo(savedEngine).isExecutable()) backend_.setEngine(savedEngine);
-    if (!engine.isEmpty()) backend_.setEngine(QFileInfo(engine).absoluteFilePath());
-
-    auto fileMenu = menuBar()->addMenu(tr("文件"));
-    openAction_ = fileMenu->addAction(tr("打开文件…"), QKeySequence::Open, this, &MainWindow::chooseFile);
-    exportAction_ = fileMenu->addAction(tr("导出全部源码…"), QKeySequence("Ctrl+Shift+E"), this, &MainWindow::exportAll);
-    engineAction_ = fileMenu->addAction(tr("选择引擎…"), this, [this] {
-        const auto path = QFileDialog::getOpenFileName(this, tr("选择本项目编译的 garlic 可执行文件"), QFileInfo(backend_.engine()).absolutePath());
+    setMinimumSize(880, 600);
+    resize(1360, 860);
+    setAcceptDrops(true);
+    QSettings prefs;
+    restoreGeometry(prefs.value("geometry").toByteArray());
+    const auto saved = prefs.value("engine").toString();
+    if (QFileInfo(saved).isExecutable())
+        backend_.setEngine(saved);
+    if (!engine.isEmpty())
+        backend_.setEngine(QFileInfo(engine).absoluteFilePath());
+    auto file = menuBar()->addMenu(tr("文件"));
+    openAction_ =
+        file->addAction(tr("打开文件…"), QKeySequence::Open, this, &MainWindow::chooseFile);
+    file->addAction(tr("打开项目…"), this, &MainWindow::openProject);
+    file->addAction(tr("保存项目…"), QKeySequence::Save, this, &MainWindow::saveProject);
+    exportAction_ = file->addAction(tr("导出源码…"), QKeySequence("Ctrl+Shift+E"), this,
+                                    &MainWindow::exportAll);
+    engineAction_ = file->addAction(tr("选择引擎…"), this, [this] {
+        auto path = QFileDialog::getOpenFileName(this, tr("选择 garlic 引擎"));
         if (!path.isEmpty()) {
-            backend_.setEngine(path); QSettings().setValue("engine", path);
-            status_->setText(tr("引擎：%1").arg(path));
+            backend_.setEngine(path);
+            QSettings().setValue("engine", path);
         }
     });
-    fileMenu->addSeparator();
-    fileMenu->addAction(tr("退出"), QKeySequence::Quit, this, &QWidget::close);
-    auto viewMenu = menuBar()->addMenu(tr("视图"));
-    viewMenu->addAction(tr("查找当前代码"), QKeySequence::Find, this, [this] { find_->setFocus(); find_->selectAll(); });
-    viewMenu->addAction(tr("查找类"), QKeySequence("Ctrl+L"), this, [this] { filter_->setFocus(); filter_->selectAll(); });
-    viewMenu->addAction(tr("关闭标签"), QKeySequence::Close, this, [this] { if (tabs_->count()) delete tabs_->currentWidget(); });
-    viewMenu->addAction(tr("放大代码"), QKeySequence::ZoomIn, this, [this] { if (editor()) editor()->zoomIn(); });
-    viewMenu->addAction(tr("缩小代码"), QKeySequence::ZoomOut, this, [this] { if (editor()) editor()->zoomOut(); });
-    auto help = menuBar()->addMenu(tr("帮助"));
-    help->addAction(tr("关于 Garlic GUI"), this, [this] {
-        QMessageBox::about(this, "Garlic GUI", tr("Garlic GUI 0.1 · C++ / Qt 6\n\n按需反编译 Java / Smali，源码缓存在临时目录。\n类树展示顶层类，内部类随外部类显示。\n每次未缓存的请求会重新解析输入文件。\n查找支持类名和当前文档；尚未提供全项目语义索引。\n\nGarlic: Apache-2.0 · Qt: LGPL-3.0 / GPL / commercial"));
+    settingsAction_ =
+        file->addAction(tr("设置…"), QKeySequence::Preferences, this, &MainWindow::settingsDialog);
+    file->addSeparator();
+    file->addAction(tr("退出"), QKeySequence::Quit, this, &QWidget::close);
+    auto edit = menuBar()->addMenu(tr("导航"));
+    edit->addAction(tr("跳转到声明"), QKeySequence(Qt::Key_F12), this, [this] {
+        if (editor())
+            navigateTo(editor()->symbolAtCursor());
     });
-
-    auto toolbar = addToolBar("Main"); toolbar->setMovable(false); toolbar->setIconSize({18,18});
-    auto brand = new QLabel("  GARLIC  "); brand->setObjectName("brand"); toolbar->addWidget(brand);
-    toolbar->addSeparator(); toolbar->addAction(openAction_); toolbar->addAction(exportAction_);
+    edit->addAction(tr("查找引用"), QKeySequence("Shift+F12"), this, [this] {
+        if (editor())
+            showReferences(editor()->symbolAtCursor());
+    });
+    edit->addAction(tr("重命名"), QKeySequence(Qt::Key_F2), this, [this] {
+        if (editor())
+            renameSymbol(editor()->symbolAtCursor());
+    });
+    edit->addAction(tr("撤销重命名"), QKeySequence::Undo, backend_.project(), &Project::undoRename);
+    auto back = edit->addAction(tr("后退"), QKeySequence("Alt+Left"), this, [this] {
+        if (historyIndex_ <= 0)
+            return;
+        --historyIndex_;
+        restoringHistory_ = true;
+        const auto at = history_[historyIndex_];
+        navigateTo(at.first, at.second);
+        restoringHistory_ = false;
+    });
+    auto forward = edit->addAction(tr("前进"), QKeySequence("Alt+Right"), this, [this] {
+        if (historyIndex_ + 1 >= history_.size())
+            return;
+        ++historyIndex_;
+        restoringHistory_ = true;
+        const auto at = history_[historyIndex_];
+        navigateTo(at.first, at.second);
+        restoringHistory_ = false;
+    });
+    auto viewMenu = menuBar()->addMenu(tr("视图"));
+    viewMenu->addAction(tr("查找当前代码"), QKeySequence::Find, this, [this] {
+        find_->setFocus();
+        find_->selectAll();
+    });
+    viewMenu->addAction(tr("项目搜索…"), QKeySequence("Ctrl+Shift+F"), this,
+                        &MainWindow::searchDialog);
+    viewMenu->addAction(tr("过滤类"), QKeySequence("Ctrl+L"), this, [this] {
+        filter_->setFocus();
+        filter_->selectAll();
+    });
+    viewMenu->addAction(tr("关闭标签"), QKeySequence::Close, this, [this] {
+        if (view())
+            delete view();
+    });
+    viewMenu->addAction(tr("放大代码"), QKeySequence::ZoomIn, this, [this] {
+        if (editor())
+            editor()->zoomIn();
+    });
+    viewMenu->addAction(tr("缩小代码"), QKeySequence::ZoomOut, this, [this] {
+        if (editor())
+            editor()->zoomOut();
+    });
+    auto toolbar = addToolBar("Main");
+    toolbar->setMovable(false);
+    auto brand = new QLabel("  GARLIC  ");
+    brand->setObjectName("brand");
+    toolbar->addWidget(brand);
+    toolbar->addSeparator();
+    toolbar->addAction(openAction_);
+    toolbar->addAction(exportAction_);
+    toolbar->addAction(tr("项目搜索"), this, &MainWindow::searchDialog);
+    toolbar->addAction(back);
+    toolbar->addAction(forward);
     toolbar->addSeparator();
     stopAction_ = toolbar->addAction(tr("停止"), &backend_, &Backend::cancel);
-    auto spacer = new QWidget; spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred); toolbar->addWidget(spacer);
-    auto hint = new QLabel(tr("按需反编译  ·  本地运行  ")); hint->setObjectName("muted"); toolbar->addWidget(hint);
-
-    auto central = new QWidget; auto layout = new QVBoxLayout(central); layout->setContentsMargins(0,0,0,0); layout->setSpacing(0);
-    auto fileBar = new QWidget; fileBar->setObjectName("fileBar"); auto fileLayout = new QHBoxLayout(fileBar);
-    fileLabel_ = new QLabel(tr("尚未打开文件")); fileLabel_->setTextFormat(Qt::PlainText); fileLabel_->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    countLabel_ = new QLabel; countLabel_->setObjectName("muted");
-    fileLayout->addWidget(fileLabel_,1); fileLayout->addWidget(countLabel_); layout->addWidget(fileBar);
-    auto splitter = new QSplitter; layout->addWidget(splitter,1);
-    auto sidebar = new QWidget; auto side = new QVBoxLayout(sidebar); side->setContentsMargins(14,16,10,10);
-    auto title = new QLabel(tr("源码目录")); title->setObjectName("sectionTitle"); side->addWidget(title);
-    filter_ = new QLineEdit; filter_->setObjectName("classFilter"); filter_->setPlaceholderText(tr("过滤类名或包名…")); filter_->setClearButtonEnabled(true); side->addWidget(filter_);
-    tree_ = new QTreeView; tree_->setObjectName("classTree"); tree_->setHeaderHidden(true); tree_->setUniformRowHeights(true); tree_->setAnimated(false); tree_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    model_ = new QStandardItemModel(this); proxy_ = new QSortFilterProxyModel(this); proxy_->setSourceModel(model_);
-    proxy_->setFilterCaseSensitivity(Qt::CaseInsensitive); proxy_->setRecursiveFilteringEnabled(true); proxy_->setFilterRole(Qt::UserRole + 2); tree_->setModel(proxy_);
-    side->addWidget(tree_,1); auto treeHint = new QLabel(tr("单击类以打开  ·  内部类包含于 Java 源码")); treeHint->setWordWrap(true); treeHint->setObjectName("muted"); side->addWidget(treeHint);
-    splitter->addWidget(sidebar);
-    auto content = new QWidget; auto contentLayout = new QVBoxLayout(content); contentLayout->setContentsMargins(0,10,10,0);
-    auto searchRow = new QHBoxLayout;
-    language_ = new QComboBox; language_->setObjectName("sourceLanguage"); language_->addItems({"Java", "Smali"}); language_->setMinimumWidth(100);
-    searchRow->addWidget(language_); searchRow->addSpacing(12);
-    find_ = new QLineEdit; find_->setObjectName("codeFind"); find_->setPlaceholderText(tr("查找当前代码…")); find_->setClearButtonEnabled(true); searchRow->addWidget(find_,1);
-    auto previous = new QPushButton(tr("上一个")); auto next = new QPushButton(tr("下一个")); searchRow->addWidget(previous); searchRow->addWidget(next); contentLayout->addLayout(searchRow);
+    toolbar->addAction(settingsAction_);
+    auto central = new QWidget;
+    auto layout = new QVBoxLayout(central);
+    layout->setContentsMargins(0, 0, 0, 0);
+    auto fileRow = new QHBoxLayout;
+    fileLabel_ = new QLabel(tr("打开 APK / DEX / JAR / CLASS"));
+    fileLabel_->setTextFormat(Qt::PlainText);
+    fileLabel_->setContentsMargins(12, 6, 0, 6);
+    countLabel_ = new QLabel;
+    countLabel_->setObjectName("muted");
+    fileRow->addWidget(fileLabel_, 1);
+    fileRow->addWidget(countLabel_);
+    layout->addLayout(fileRow);
+    auto splitter = new QSplitter;
+    layout->addWidget(splitter, 1);
+    auto left = new QWidget;
+    auto leftLayout = new QVBoxLayout(left);
+    leftLayout->setContentsMargins(12, 6, 6, 6);
+    filter_ = new QLineEdit;
+    filter_->setObjectName("classFilter");
+    filter_->setPlaceholderText(tr("过滤类、接口、枚举或成员…"));
+    filter_->setClearButtonEnabled(true);
+    leftLayout->addWidget(filter_);
+    tree_ = new QTreeView;
+    tree_->setObjectName("classTree");
+    tree_->setUniformRowHeights(true);
+    connect(tree_, &QTreeView::expanded, this, &MainWindow::populateMembers);
+    tree_->setHeaderHidden(true);
+    tree_->setUniformRowHeights(true);
+    tree_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    tree_->setContextMenuPolicy(Qt::CustomContextMenu);
+    model_ = new QStandardItemModel(this);
+    proxy_ = new QSortFilterProxyModel(this);
+    proxy_->setSourceModel(model_);
+    proxy_->setRecursiveFilteringEnabled(true);
+    proxy_->setFilterCaseSensitivity(Qt::CaseInsensitive);
+    proxy_->setFilterRole(Qt::UserRole + 2);
+    tree_->setModel(proxy_);
+    leftLayout->addWidget(tree_, 1);
+    splitter->addWidget(left);
+    auto right = new QWidget;
+    auto rightLayout = new QVBoxLayout(right);
+    rightLayout->setContentsMargins(0, 6, 6, 0);
+    auto search = new QHBoxLayout;
+    find_ = new QLineEdit;
+    find_->setObjectName("codeFind");
+    find_->setPlaceholderText(tr("查找当前代码…"));
+    find_->setClearButtonEnabled(true);
+    search->addWidget(find_, 1);
+    auto previous = new QPushButton(tr("上一个")), next = new QPushButton(tr("下一个"));
+    search->addWidget(previous);
+    search->addWidget(next);
+    rightLayout->addLayout(search);
     connect(previous, &QPushButton::clicked, this, [this] { find(true); });
     connect(next, &QPushButton::clicked, this, [this] { find(false); });
     connect(find_, &QLineEdit::returnPressed, this, [this] { find(false); });
     pages_ = new QStackedWidget;
-    auto welcome = new QWidget; auto welcomeLayout = new QVBoxLayout(welcome); welcomeLayout->addStretch();
-    auto welcomeTitle = new QLabel(tr("从一个类开始，读懂整个应用。")); welcomeTitle->setObjectName("welcomeTitle"); welcomeTitle->setAlignment(Qt::AlignCenter);
-    auto welcomeText = new QLabel(tr("打开 APK、DEX、JAR 或 CLASS 文件\n先浏览目录，再按需生成 Java 与 Smali 源码。")); welcomeText->setAlignment(Qt::AlignCenter); welcomeText->setObjectName("muted");
-    auto welcomeButton = new QPushButton(tr("打开文件")); welcomeButton->setObjectName("primary"); welcomeButton->setFixedWidth(160);
-    welcomeLayout->addWidget(welcomeTitle); welcomeLayout->addSpacing(16); welcomeLayout->addWidget(welcomeText); welcomeLayout->addSpacing(24); welcomeLayout->addWidget(welcomeButton,0,Qt::AlignHCenter); welcomeLayout->addStretch();
-    connect(welcomeButton, &QPushButton::clicked, this, &MainWindow::chooseFile);
-    tabs_ = new QTabWidget; tabs_->setObjectName("sourceTabs"); tabs_->setDocumentMode(true); tabs_->setTabsClosable(true); tabs_->setMovable(true);
-    connect(tabs_, &QTabWidget::tabCloseRequested, this, [this](int index) { delete tabs_->widget(index); if (!tabs_->count()) pages_->setCurrentIndex(0); });
-    connect(tabs_, &QTabWidget::currentChanged, this, [this](int index) {
-        if (index < 0) { pages_->setCurrentIndex(0); return; }
-        auto tab = tabs_->widget(index); selectedName_ = tab->property("className").toString();
-        QSignalBlocker block(language_); language_->setCurrentIndex(tab->property("smali").toBool() ? 1 : 0);
-        status_->setText(QString(selectedName_).replace('/', '.') + tr(" · 已缓存"));
+    auto welcome = new QWidget;
+    auto welcomeLayout = new QVBoxLayout(welcome);
+    welcomeLayout->addStretch();
+    auto title = new QLabel(tr("选择一个类，开始阅读。"));
+    title->setObjectName("welcomeTitle");
+    title->setAlignment(Qt::AlignCenter);
+    welcomeLayout->addWidget(title);
+    auto desc = new QLabel(tr("Java / Smali 底部切换 · F12 跳转 · Shift+F12 引用 · F2 重命名"));
+    desc->setObjectName("muted");
+    desc->setAlignment(Qt::AlignCenter);
+    welcomeLayout->addWidget(desc);
+    auto open = new QPushButton(tr("打开文件"));
+    open->setObjectName("primary");
+    open->setFixedWidth(160);
+    welcomeLayout->addWidget(open, 0, Qt::AlignHCenter);
+    welcomeLayout->addStretch();
+    connect(open, &QPushButton::clicked, this, &MainWindow::chooseFile);
+    tabs_ = new QTabWidget;
+    tabs_->setObjectName("sourceTabs");
+    tabs_->setTabsClosable(true);
+    tabs_->setMovable(true);
+    tabs_->setDocumentMode(true);
+    pages_->addWidget(welcome);
+    pages_->addWidget(tabs_);
+    rightLayout->addWidget(pages_, 1);
+    splitter->addWidget(right);
+    splitter->setSizes({310, 1050});
+    splitter->setStretchFactor(1, 1);
+    setCentralWidget(central);
+    connect(tabs_, &QTabWidget::tabCloseRequested, this,
+            [this](int i) { delete tabs_->widget(i); });
+    connect(tabs_, &QTabWidget::currentChanged, this, [this](int i) {
+        pages_->setCurrentIndex(i < 0 ? 0 : 1);
+        if (i >= 0) {
+            status_->setText(selectedClass());
+            recordHistory();
+        }
     });
-    pages_->addWidget(welcome); pages_->addWidget(tabs_); contentLayout->addWidget(pages_,1); splitter->addWidget(content); splitter->setSizes({290,990}); splitter->setStretchFactor(1,1); setCentralWidget(central);
-
-    auto dock = new QDockWidget(tr("引擎日志"), this); dock->setObjectName("engineLogs");
-    logs_ = new QPlainTextEdit; logs_->setReadOnly(true); logs_->setMaximumBlockCount(250); dock->setWidget(logs_); addDockWidget(Qt::BottomDockWidgetArea, dock); dock->hide(); viewMenu->addAction(dock->toggleViewAction());
-    status_ = new QLabel(tr("就绪 · 拖入文件即可开始")); statusBar()->addWidget(status_,1);
-    progress_ = new QProgressBar; progress_->setMaximumWidth(140); progress_->setMaximumHeight(12); progress_->setTextVisible(false); statusBar()->addPermanentWidget(progress_);
-    connect(filter_, &QLineEdit::textChanged, this, [this](const QString &text) { proxy_->setFilterFixedString(text); });
-    connect(tree_, &QTreeView::clicked, this, [this](const QModelIndex &index) {
-        const auto name = index.data(Qt::UserRole + 1).toString();
-        if (!name.isEmpty()) { selectedName_ = name; openSelected(); }
+    connect(filter_, &QLineEdit::textChanged, proxy_, &QSortFilterProxyModel::setFilterFixedString);
+    auto activate = [this](const QModelIndex &index) {
+        const auto id = index.data(Qt::UserRole + 1).toString();
+        if (!id.isEmpty())
+            navigateTo(id);
+    };
+    connect(tree_, &QTreeView::clicked, this, activate);
+    connect(tree_, &QTreeView::activated, this, activate);
+    connect(tree_, &QTreeView::customContextMenuRequested, this, [this](const QPoint &pos) {
+        const auto index = tree_->indexAt(pos);
+        const auto id = index.data(Qt::UserRole + 1).toString();
+        if (id.isEmpty())
+            return;
+        QMenu menu;
+        menu.addAction(tr("打开声明"), this, [this, id] { navigateTo(id); });
+        menu.addAction(tr("查找引用"), this, [this, id] { showReferences(id); });
+        menu.addAction(tr("重命名…"), this, [this, id] { renameSymbol(id); });
+        menu.exec(tree_->viewport()->mapToGlobal(pos));
     });
-    connect(tree_, &QTreeView::activated, this, [this](const QModelIndex &index) {
-        const auto name = index.data(Qt::UserRole + 1).toString();
-        if (!name.isEmpty()) { selectedName_ = name; openSelected(); }
+    logDock_ = new QDockWidget(tr("引擎日志"), this);
+    logDock_->setObjectName("engineLogs");
+    logs_ = new QPlainTextEdit;
+    logs_->setReadOnly(true);
+    logs_->setMaximumBlockCount(250);
+    logDock_->setWidget(logs_);
+    addDockWidget(Qt::BottomDockWidgetArea, logDock_);
+    logDock_->hide();
+    viewMenu->addAction(logDock_->toggleViewAction());
+    resultDock_ = new QDockWidget(tr("搜索 / 引用"), this);
+    resultDock_->setObjectName("searchResults");
+    results_ = new QTableWidget(0, 3);
+    results_->setHorizontalHeaderLabels({tr("类 / 方法"), tr("位置"), tr("内容 / 引用目标")});
+    results_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    results_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    results_->horizontalHeader()->setStretchLastSection(true);
+    results_->setColumnWidth(0, 350);
+    resultDock_->setWidget(results_);
+    addDockWidget(Qt::BottomDockWidgetArea, resultDock_);
+    resultDock_->hide();
+    viewMenu->addAction(resultDock_->toggleViewAction());
+    connect(results_, &QTableWidget::cellDoubleClicked, this, [this](int row, int) {
+        auto item = results_->item(row, 0);
+        if (item)
+            navigateTo(item->data(Qt::UserRole).toString(), item->data(Qt::UserRole + 1).toInt());
     });
-    connect(language_, &QComboBox::currentIndexChanged, this, [this] { openSelected(); });
-    connect(&backend_, &Backend::indexed, this, &MainWindow::populate);
+    status_ = new QLabel(tr("就绪"));
+    statusBar()->addWidget(status_, 1);
+    progress_ = new QProgressBar;
+    progress_->setMaximumWidth(140);
+    progress_->setMaximumHeight(12);
+    progress_->setTextVisible(false);
+    statusBar()->addPermanentWidget(progress_);
+    mcp_ = new McpServer(this, this);
+    connect(&backend_, &Backend::indexed, this, [this](const QStringList &classes) {
+        populate(classes);
+        if (!pendingProject_.isEmpty()) {
+            QString error;
+            if (!backend_.project()->loadAliases(pendingProject_, &error))
+                status_->setText(error);
+            pendingProject_.clear();
+        }
+    });
     connect(&backend_, &Backend::sourceReady, this, &MainWindow::showSource);
     connect(&backend_, &Backend::busyChanged, this, &MainWindow::updateBusy);
+    connect(&backend_, &Backend::preparationChanged, this, &MainWindow::updateBusy);
     connect(&backend_, &Backend::log, logs_, &QPlainTextEdit::appendPlainText);
-    connect(&backend_, &Backend::failed, this, [this, dock](const QString &message) {
-        status_->setText(tr("操作失败，详情见引擎日志")); logs_->appendPlainText(message); dock->show();
+    connect(&backend_, &Backend::failed, this, [this](const QString &text) {
+        logs_->appendPlainText(text);
+        logDock_->show();
+        status_->setText(tr("操作失败，详情见日志"));
     });
+    connect(&backend_, &Backend::projectSourcesReady, this,
+            [this] { status_->setText(tr("项目源码已就绪，可以全文搜索。")); });
+    connect(&backend_, &Backend::searchFinished, this,
+            [this](const QJsonArray &hits, bool truncated) {
+                results_->setRowCount(0);
+                for (const auto &v : hits) {
+                    const auto hit = v.toObject();
+                    int row = results_->rowCount();
+                    results_->insertRow(row);
+                    auto item = new QTableWidgetItem(hit.value("class").toString());
+                    item->setData(Qt::UserRole, Project::classId(item->text()));
+                    item->setData(Qt::UserRole + 1, hit.value("line").toInt());
+                    results_->setItem(row, 0, item);
+                    results_->setItem(
+                        row, 1, new QTableWidgetItem(QString::number(hit.value("line").toInt())));
+                    results_->setItem(row, 2, new QTableWidgetItem(hit.value("text").toString()));
+                }
+                resultDock_->setWindowTitle(
+                    tr("项目搜索：%1 条结果%2")
+                        .arg(hits.size())
+                        .arg(truncated ? tr("（达到 1000 条上限）") : QString()));
+                resultDock_->show();
+                status_->setText(tr("搜索完成，双击结果跳转。"));
+            });
+    connect(backend_.project(), &Project::renamed, this, &MainWindow::refreshAliases);
     connect(&backend_, &Backend::exported, this, [this](const QString &path) {
+        // Export aliases with the source so edits are reviewable and recoverable.
+        QString error;
+        backend_.project()->save(QDir(path).filePath("project.garlic.json"), &error);
         status_->setText(tr("导出完成：%1").arg(path));
-        QMessageBox::information(this, tr("导出完成"), tr("源码已保存到：\n%1").arg(path));
+        QMessageBox::information(this, tr("导出完成"), path);
     });
-    updateBusy(false);
+    applySettings(backend_.settings());
+    updateBusy();
 }
 
+ClassView *MainWindow::view() const { return qobject_cast<ClassView *>(tabs_->currentWidget()); }
+CodeEditor *MainWindow::editor() const { return view() ? view()->editor() : nullptr; }
+QString MainWindow::selectedClass() const { return view() ? view()->name() : QString(); }
+QString MainWindow::mcpEndpoint() const { return mcp_->endpoint(); }
+QIcon MainWindow::classIcon(const QString &kind) const {
+    static QHash<QString, QIcon> cache;
+    if (cache.contains(kind))
+        return cache.value(kind);
+    const QHash<QString, QString> letters{{"class", "C"}, {"abstract", "C"},   {"interface", "I"},
+                                          {"enum", "E"},  {"annotation", "C"}, {"method", "m"},
+                                          {"field", "f"}};
+    const QHash<QString, QColor> colors{
+        {"class", QColor("#56b6db")},      {"abstract", QColor("#729de0")},
+        {"interface", QColor("#86c883")},  {"enum", QColor("#d5b46b")},
+        {"annotation", QColor("#c994e3")}, {"method", QColor("#c899e8")},
+        {"field", QColor("#80beb7")}};
+    QPixmap pix(36, 36);
+    pix.fill(Qt::transparent);
+    QPainter p(&pix);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setPen(Qt::NoPen);
+    p.setBrush(colors.value(kind, QColor("#89a0b7")));
+    p.drawEllipse(2, 2, 32, 32);
+    p.setPen(QColor("#14212d"));
+    QFont font = p.font();
+    font.setBold(true);
+    font.setPixelSize(23);
+    p.setFont(font);
+    p.drawText(pix.rect(), Qt::AlignCenter, letters.value(kind, "?"));
+    pix.setDevicePixelRatio(2);
+    cache[kind] = QIcon(pix);
+    return cache[kind];
+}
 void MainWindow::chooseFile() {
-    if (backend_.busy()) return;
-    const auto path = QFileDialog::getOpenFileName(this, tr("打开字节码文件"), QSettings().value("lastDirectory").toString(), tr("字节码文件 (*.apk *.xapk *.apks *.dex *.jar *.war *.class)"));
-    if (!path.isEmpty()) openPath(path);
+    if (backend_.busy())
+        return;
+    const auto path = QFileDialog::getOpenFileName(
+        this, tr("打开字节码"), QSettings().value("lastDirectory").toString(),
+        tr("字节码 (*.apk *.xapk *.apks *.dex *.jar *.war *.class)"));
+    if (!path.isEmpty())
+        openPath(path);
 }
-
 void MainWindow::openPath(const QString &path) {
-    if (backend_.busy()) return;
-    if (!QFileInfo(path).isFile()) { status_->setText(tr("文件不存在：%1").arg(path)); return; }
-    while (tabs_->count()) delete tabs_->widget(0);
-    model_->clear(); filter_->clear(); selectedName_.clear(); logs_->clear(); countLabel_->clear();
-    language_->setCurrentIndex(0); pages_->setCurrentIndex(0);
-    fileLabel_->setText(QFileInfo(path).fileName()); fileLabel_->setToolTip(QFileInfo(path).absoluteFilePath());
+    if (backend_.busy())
+        return;
+    if (!QFileInfo(path).isFile()) {
+        status_->setText(tr("文件不存在：%1").arg(path));
+        return;
+    }
+    while (tabs_->count())
+        delete tabs_->widget(0);
+    if (searchDialog_) {
+        delete searchDialog_;
+        searchDialog_ = nullptr;
+    }
+    ++treeGeneration_;
+    model_->clear();
+    filter_->clear();
+    results_->setRowCount(0);
+    logs_->clear();
+    history_.clear();
+    historyIndex_ = -1;
+    pendingId_.clear();
+    pendingLine_ = 0;
+    fileLabel_->setText(QFileInfo(path).fileName());
+    fileLabel_->setToolTip(QFileInfo(path).absoluteFilePath());
     QSettings().setValue("lastDirectory", QFileInfo(path).absolutePath());
-    status_->setText(tr("正在建立类目录…")); backend_.open(path);
+    status_->setText(tr("正在读取类与符号索引…"));
+    backend_.open(path);
 }
-
 void MainWindow::populate(const QStringList &classes) {
-    QHash<QString, QStandardItem *> packages;
-    for (const QString &name : classes) {
-        const int slash = name.lastIndexOf('/');
-        const QString package = slash < 0 ? tr("默认包") : QString(name.left(slash)).replace('/', '.');
-        auto parent = packages.value(package);
-        if (!parent) {
-            parent = new QStandardItem(style()->standardIcon(QStyle::SP_DirIcon), package);
-            parent->setData(package, Qt::UserRole + 2); model_->appendRow(parent); packages.insert(package, parent);
+    const int generation = ++treeGeneration_;
+    model_->clear();
+    struct State {
+        QStringList names;
+        int offset = 0;
+        QHash<QString, QStandardItem *> packages, items;
+    };
+    auto state = std::make_shared<State>();
+    state->names = classes;
+    auto tick = std::make_shared<std::function<void()>>();
+    std::weak_ptr<std::function<void()>> weak = tick;
+    *tick = [this, state, generation, weak] {
+        if (generation != treeGeneration_)
+            return;
+        QElapsedTimer time;
+        time.start();
+        while (state->offset < state->names.size() && time.elapsed() < 8) {
+            const auto name = state->names[state->offset++];
+            const QString pkg = name.contains('/')
+                                    ? QString(name.section('/', 0, -2)).replace('/', '.')
+                                    : tr("默认包");
+            if (!state->packages.contains(pkg)) {
+                auto p = new QStandardItem(style()->standardIcon(QStyle::SP_DirIcon), pkg);
+                p->setData(pkg, Qt::UserRole + 2);
+                model_->appendRow(p);
+                state->packages[pkg] = p;
+            }
+            auto info = backend_.project()->info(name);
+            auto item = new QStandardItem(classIcon(info.value("kind").toString()),
+                                          backend_.project()->displayName(name));
+            item->setData(Project::classId(name), Qt::UserRole + 1);
+            item->setData(QString(name).replace('/', '.') + " " + item->text(), Qt::UserRole + 2);
+            item->setToolTip(name + " · " + info.value("kind").toString());
+            state->items[name] = item;
+            const QString parent = name.left(name.lastIndexOf('$'));
+            if (info.value("inner").toBool() && state->items.contains(parent))
+                state->items[parent]->appendRow(item);
+            else
+                state->packages[pkg]->appendRow(item);
+            if (!info.value("methods").toArray().isEmpty() ||
+                !info.value("fields").toArray().isEmpty()) {
+                auto placeholder = new QStandardItem(tr("展开加载成员…"));
+                placeholder->setData(true, Qt::UserRole + 3);
+                item->appendRow(placeholder);
+            }
         }
-        auto item = new QStandardItem(style()->standardIcon(QStyle::SP_FileIcon), name.mid(slash + 1));
-        item->setData(name, Qt::UserRole + 1); item->setData(QString(name).replace('/', '.'), Qt::UserRole + 2); item->setToolTip(name); parent->appendRow(item);
-    }
-    countLabel_->setText(tr("%1 个包  /  %2 个顶层类").arg(packages.size()).arg(classes.size()));
-    status_->setText(tr("目录已就绪 · 选择类以生成源码"));
-    if (model_->rowCount() <= 20) tree_->expandAll();
-    if (!classes.isEmpty()) {
-        const auto index = proxy_->index(0,0); tree_->expand(index);
-        const auto first = proxy_->index(0,0,index); tree_->setCurrentIndex(first);
-    }
+        if (state->offset < state->names.size()) {
+            if (auto next = weak.lock())
+                QTimer::singleShot(0, this, [next] { (*next)(); });
+            return;
+        }
+        if (state->packages.size() <= 12)
+            tree_->expandToDepth(0);
+        countLabel_->setText(
+            tr("%1 个包 / %2 个类与接口  ").arg(state->packages.size()).arg(state->names.size()));
+        status_->setText(tr("目录就绪，展开类加载成员。"));
+    };
+    (*tick)();
 }
-
-void MainWindow::openSelected() {
-    if (selectedName_.isEmpty() || backend_.busy()) return;
-    const bool smali = language_->currentIndex() == 1;
-    for (int i=0; i<tabs_->count(); ++i) {
-        auto tab = tabs_->widget(i);
-        if (tab->property("className").toString() == selectedName_ && tab->property("smali").toBool() == smali) {
-            tabs_->setCurrentIndex(i); pages_->setCurrentIndex(1); return;
+void MainWindow::populateMembers(const QModelIndex &index) {
+    auto item = model_->itemFromIndex(proxy_->mapToSource(index));
+    if (!item)
+        return;
+    int placeholder = -1;
+    for (int i = 0; i < item->rowCount(); i++)
+        if (item->child(i)->data(Qt::UserRole + 3).toBool()) {
+            placeholder = i;
+            break;
+        }
+    if (placeholder < 0)
+        return;
+    item->removeRow(placeholder);
+    const auto name = Project::classOf(item->data(Qt::UserRole + 1).toString());
+    auto info = backend_.project()->info(name);
+    for (const auto &kind : {QString("fields"), QString("methods")})
+        for (const auto &v : info.value(kind).toArray()) {
+            auto m = v.toObject();
+            const auto id = m.value("id").toString();
+            auto child = new QStandardItem(classIcon(kind == "methods" ? "method" : "field"),
+                                           backend_.project()->symbolName(id) +
+                                               m.value("descriptor").toString());
+            child->setData(id, Qt::UserRole + 1);
+            child->setData(name + " " + child->text(), Qt::UserRole + 2);
+            child->setToolTip(id);
+            item->appendRow(child);
+        }
+}
+void MainWindow::openClass(const QString &name, bool smali) {
+    const auto n = Project::normalize(name);
+    if (backend_.project()->info(n).isEmpty()) {
+        status_->setText(tr("当前项目未包含：%1").arg(n));
+        return;
+    }
+    for (int i = 0; i < tabs_->count(); i++) {
+        auto current = qobject_cast<ClassView *>(tabs_->widget(i));
+        if (current->name() == n) {
+            tabs_->setCurrentIndex(i);
+            current->selectMode(smali);
+            loadCurrent();
+            return;
         }
     }
-    status_->setText(tr("正在生成 %1…").arg(selectedName_)); backend_.request(selectedName_, smali);
+    if (tabs_->count() >= backend_.settings().maxTabs)
+        delete tabs_->widget(0);
+    auto page = new ClassView(n, backend_.supportsSmali(), backend_.settings());
+    connect(page, &ClassView::modeChanged, this, [this, page] {
+        if (page == view())
+            loadCurrent();
+    });
+    for (int i = 0; i < 2; i++) {
+        auto code = page->editor(i);
+        connect(code, &CodeEditor::navigateRequested, this,
+                [this, code] { navigateTo(code->symbolAtCursor()); });
+        connect(code, &CodeEditor::referencesRequested, this,
+                [this, code] { showReferences(code->symbolAtCursor()); });
+        connect(code, &CodeEditor::renameRequested, this,
+                [this, code] { renameSymbol(code->symbolAtCursor()); });
+    }
+    int index = tabs_->addTab(page, classIcon(backend_.project()->info(n).value("kind").toString()),
+                              backend_.project()->displayName(n));
+    tabs_->setTabToolTip(index, n);
+    tabs_->setCurrentIndex(index);
+    page->selectMode(smali);
+    loadCurrent();
 }
-
+void MainWindow::loadCurrent() {
+    auto page = view();
+    if (!page)
+        return;
+    if (page->loaded(page->smali())) {
+        if (!pendingId_.isEmpty()) {
+            page->editor()->goToSymbol(pendingId_);
+            pendingId_.clear();
+        }
+        if (pendingLine_) {
+            page->editor()->goToLine(pendingLine_);
+            pendingLine_ = 0;
+        }
+        return;
+    }
+    if (backend_.busy()) {
+        status_->setText(tr("等待当前引擎请求完成…"));
+        return;
+    }
+    if (page->property(page->smali() ? "loadingSmali" : "loadingJava").toBool())
+        return;
+    backend_.request(page->name(), page->smali());
+}
 void MainWindow::showSource(const QString &name, bool smali, const QString &path) {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) { status_->setText(tr("无法读取源码文件")); return; }
-    if (file.size() > 8 * 1024 * 1024) {
-        status_->setText(tr("源码超过 8 MiB，请导出后使用外部编辑器打开。")); return;
+    if (QFileInfo(path).size() > qint64(backend_.settings().sourceMiB) * 1024 * 1024) {
+        status_->setText(tr("源码超过查看器大小限制，可在设置中调整或导出。"));
+        return;
     }
-    // Bound document memory; evicted documents remain cached on disk.
-    if (tabs_->count() >= 12) delete tabs_->widget(0);
-    auto code = new CodeEditor(smali); code->setPlainText(QString::fromUtf8(file.readAll()));
-    code->setProperty("className", name); code->setProperty("smali", smali);
-    const int index = tabs_->addTab(code, name.section('/',-1) + (smali ? ".smali" : ".java"));
-    tabs_->setTabToolTip(index, name); tabs_->setCurrentIndex(index); pages_->setCurrentIndex(1);
-    status_->setText(tr("%1 · %2 行 · %3 KiB").arg(name).arg(code->blockCount()).arg(file.size()/1024.0, 0, 'f', 1));
+    for (int i = 0; i < tabs_->count(); i++) {
+        auto page = qobject_cast<ClassView *>(tabs_->widget(i));
+        if (page->name() != name)
+            continue;
+        const auto key = smali ? "loadingSmali" : "loadingJava";
+        if (page->property(key).toBool())
+            return;
+        page->setProperty(key, true);
+        auto snapshot = backend_.project()->snapshot();
+        auto watcher = new QFutureWatcher<SourceDocument>(this);
+        QPointer<ClassView> target(page);
+        connect(watcher, &QFutureWatcher<SourceDocument>::finished, this,
+                [this, watcher, target, smali, key, name] {
+                    const auto raw = watcher->result();
+                    watcher->deleteLater();
+                    if (!target)
+                        return;
+                    target->setProperty(key, false);
+                    target->setRawDocument(smali, raw);
+                    target->setSource(smali, present(raw, smali));
+                    if (target == view())
+                        status_->setText(
+                            tr("%1 · %2 行").arg(name).arg(target->editor(smali)->blockCount()));
+                    loadCurrent();
+                });
+        watcher->setFuture(QtConcurrent::run([snapshot, name, smali, path] {
+            return snapshot->document(name, smali, path, false);
+        }));
+
+        return;
+    }
+    loadCurrent();
 }
-
-CodeEditor *MainWindow::editor() const { return dynamic_cast<CodeEditor *>(tabs_->currentWidget()); }
-
 void MainWindow::find(bool backwards) {
-    auto code = editor(); if (!code || find_->text().isEmpty()) return;
+    auto code = editor();
+    if (!code || find_->text().isEmpty())
+        return;
     const auto original = code->textCursor();
     auto flags = backwards ? QTextDocument::FindBackward : QTextDocument::FindFlags();
     if (!code->find(find_->text(), flags)) {
         code->moveCursor(backwards ? QTextCursor::End : QTextCursor::Start);
-        if (!code->find(find_->text(), flags)) { code->setTextCursor(original); status_->setText(tr("未找到：%1").arg(find_->text())); }
-        else status_->setText(tr("已循环查找"));
-    } else status_->setText(tr("找到：%1").arg(find_->text()));
+        if (!code->find(find_->text(), flags)) {
+            code->setTextCursor(original);
+            status_->setText(tr("未找到：%1").arg(find_->text()));
+        }
+    }
 }
-
-void MainWindow::updateBusy(bool busy) {
-    openAction_->setEnabled(!busy); engineAction_->setEnabled(!busy); stopAction_->setEnabled(busy);
-    exportAction_->setEnabled(!busy && !backend_.input().isEmpty()); tree_->setEnabled(!busy);
-    language_->setEnabled(!busy && backend_.supportsSmali());
-    progress_->setRange(0, busy ? 0 : 1); progress_->setVisible(busy);
-    if (!busy && status_->text().startsWith(tr("正在"))) status_->setText(tr("就绪"));
+void MainWindow::updateBusy() {
+    const bool busy = backend_.busy();
+    openAction_->setEnabled(!busy);
+    engineAction_->setEnabled(!busy && !backend_.preparing());
+    settingsAction_->setEnabled(!busy && !backend_.preparing());
+    exportAction_->setEnabled(!busy && !backend_.input().isEmpty());
+    stopAction_->setEnabled(busy || backend_.preparing());
+    tree_->setEnabled(!busy);
+    progress_->setRange(0, 0);
+    progress_->setVisible(busy || backend_.preparing());
 }
-
+void MainWindow::recordHistory() {
+    if (restoringHistory_ || !view())
+        return;
+    QPair<QString, int> at{Project::classId(selectedClass()),
+                           editor() ? editor()->textCursor().blockNumber() + 1 : 1};
+    if (historyIndex_ >= 0 && history_[historyIndex_].first == at.first)
+        return;
+    while (history_.size() > historyIndex_ + 1)
+        history_.removeLast();
+    history_.append(at);
+    if (history_.size() > 100)
+        history_.removeFirst();
+    historyIndex_ = history_.size() - 1;
+}
+void MainWindow::navigateTo(const QString &id, int line) {
+    if (id.isEmpty()) {
+        status_->setText(tr("此位置没有可定位的符号。"));
+        return;
+    }
+    pendingId_ = backend_.project()->canonicalId(id);
+    pendingLine_ = line;
+    openClass(Project::classOf(pendingId_));
+}
+void MainWindow::showReferences(const QString &id) {
+    if (id.isEmpty())
+        return;
+    auto snapshot = backend_.project()->snapshot();
+    const auto input = backend_.input();
+    auto watcher = new QFutureWatcher<QJsonArray>(this);
+    status_->setText(tr("正在查询引用…"));
+    connect(watcher, &QFutureWatcher<QJsonArray>::finished, this, [this, watcher, id, input] {
+        const auto refs = watcher->result();
+        watcher->deleteLater();
+        if (input != backend_.input())
+            return;
+        results_->setRowCount(0);
+        for (const auto &v : refs) {
+            if (results_->rowCount() >= 2000)
+                break;
+            auto r = v.toObject();
+            int row = results_->rowCount();
+            results_->insertRow(row);
+            auto item = new QTableWidgetItem(r.value("from").toString());
+            item->setData(Qt::UserRole, r.value("from"));
+            results_->setItem(row, 0, item);
+            results_->setItem(
+                row, 1,
+                new QTableWidgetItem(r.value("offset").toInt() < 0
+                                         ? r.value("kind").toString()
+                                         : tr("字节码 +%1").arg(r.value("offset").toInt())));
+            results_->setItem(row, 2, new QTableWidgetItem(r.value("target").toString()));
+        }
+        resultDock_->setWindowTitle(
+            tr("引用：%1（%2）").arg(backend_.project()->symbolName(id)).arg(refs.size()));
+        resultDock_->show();
+        if (refs.size() > 2000)
+            status_->setText(
+                tr("共 %1 处引用，界面显示前 2000 处；MCP 支持分页读取。").arg(refs.size()));
+    });
+    watcher->setFuture(QtConcurrent::run([snapshot, id] { return snapshot->xrefs(id); }));
+}
+void MainWindow::renameSymbol(const QString &id) {
+    if (id.isEmpty())
+        return;
+    bool ok = false;
+    const auto name =
+        QInputDialog::getText(this, tr("重命名符号"), id + tr("\n新的项目名称（保留原始字节码）："),
+                              QLineEdit::Normal, backend_.project()->symbolName(id), &ok);
+    if (ok) {
+        const auto error = backend_.project()->rename(id, name);
+        if (!error.isEmpty())
+            QMessageBox::warning(this, tr("无法重命名"), error);
+        else
+            status_->setText(tr("已更新项目别名。保存项目可保留，下次打开时恢复。"));
+    }
+}
+void MainWindow::refreshAliases() {
+    populate(backend_.project()->classes());
+    for (int i = 0; i < tabs_->count(); i++) {
+        auto page = qobject_cast<ClassView *>(tabs_->widget(i));
+        tabs_->setTabText(i, backend_.project()->displayName(page->name()));
+        for (int mode = 0; mode < 2; mode++)
+            if (page->loaded(mode)) {
+                page->setSource(mode, present(page->rawDocument(mode), mode));
+            }
+    }
+}
+void MainWindow::saveProject() {
+    if (backend_.input().isEmpty())
+        return;
+    const auto path = QFileDialog::getSaveFileName(
+        this, tr("保存项目"), QFileInfo(backend_.input()).completeBaseName() + ".garlic.json",
+        tr("Garlic 项目 (*.garlic.json)"));
+    if (path.isEmpty())
+        return;
+    QString error;
+    if (!backend_.project()->save(path, &error))
+        QMessageBox::warning(this, tr("保存失败"), error);
+    else
+        status_->setText(tr("项目已保存：%1").arg(path));
+}
+void MainWindow::openProject() {
+    if (backend_.busy())
+        return;
+    auto path = QFileDialog::getOpenFileName(this, tr("打开项目"), {},
+                                             tr("Garlic 项目 (*.garlic.json *.json)"));
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return;
+    auto j = QJsonDocument::fromJson(file.readAll()).object();
+    if (j.value("version").toInt() != 1)
+        return;
+    pendingProject_ = path;
+    openPath(j.value("input").toString());
+}
+void MainWindow::searchDialog() {
+    if (backend_.project()->classes().isEmpty())
+        return;
+    if (!searchDialog_)
+        searchDialog_ = new SearchDialog(this);
+    searchDialog_->show();
+    searchDialog_->raise();
+    searchDialog_->activateWindow();
+}
 void MainWindow::exportAll() {
-    const auto parent = QFileDialog::getExistingDirectory(this, tr("选择导出位置（将在其中创建新目录）"));
-    if (parent.isEmpty()) return;
-    const auto folder = QFileInfo(backend_.input()).completeBaseName() + (language_->currentIndex() ? "-smali-" : "-sources-") + QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss-zzz");
-    status_->setText(tr("正在导出全部源码…")); backend_.exportSources(QDir(parent).filePath(folder), language_->currentIndex() == 1);
+    auto parent = QFileDialog::getExistingDirectory(this, tr("导出到新目录"));
+    if (parent.isEmpty())
+        return;
+    const auto folder = QFileInfo(backend_.input()).completeBaseName() + "-sources-" +
+                        QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss-zzz");
+    backend_.exportSources(QDir(parent).filePath(folder), view() && view()->smali());
 }
-
 void MainWindow::dragEnterEvent(QDragEnterEvent *event) {
-    if (!backend_.busy() && event->mimeData()->hasUrls() && event->mimeData()->urls().first().isLocalFile()) event->acceptProposedAction();
+    if (!backend_.busy() && event->mimeData()->hasUrls() && !event->mimeData()->urls().isEmpty() &&
+        event->mimeData()->urls().first().isLocalFile())
+        event->acceptProposedAction();
 }
 void MainWindow::dropEvent(QDropEvent *event) {
-    if (!event->mimeData()->urls().isEmpty()) openPath(event->mimeData()->urls().first().toLocalFile());
+    if (!event->mimeData()->urls().isEmpty())
+        openPath(event->mimeData()->urls().first().toLocalFile());
 }
 void MainWindow::closeEvent(QCloseEvent *event) {
-    QSettings().setValue("geometry", saveGeometry()); backend_.cancel(); event->accept();
+    QSettings().setValue("geometry", saveGeometry());
+    backend_.cancel();
+    event->accept();
+}
+
+SourceDocument MainWindow::present(const SourceDocument &raw, bool smali) const {
+    auto doc = backend_.project()->applyAliases(raw, smali);
+    if (smali)
+        return doc;
+    // Blank presentation-only annotations/notices without moving source spans.
+    int offset = 0;
+    for (const auto &line : doc.text.split('\n')) {
+        bool hide =
+            !backend_.settings().showMetadata && (line.trimmed().startsWith("@Metadata(") ||
+                                                  line.trimmed().startsWith("@kotlin.Metadata("));
+        if (!backend_.settings().showNotice && (line.startsWith(" *") || line == "/*" ||
+                                                line == " */" || line.startsWith("// class:")))
+            hide = true;
+        if (hide)
+            for (int j = 0; j < line.size(); j++)
+                doc.text[offset + j] = ' ';
+        offset += line.size() + 1;
+    }
+    return doc;
 }

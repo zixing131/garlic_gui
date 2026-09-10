@@ -1,3 +1,4 @@
+#include "source_map.h"
 #include "common/str_tools.h"
 #include "decompiler/klass.h"
 #include "decompiler/expression.h"
@@ -494,16 +495,7 @@ static void write_class_annotation(jsource_file *jf)
     FILE *stream = file_output(jf);
     for (int i = 0; i < jf->annotations->size; ++i) {
         jd_annotation *ano = lget_obj(jf->annotations, i);
-        for (int j = 0; j < strlen(ano->str); ++j) {
-            unsigned char c = ano->str[j];
-            if (iscntrl(c)) {
-                fprintf(stream, "\\%02X", c);
-            }
-            else {
-                fprintf(stream, "%c", c);
-            }
-        }
-        fprintf(stream, "\n");
+        fprintf(stream, "%s\n", ano->str);
     }
 }
 
@@ -536,7 +528,9 @@ static void write_field(jsource_file *jf, jd_node *node)
             string annotation = ano->str;
             fprintf(stream, "%s%s\n", ident, annotation);
         }
+        long field_start=ftell(stream);
         fprintf(stream, "%s%s;\n", ident, field->defination);
+        source_map_definition(stream,field_start,jf->fname,field->name,field->signature,field->name,0);
     }
     fprintf(stream, "\n");
 }
@@ -573,7 +567,9 @@ static void write_class(FILE *stream, jd_node *n)
     jsource_file *_source_file = n->data;
     fprintf(stream, "%s// class: %s\n", ident, _source_file->fname);
     write_class_annotation(_source_file);
+    long class_start=ftell(stream);
     fprintf(stream, "%s%s {\n", ident, _source_file->defination);
+    source_map_definition(stream,class_start,_source_file->fname,NULL,NULL,_source_file->sname,0);
     writter_for_class(_source_file, n);
     fprintf(stream, "%s}\n", ident);
 }
@@ -583,7 +579,9 @@ static void write_anonymous_class(FILE *stream, jsource_file *jf, jd_node *n)
     string ident = get_node_ident(n);
     jsource_file *_source_file = n->data;
     write_class_annotation(_source_file);
+    long class_start=ftell(stream);
     fprintf(stream, "%s%s {\n", ident, _source_file->defination);
+    source_map_definition(stream,class_start,_source_file->fname,NULL,NULL,_source_file->sname,0);
     writter_for_anonymous_class(_source_file, n);
     fprintf(stream, "%s}\n", ident);
 }
@@ -596,14 +594,17 @@ static void write_method(FILE *stream, jsource_file *jf, jd_node *node)
         return;
 
     write_method_annotation(jf, node);
+    long method_start=ftell(stream);
     if (method_is_empty(m)) {
         fprintf(stream, "%s%s;\n\n", ident,
                 create_method_defination(m));
+        source_map_method(stream,method_start,jf,m);
         return;
     }
     else
         fprintf(stream, "%s%s {\n", ident,
                 create_method_defination(m));
+    source_map_method(stream,method_start,jf,m);
     writter_for_class(jf, node);
     fprintf(stream, "%s}\n\n", ident);
 }
@@ -755,6 +756,8 @@ static void write_default(FILE *stream, jsource_file *jf, jd_node *n)
 
 void writter_for_class(jsource_file *jf, jd_node *node)
 {
+    int root=node==NULL;
+    if (root) source_map_begin();
     if (node == NULL)
         node = lget_obj_first(jf->blocks);
     FILE *stream = file_output(jf);
@@ -815,6 +818,7 @@ void writter_for_class(jsource_file *jf, jd_node *node)
                 break;
         }
     }
+    if (root) { fflush(stream); source_map_end(jf); }
 }
 
 void writter_for_anonymous_class(jsource_file *jf, jd_node *node)

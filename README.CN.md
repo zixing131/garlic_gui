@@ -16,8 +16,8 @@
 
 ### 原生 C++ GUI
 
-现在可以构建基于 Qt 6 的桌面浏览器：包与类树、按类 Java/Smali 浏览、语法高亮、
-多标签、文本查找和源码导出。构建时启用 `-DGARLIC_BUILD_GUI=ON`。
+现在可以构建基于 Qt 6 的桌面浏览器：类型与成员树、底部 Java/Smali 切换、语法高亮、
+引用与声明导航、项目别名重命名、全文搜索、设置和 MCP。构建时启用 `-DGARLIC_BUILD_GUI=ON`。
 完整说明见 [Garlic GUI](docs/garlic-gui.md)。
 
 ### 定制服务

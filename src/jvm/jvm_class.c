@@ -101,6 +101,7 @@ void jvm_fields(jsource_file *jf)
 
         desc_index = j_field->descriptor_index;
         jd_descriptor *descriptor = jvm_descriptor(jf, desc_index);
+        field->signature = pool_str(jc, desc_index);
         field->type = lget_string(descriptor->list, 0);
         field->name = pool_str(jf->jclass, j_field->name_index);
         field->access_flags_fn = jvm_field_access_flag;

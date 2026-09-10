@@ -1,3 +1,4 @@
+#include "java_string.h"
 #include "dalvik/dex_annotation.h"
 #include "dalvik/dex_class.h"
 #include "decompiler/klass.h"
@@ -61,7 +62,7 @@ string encoded_value_to_s(jd_meta_dex *meta, encoded_value *ev)
             for (int i = 0; i < ev->value_length; ++i) {
                 v = v | ev->value[i] << (i * 8);
             }
-            return str_create("\"%s\"", dex_str_of_idx(meta, v));
+            return str_create("\"%s\"", java_escape_string(dex_str_of_idx(meta, v)));
         }
         case kDexAnnotationType: {
             u4 v = 0;

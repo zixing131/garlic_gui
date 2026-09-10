@@ -1,12 +1,19 @@
 #include "mainwindow.h"
+#include "mcpserver.h"
 #include <QApplication>
 #include <QCommandLineParser>
-#include <QTimer>
 #include <QStyleFactory>
+#include <QTimer>
+#include <cstring>
 
 int main(int argc, char **argv) {
+    for (int i = 1; i < argc; i++)
+        if (std::strcmp(argv[i], "--mcp") == 0)
+            return runMcpBridge(argc, argv);
     QApplication app(argc, argv);
-    app.setApplicationName("Garlic GUI"); app.setOrganizationName("Garlic"); app.setApplicationVersion("0.1.0");
+    app.setApplicationName("Garlic GUI");
+    app.setOrganizationName("Garlic");
+    app.setApplicationVersion("0.3.0");
     app.setStyle(QStyleFactory::create("Fusion"));
     QPalette palette;
     palette.setColor(QPalette::Window, QColor("#17212d"));
@@ -52,9 +59,17 @@ int main(int argc, char **argv) {
         QProgressBar { border: 0; background: #243446; border-radius: 4px; }
         QProgressBar::chunk { background: #97d6b1; }
     )");
-    QCommandLineParser parser; parser.setApplicationDescription("Garlic native bytecode browser"); parser.addHelpOption(); parser.addVersionOption();
-    parser.addOption({"engine", "Path to the garlic engine executable", "path"}); parser.addPositionalArgument("file", "APK, DEX, JAR, WAR or CLASS file", "[file]"); parser.process(app);
-    MainWindow window(parser.value("engine")); window.show();
-    if (!parser.positionalArguments().isEmpty()) QTimer::singleShot(0, &window, [&] { window.openPath(parser.positionalArguments().first()); });
+    QCommandLineParser parser;
+    parser.setApplicationDescription("Garlic native bytecode browser");
+    parser.addHelpOption();
+    parser.addVersionOption();
+    parser.addOption({"engine", "Path to the garlic engine executable", "path"});
+    parser.addPositionalArgument("file", "APK, DEX, JAR, WAR or CLASS file", "[file]");
+    parser.process(app);
+    MainWindow window(parser.value("engine"));
+    window.show();
+    if (!parser.positionalArguments().isEmpty())
+        QTimer::singleShot(0, &window,
+                           [&] { window.openPath(parser.positionalArguments().first()); });
     return app.exec();
 }

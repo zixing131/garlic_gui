@@ -58,9 +58,8 @@ void jvm_method_access_flags(jd_method *m, str_list *list) {
         str_concat(list, ("/* synthetic */"));
     }
 
-    if (!method_is_init(m))
-        if (list->count > 0)
-            str_concat(list, (" "));
+    if (list->count > 0)
+        str_concat(list, (" "));
 }
 
 jd_val* jvm_method_parameter_val(jd_method *m, int index)

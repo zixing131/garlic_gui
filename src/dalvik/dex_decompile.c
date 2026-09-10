@@ -1,3 +1,4 @@
+#include "browse_index.h"
 #include "class_selection.h"
 #include <errno.h>
 #include "dalvik/dex_decompile.h"
@@ -512,7 +513,10 @@ void dex_file_analyse(string path, string save_dir, int thread_num, jd_dex_task_
     meta->source_dir = save_dir;
     jd_dex *dex = dex_init(meta, thread_num);
 
-    if (type == JD_DEX_TASK_DECOMPILE) {
+    if (class_selection_indexing()) {
+        for (u4 i=0;i<meta->header->class_defs_size;i++) browse_index_dex(meta,&meta->class_defs[i]);
+    }
+    else if (type == JD_DEX_TASK_DECOMPILE) {
         if (thread_num > 1) {
             dex_decompile_threadpool_start(dex);
         } else {

@@ -1,5 +1,5 @@
-#ifndef GARLIC_METADATA_H
-#define GARLIC_METADATA_H
+#ifndef GARLIC_DEX_METADATA_H
+#define GARLIC_DEX_METADATA_H
 
 #include "dex.h"
 
@@ -17,4 +17,4 @@ int read_signed_leb128(jd_meta_dex *dex);
 
 dex_instruction_format dex_opcode_fmt(u1 code);
 
-#endif //GARLIC_METADATA_H
+#endif //GARLIC_DEX_METADATA_H

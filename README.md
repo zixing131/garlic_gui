@@ -14,8 +14,8 @@ Tool for produces java source code from class/jar/dex/apk file
 
 ### Native C++ GUI
 
-An optional Qt 6 desktop browser provides a package/class tree, on-demand Java/Smali
-browsing, syntax highlighting, tabs, in-document search and source export. Enable
+An optional Qt 6 desktop browser provides typed class/member trees, bottom Java/Smali
+tabs, reference navigation, project aliases, full-project search, preferences and MCP. Enable
 `-DGARLIC_BUILD_GUI=ON`; see [the GUI build and usage guide](docs/garlic-gui.md).
 
 ### Features

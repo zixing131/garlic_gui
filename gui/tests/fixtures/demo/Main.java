@@ -1,6 +1,7 @@
 package demo;
 
-public class Main {
+@Marker(value = "中文\u0000\u0001\n\"\\😀")
+public class Main implements Contract {
     private final String name;
 
     public Main(String name) {
@@ -13,6 +14,10 @@ public class Main {
         }
         return "Welcome to Garlic";
     }
+
+    public String greet(String value) { return "greet: " + value; }
+
+    public String unicode() { return "中文\u0000\u0001\n\"\\😀"; }
 
     public static class Details {
         public int version() { return 1; }

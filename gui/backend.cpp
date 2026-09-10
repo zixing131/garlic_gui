@@ -4,32 +4,58 @@
 #include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
+#include <QFutureWatcher>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QProcessEnvironment>
+#include <QRegularExpression>
+#include <QSaveFile>
 #include <QSet>
 #include <QStandardPaths>
+#include <QTimer>
 #include <QUuid>
+#include <QtConcurrent>
 
-Backend::Backend(QObject *parent) : QObject(parent) {
+Backend::Backend(QObject *parent)
+    : QObject(parent), project_(this), settings_(AppSettings::load()) {
+    connect(&background_, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this,
+            &Backend::prepareFinished);
+    connect(&background_, &QProcess::readyReadStandardError, this, [this] {
+        emit log(QString::fromUtf8(background_.readAllStandardError()).right(4000));
+    });
+    connect(&background_, &QProcess::readyReadStandardOutput, this,
+            [this] { background_.readAllStandardOutput(); });
+    connect(&background_, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
+        if (error == QProcess::FailedToStart)
+            prepareFinished(-1, QProcess::CrashExit);
+    });
     const QString adjacent = QCoreApplication::applicationDirPath() + "/garlic"
 #ifdef Q_OS_WIN
-        ".exe"
+                                                                      ".exe"
 #endif
         ;
     engine_ = QFileInfo::exists(adjacent) ? adjacent : QStandardPaths::findExecutable("garlic");
     connect(&process_, &QProcess::readyReadStandardOutput, this, &Backend::readOutput);
     connect(&process_, &QProcess::readyReadStandardError, this, &Backend::readOutput);
-    connect(&process_, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this, &Backend::finish);
+    connect(&process_, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this,
+            &Backend::finish);
     connect(&process_, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
         if (error == QProcess::FailedToStart && busy()) {
             job_ = Job::None;
             emit busyChanged(false);
-            emit failed(tr("无法启动 garlic：%1\n请在“文件 → 选择引擎”中指定本项目编译的 garlic。").arg(process_.errorString()));
+            emit failed(tr("无法启动 garlic：%1\n请在“文件 → 选择引擎”中指定本项目编译的 garlic。")
+                            .arg(process_.errorString()));
         }
     });
 }
 
 Backend::~Backend() {
+    if(exportControl_)exportControl_->canceled=true;
+    cancelSearch();
+    sourceGenerating_->store(false);
+    disconnect(&background_, nullptr, this, nullptr);
+    background_.kill();
+    background_.waitForFinished(3000);
     disconnect(&process_, nullptr, this, nullptr);
     if (process_.state() != QProcess::NotRunning) {
         process_.kill();
@@ -43,10 +69,14 @@ bool Backend::supportsSmali() const {
 }
 
 bool Backend::safeClassName(const QString &name) {
-    if (name.isEmpty() || name.startsWith('/') || name.contains('\\') || name.contains(':')) return false;
-    for (const QChar c : name) if (c.unicode() < 32) return false;
+    if (name.isEmpty() || name.startsWith('/') || name.contains('\\') || name.contains(':'))
+        return false;
+    for (const QChar c : name)
+        if (c.unicode() < 32)
+            return false;
     for (const QString &part : name.split('/'))
-        if (part.isEmpty() || part == "." || part == "..") return false;
+        if (part.isEmpty() || part == "." || part == "..")
+            return false;
     return true;
 }
 
@@ -55,59 +85,123 @@ void Backend::start(Job job, const QStringList &arguments) {
     canceled_ = false;
     errorTail_.clear();
     process_.setWorkingDirectory(workspace_->path());
-    process_.setStandardOutputFile(QFileInfo(input_).suffix().compare("class", Qt::CaseInsensitive) == 0
-        && job != Job::Index ? jobDir_ + "/source.java" : QString());
+    applyEnvironment(process_, jobDir_);
+    process_.setStandardOutputFile(
+        QFileInfo(input_).suffix().compare("class", Qt::CaseInsensitive) == 0 && job != Job::Index
+            ? jobDir_ + "/source.java"
+            : QString());
     emit busyChanged(true);
     process_.start(engine_, arguments);
 }
 
 void Backend::open(const QString &path) {
-    if (busy()) return;
-    if (!QFileInfo(path).isFile()) { emit failed(tr("文件不存在：%1").arg(path)); return; }
+    if (busy())
+        return;
+    if (!QFileInfo(path).isFile()) {
+        emit failed(tr("文件不存在：%1").arg(path));
+        return;
+    }
     const QString ext = QFileInfo(path).suffix().toLower();
     if (!QStringList{"apk", "dex", "jar", "war", "class", "xapk", "apks"}.contains(ext)) {
-        emit failed(tr("请选择 APK、DEX、JAR、WAR 或 CLASS 文件。")); return;
+        emit failed(tr("请选择 APK、DEX、JAR、WAR 或 CLASS 文件。"));
+        return;
     }
-    auto workspace = std::make_unique<QTemporaryDir>(QDir::tempPath() + "/garlic-gui-XXXXXX");
-    if (!workspace->isValid()) { emit failed(tr("无法创建临时工作目录。")); return; }
+    auto workspace = std::make_shared<QTemporaryDir>(QDir::tempPath() + "/garlic-gui-XXXXXX");
+    if (!workspace->isValid()) {
+        emit failed(tr("无法创建临时工作目录。"));
+        return;
+    }
+    cancelSearch();
+    sourceGenerating_->store(false);
+    sourceGenerating_ = std::make_shared<std::atomic_bool>(false);
+    ++projectGeneration_;
+    ++searchGeneration_;
+    searchPending_ = false;
+    cancelPreparing_ = true;
+    if (background_.state() != QProcess::NotRunning) {
+        background_.kill();
+    }
+    preparing_ = false;
+    sourceGenerating_->store(false);
+    fullReady_ = false;
     workspace_ = std::move(workspace);
     input_ = QFileInfo(path).absoluteFilePath();
     cache_.clear();
+    cacheOrder_.clear();
+    project_.reset(input_);
     jobDir_ = workspace_->path() + "/index";
     QDir().mkpath(jobDir_);
-    start(Job::Index, {input_, "-I", workspace_->path() + "/classes.jsonl", "-o", jobDir_, "-t", "2"});
+    start(Job::Index, {input_, "-I", workspace_->path() + "/classes.jsonl", "-o", jobDir_, "-t",
+                       QString::number(settings_.threads)});
 }
 
 void Backend::request(const QString &name, bool smali) {
-    if (busy() || !workspace_) return;
-    if (!safeClassName(name)) { emit failed(tr("类名包含无效路径。")); return; }
-    if (smali && !supportsSmali()) { emit failed(tr("Smali 仅适用于 APK / DEX。")); return; }
+    if (busy() || !workspace_)
+        return;
+    if (!safeClassName(name)) {
+        emit failed(tr("类名包含无效路径。"));
+        return;
+    }
+    if (smali && !supportsSmali()) {
+        emit failed(tr("Smali 仅适用于 APK / DEX。"));
+        return;
+    }
     const QString key = name + (smali ? ":smali" : ":java");
-    if (cache_.contains(key)) { emit sourceReady(name, smali, cache_.value(key)); return; }
+    if (cache_.contains(key)) {
+        emit sourceReady(name, smali, cache_.value(key));
+        return;
+    }
     currentName_ = name;
+    argumentClass_ = smali ? name : project_.owner(name);
+    const auto available = cachedPath(name, smali);
+    if (!available.isEmpty()) {
+        emit sourceReady(name, smali, available);
+        return;
+    }
     smali_ = smali;
     jobDir_ = workspace_->path() + "/" + QUuid::createUuid().toString(QUuid::WithoutBraces);
     QDir().mkpath(jobDir_);
-    QStringList args{input_, "-c", name, "-o", jobDir_, "-t", "2"};
-    if (smali) args << "-s";
+    QStringList args{
+        input_, "-c", argumentClass_, "-o", jobDir_, "-t", QString::number(settings_.threads)};
+    if (smali)
+        args << "-s";
     start(Job::Source, args);
 }
 
 void Backend::exportSources(const QString &directory, bool smali) {
-    if (busy() || !workspace_) return;
-    if (smali && !supportsSmali()) return;
+    if (busy() || !workspace_)
+        return;
+    if (smali && !supportsSmali())
+        return;
     if (QFileInfo::exists(directory) || !QDir().mkpath(directory)) {
-        emit failed(tr("导出目标必须是可创建的新目录：%1").arg(directory)); return;
+        emit failed(tr("导出目标必须是可创建的新目录：%1").arg(directory));
+        return;
     }
     exportDir_ = directory;
     jobDir_ = directory;
-    QStringList args{input_, "-o", directory, "-t", "2"};
-    if (smali) args << "-s";
+    QStringList args{input_, "-o", directory, "-t", QString::number(settings_.threads)};
+    if (smali)
+        args << "-s";
     start(Job::Export, args);
 }
 
 void Backend::cancel() {
-    if (!busy()) return;
+    if(exportControl_)exportControl_->canceled=true;
+    if(postprocessing_){postprocessing_=false;emit busyChanged(false);emit log(tr("已取消导出处理，保留部分结果。"));}
+    cancelSearch();
+    ++projectGeneration_;
+    if (indexing_) {
+        indexing_ = false;
+        emit busyChanged(false);
+    }
+    ++searchGeneration_;
+    searchPending_ = false;
+    if (preparing_) {
+        cancelPreparing_ = true;
+        background_.kill();
+    }
+    if (!busy())
+        return;
     canceled_ = true;
     process_.kill();
 }
@@ -117,53 +211,296 @@ void Backend::readOutput() {
     bytes.replace('\b', ' ');
     const QString text = QString::fromUtf8(bytes);
     errorTail_ = (errorTail_ + text).right(4000);
-    if (!text.trimmed().isEmpty()) emit log(text.right(8000));
+    if (!text.trimmed().isEmpty())
+        emit log(text.right(8000));
 }
 
 void Backend::finish(int code, QProcess::ExitStatus status) {
-    if (!busy()) return;
+    if (!busy())
+        return;
     readOutput();
     const auto completed = job_;
     job_ = Job::None;
     emit busyChanged(false);
     if (canceled_) {
-        emit log(completed == Job::Export ? tr("导出已取消；目标目录保留已完成的部分文件。") : tr("任务已取消，可重新选择类重试。"));
+        emit log(completed == Job::Export ? tr("导出已取消；目标目录保留已完成的部分文件。")
+                                          : tr("任务已取消，可重新选择类重试。"));
         return;
     }
     if (code != 0 || status != QProcess::NormalExit) {
-        emit failed(tr("garlic %1（退出码 %2）。\n%3%4")
-            .arg(status == QProcess::CrashExit ? tr("进程崩溃") : tr("执行失败"))
-            .arg(code).arg(errorTail_).arg(completed == Job::Export ? tr("\n导出目录可能包含部分结果。") : QString()));
+        emit failed(
+            tr("garlic %1（退出码 %2）。\n%3%4")
+                .arg(status == QProcess::CrashExit ? tr("进程崩溃") : tr("执行失败"))
+                .arg(code)
+                .arg(errorTail_)
+                .arg(completed == Job::Export ? tr("\n导出目录可能包含部分结果。") : QString()));
         return;
     }
     if (completed == Job::Index) {
-        QFile file(workspace_->path() + "/classes.jsonl");
-        if (!file.open(QIODevice::ReadOnly) || file.size() > 64 * 1024 * 1024) {
-            emit failed(tr("无法读取类索引；请使用本项目编译的 garlic 引擎。")); return;
-        }
-        QSet<QString> names;
-        while (!file.atEnd()) {
-            const auto line = file.readLine();
-            const auto doc = QJsonDocument::fromJson(line);
-            const auto name = doc.object().value("name").toString();
-            if (!safeClassName(name)) { emit failed(tr("引擎返回了无效的类索引。")); return; }
-            names.insert(name);
-        }
-        QStringList classes = names.values();
-        classes.sort();
-        if (classes.isEmpty()) { emit failed(tr("文件中没有可浏览的顶层类。")); return; }
-        emit indexed(classes);
+        indexing_ = true;
+        emit busyChanged(true);
+        const int generation = projectGeneration_;
+        const auto workspace = workspace_;
+        const auto input = input_;
+        using IndexResult = QPair<std::shared_ptr<Project>, QString>;
+        auto watcher = new QFutureWatcher<IndexResult>(this);
+        connect(watcher, &QFutureWatcher<IndexResult>::finished, this, [this, watcher, generation] {
+            auto result = watcher->result();
+            watcher->deleteLater();
+            if (generation != projectGeneration_)
+                return;
+            indexing_ = false;
+            if (!result.second.isEmpty()) {
+                emit busyChanged(false);
+                emit failed(result.second);
+                return;
+            }
+            project_.replaceData(*result.first);
+            emit indexed(project_.classes());
+            emit busyChanged(false);
+            if (settings_.background)
+                QTimer::singleShot(0, this, &Backend::prepareSources);
+        });
+        watcher->setFuture(QtConcurrent::run([workspace, input] {
+            auto project = std::make_shared<Project>();
+            project->reset(input);
+            QFile file(workspace->path() + "/classes.jsonl");
+            if (!file.open(QIODevice::ReadOnly) || file.size() > 256 * 1024 * 1024)
+                return IndexResult{{}, QStringLiteral("无法读取类索引（最大 256 MiB）。")};
+            while (!file.atEnd()) {
+                auto object = QJsonDocument::fromJson(file.readLine()).object();
+                if (!Backend::safeClassName(object.value("name").toString()))
+                    return IndexResult{{}, QStringLiteral("引擎返回了无效的类索引。")};
+                project->addClass(object);
+            }
+            if (project->classes().isEmpty())
+                return IndexResult{{}, QStringLiteral("文件中没有可浏览的类。")};
+            return IndexResult{project, {}};
+        }));
     } else if (completed == Job::Source) {
-        QString path = jobDir_ + "/" + currentName_ + (smali_ ? ".smali" : ".java");
-        if (QFileInfo(input_).suffix().compare("class", Qt::CaseInsensitive) == 0) path = jobDir_ + "/source.java";
+        QString path = jobDir_ + "/" + argumentClass_ + (smali_ ? ".smali" : ".java");
+        if (QFileInfo(input_).suffix().compare("class", Qt::CaseInsensitive) == 0)
+            path = jobDir_ + "/source.java";
         if (!QFileInfo(path).isFile() || QFileInfo(path).size() == 0) {
-            emit failed(tr("引擎没有生成该类的%1源码。详情见日志。").arg(smali_ ? " Smali " : " Java ")); return;
+            emit failed(
+                tr("引擎没有生成该类的%1源码。详情见日志。").arg(smali_ ? " Smali " : " Java "));
+            return;
         }
         cache_.insert(currentName_ + (smali_ ? ":smali" : ":java"), path);
+        cacheOrder_.removeAll(currentName_ + (smali_ ? ":smali" : ":java"));
+        cacheOrder_.append(currentName_ + (smali_ ? ":smali" : ":java"));
+        qint64 total = 0;
+        for (const auto &p : cache_)
+            total += QFileInfo(p).size();
+        while (total > qint64(settings_.cacheMiB) * 1024 * 1024 && cacheOrder_.size() > 1) {
+            const auto key = cacheOrder_.takeFirst();
+            const auto old = cache_.take(key);
+            total -= QFileInfo(old).size();
+            QFile::remove(old);
+            QString map = old;
+            map.chop(5);
+            QFile::remove(map + ".map.json");
+        }
         emit sourceReady(currentName_, smali_, path);
     } else {
-        QDirIterator files(exportDir_, {"*.java", "*.smali"}, QDir::Files, QDirIterator::Subdirectories);
-        if (!files.hasNext()) { emit failed(tr("引擎没有生成源码。导出目录：%1").arg(exportDir_)); return; }
+        QDirIterator files(exportDir_, {"*.java", "*.smali"}, QDir::Files,
+                           QDirIterator::Subdirectories);
+        if (!files.hasNext()) {
+            emit failed(tr("引擎没有生成源码。导出目录：%1").arg(exportDir_));
+            return;
+        }
+        if (!project_.aliases().isEmpty()) {
+            postprocessing_=true;emit busyChanged(true);exportControl_=std::make_shared<SearchControl>();
+            auto control=exportControl_;auto snapshot=project_.snapshot();const auto directory=exportDir_,input=input_;
+            const int generation=projectGeneration_,limit=settings_.sourceMiB;const bool exportSmali=process_.arguments().contains("-s");
+            auto watcher=new QFutureWatcher<QString>(this);
+            connect(watcher,&QFutureWatcher<QString>::finished,this,[this,watcher,generation,directory,control]{
+                auto error=watcher->result();watcher->deleteLater();if(generation!=projectGeneration_||control->canceled)return;
+                postprocessing_=false;emit busyChanged(false);if(error.isEmpty())emit exported(directory);else emit failed(error);
+            });
+            watcher->setFuture(QtConcurrent::run([snapshot,directory,input,limit,exportSmali,control]{
+            QSet<QString> done;
+            for (const auto &name : snapshot->classes()) {
+                if(control->canceled)return QString();
+                const QString owner = exportSmali ? name : snapshot->owner(name);
+                if (done.contains(owner))
+                    continue;
+                done.insert(owner);
+                const QString oldPath =
+                    directory + "/" +
+                    (QFileInfo(input).suffix() == "class" ? QString("source") : owner) +
+                    (exportSmali ? ".smali" : ".java");
+                if (!QFileInfo::exists(oldPath))
+                    continue;
+                if (QFileInfo(oldPath).size() > qint64(limit) * 1024 * 1024) {
+                    return QStringLiteral("导出文件超过别名处理限制，已保留原始输出：%1").arg(oldPath);
+                }
+                const auto document = snapshot->document(owner, exportSmali, oldPath);
+                const auto renamed = snapshot->renamedClass(owner);
+                const QString target = renamed == owner ? oldPath
+                                                        : QFileInfo(oldPath).absolutePath() + "/" +
+                                                              renamed.section('/', -1) +
+                                                              (exportSmali ? ".smali" : ".java");
+                QSaveFile file(target);
+                if (!file.open(QIODevice::WriteOnly) || file.write(document.text.toUtf8()) < 0 ||
+                    !file.commit()) {
+                    return QStringLiteral("无法保存重命名后的导出文件：%1").arg(target);
+                }
+                if (target != oldPath)
+                    QFile::remove(oldPath);
+                QString map = oldPath;
+                map.chop(exportSmali ? 6 : 5);
+                QFile::remove(map + ".map.json");
+            }
+                return QString();
+            }));
+            return;
+        }
         emit exported(exportDir_);
     }
+}
+
+void Backend::applyEnvironment(QProcess &process, const QString &directory) {
+    auto env = QProcessEnvironment::systemEnvironment();
+    env.insert("GARLIC_SOURCE_MAP_DIR", directory);
+    env.insert("GARLIC_ESCAPE_UNICODE", settings_.escapeUnicode ? "1" : "0");
+    env.insert("GARLIC_EXCLUDED_PACKAGES", settings_.excluded.join(';').replace('.', '/'));
+    process.setProcessEnvironment(env);
+}
+void Backend::configure(const AppSettings &settings) {
+    const bool engineChange = settings_.escapeUnicode != settings.escapeUnicode ||
+                              settings_.excluded != settings.excluded;
+    settings_ = settings;
+    if (engineChange && !busy() && !preparing_)
+        clearCache();
+}
+QString Backend::cachedPath(const QString &name, bool smali) const {
+    const auto direct = cache_.value(name + (smali ? ":smali" : ":java"));
+    if (QFileInfo::exists(direct))
+        return direct;
+    if (fullReady_ && !smali && workspace_) {
+        const auto path =
+            workspace_->path() + "/all-java/" +
+            (QFileInfo(input_).suffix() == "class" ? QString("source") : project_.owner(name)) +
+            ".java";
+        if (QFileInfo::exists(path))
+            return path;
+    }
+    return {};
+}
+QJsonObject Backend::cacheStats() const {
+    qint64 bytes = 0;
+    for (const auto &path : cache_)
+        bytes += QFileInfo(path).size();
+    return {{"cached_documents", cache_.size()},
+            {"source_bytes", double(bytes)},
+            {"full_project_ready", fullReady_},
+            {"preparing", preparing_}};
+}
+void Backend::clearCache() {
+    if (busy() || preparing_)
+        return;
+    ++searchGeneration_;
+    for (const auto &path : cache_)
+        QFile::remove(path);
+    cache_.clear();
+    cacheOrder_.clear();
+    if (workspace_)
+        QDir(workspace_->path() + "/all-java").removeRecursively();
+    fullReady_ = false;
+}
+void Backend::prepareSources() {
+    if (preparing_ || fullReady_ || !workspace_ || project_.classes().isEmpty())
+        return;
+    if (background_.state() != QProcess::NotRunning) {
+        QTimer::singleShot(20, this, &Backend::prepareSources);
+        return;
+    }
+    const QString directory = workspace_->path() + "/all-java";
+    QDir(directory).removeRecursively();
+    QDir().mkpath(directory);
+    cancelPreparing_ = false;
+    preparing_ = true;
+    sourceGenerating_->store(true);
+    emit preparationChanged(true);
+    applyEnvironment(background_, directory);
+    background_.setWorkingDirectory(workspace_->path());
+    background_.setStandardOutputFile(
+        QFileInfo(input_).suffix() == "class" ? directory + "/source.java" : QString());
+    background_.start(engine_, {input_, "-o", directory, "-t", QString::number(settings_.threads)});
+}
+void Backend::prepareFinished(int code, QProcess::ExitStatus status) {
+    if (!preparing_)
+        return;
+    preparing_ = false;
+    sourceGenerating_->store(false);
+    emit preparationChanged(false);
+    if (cancelPreparing_) {
+        searchPending_ = false;
+        emit log(tr("已停止后台反编译，重新搜索可重试。"));
+        return;
+    }
+    if (code != 0 || status != QProcess::NormalExit) {
+        searchPending_ = false;
+        emit failed(tr("后台源码生成失败；可停止后重新搜索，已打开的代码仍可浏览。"));
+        return;
+    }
+    fullReady_ = true;
+    emit projectSourcesReady();
+}
+
+void Backend::cancelSearch(int request) {
+    if (request >= 0 && request != searchGeneration_)
+        return;
+    if (searchControl_)
+        searchControl_->canceled = true;
+}
+void Backend::search(const QString &query, bool regex, bool caseSensitive) {
+    SearchOptions options;
+    options.query = query;
+    options.regex = regex;
+    options.caseSensitive = caseSensitive;
+    const int request = search(options);
+    auto connection = std::make_shared<QMetaObject::Connection>();
+    *connection = connect(this, &Backend::searchCompleted, this,
+                          [this, request, connection](int id, const SearchResult &result) {
+                              if (id != request)
+                                  return;
+                              disconnect(*connection);
+                              if (!result.error.isEmpty())
+                                  emit failed(result.error);
+                              else if (!result.canceled)
+                                  emit searchFinished(result.hits, result.truncated);
+                          });
+}
+int Backend::search(const SearchOptions &options) {
+    cancelSearch();
+    const int request = ++searchGeneration_;
+    searchControl_ = std::make_shared<SearchControl>();
+    if ((options.code || options.comments) && !fullReady_ && !options.query.isEmpty() &&
+        searchExpression(options).isValid())
+        prepareSources();
+    auto snapshot = project_.snapshot();
+    auto control = searchControl_;
+    auto generating = sourceGenerating_;
+    auto workspace = workspace_;
+    auto events = std::make_shared<SearchEvents>();
+    connect(events.get(), &SearchEvents::batch, this, &Backend::searchBatch);
+    connect(events.get(), &SearchEvents::progress, this, &Backend::searchProgress);
+    auto watcher = new QFutureWatcher<SearchResult>(this);
+    connect(watcher, &QFutureWatcher<SearchResult>::finished, this, [this, watcher, request] {
+        auto result = watcher->result();
+        watcher->deleteLater();
+        emit searchCompleted(request, result);
+    });
+    auto settings = options;
+    settings.sourceMiB = settings_.sourceMiB;
+    const bool single = QFileInfo(input_).suffix() == "class";
+    watcher->setFuture(QtConcurrent::run(
+        [snapshot, settings, control, generating, workspace, single, events, request] {
+            return searchProject(snapshot, settings,
+                                 workspace ? workspace->path() + "/all-java" : QString(), single,
+                                 generating, control, events, request);
+        }));
+    return request;
 }

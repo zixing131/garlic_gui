@@ -1,0 +1,160 @@
+name: Build and release Garlic GUI
+
+on:
+  push:
+    branches: [main]
+    tags: ['gui-v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gui-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  unix:
+    name: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: macos-15, platform: macos-arm64, qt-host: mac, qt-arch: clang_64, arch: arm64}
+          - {os: macos-15-intel, platform: macos-x64, qt-host: mac, qt-arch: clang_64, arch: x86_64}
+          - {os: ubuntu-24.04, platform: linux-x64, qt-host: linux, qt-arch: gcc_64, arch: x86_64}
+          - {os: ubuntu-24.04-arm, platform: linux-arm64, qt-host: linux_arm64, qt-arch: linux_gcc_arm64, arch: aarch64}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          host: ${{ matrix.qt-host }}
+          arch: ${{ matrix.qt-arch }}
+          cache: true
+      - name: Configure and build
+        shell: bash
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          python -m pip install cmake ninja
+          args=()
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            args+=(-DCMAKE_OSX_ARCHITECTURES="$TARGET_ARCH" -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0)
+          fi
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DGARLIC_BUILD_GUI=ON -DGARLIC_GUI_TESTS=ON "${args[@]}"
+          cmake --build build --parallel 3
+      - name: Integration tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python gui/tests/make_fixtures.py build/fixtures
+          ctest --test-dir build --output-on-failure --timeout 120
+      - name: Package runtime and smoke test
+        shell: bash
+        env:
+          TARGET_PLATFORM: ${{ matrix.platform }}
+        run: python scripts/package_gui.py --build build --output dist --platform "$TARGET_PLATFORM" --qt "$QT_ROOT_DIR"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: garlic-${{ matrix.platform }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+  windows:
+    name: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: windows-2022, platform: windows-x64, msystem: CLANG64, prefix: mingw-w64-clang-x86_64}
+          - {os: windows-11-arm, platform: windows-arm64, msystem: CLANGARM64, prefix: mingw-w64-clang-aarch64}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 50
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: ${{ matrix.msystem }}
+          update: true
+          install: >-
+            ${{ matrix.prefix }}-clang
+            ${{ matrix.prefix }}-llvm
+            ${{ matrix.prefix }}-cmake
+            ${{ matrix.prefix }}-ninja
+            ${{ matrix.prefix }}-qt6-base
+            ${{ matrix.prefix }}-python
+      - name: Configure and build native architecture
+        env:
+          TARGET_PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DGARLIC_BUILD_GUI=ON -DGARLIC_GUI_TESTS=ON \
+            -DPLATFORM_NAME="$([[ "$TARGET_PLATFORM" == windows-arm64 ]] && echo win-arm64 || echo win64)"
+          cmake --build build --parallel 3
+      - name: Integration tests
+        run: |
+          set -euo pipefail
+          export PATH="$(cygpath -u "$JAVA_HOME")/bin:$PATH"
+          python gui/tests/make_fixtures.py build/fixtures
+          ctest --test-dir build --output-on-failure --timeout 120
+      - name: Package runtime and smoke test
+        env:
+          TARGET_PLATFORM: ${{ matrix.platform }}
+        run: python scripts/package_gui.py --build build --output dist --platform "$TARGET_PLATFORM" --qt "$(cygpath -m "$MINGW_PREFIX")"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: garlic-${{ matrix.platform }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish tagged release
+    if: startsWith(github.ref, 'refs/tags/gui-v')
+    needs: [unix, windows]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: garlic-*
+          path: release-assets
+          merge-multiple: true
+      - name: Publish all six builds together
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd release-assets
+          test "$(find . -maxdepth 1 -name '*.zip' | wc -l)" -eq 6
+          sha256sum ./*.zip > SHA256SUMS.txt
+          if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" ./*.zip SHA256SUMS.txt --clobber
+          else
+            gh release create "$RELEASE_TAG" ./*.zip SHA256SUMS.txt --verify-tag \
+              --title "Garlic GUI $RELEASE_TAG" --generate-notes
+          fi
