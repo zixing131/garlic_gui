@@ -851,8 +851,8 @@ static void increase_assignment_expression_dupped_count(jd_val *val)
 {
     jd_ins *ins = val->ins;
     jd_exp *exp = ins->expression;
-    if (exp != NULL) {
-        assert(exp_is_assignment(exp));
+    // Stack joins can refer to a dup/empty expression rather than a producer assignment.
+    if (exp != NULL && exp_is_assignment(exp) && exp->data != NULL) {
         jd_exp_assignment *assignment = exp->data;
         assignment->dupped_count++;
         assignment->def_count++;

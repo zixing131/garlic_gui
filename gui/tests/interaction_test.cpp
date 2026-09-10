@@ -35,8 +35,9 @@ class InteractionTest : public QObject {
         auto info = Resources::inspect(qEnvironmentVariable("GARLIC_TEST_FIXTURES") + "/demo.jar");
         QVERIFY(!info.value("entries").toArray().isEmpty());
         QTemporaryDir unicodeArchive;
-        const auto unicodePath = unicodeArchive.path()+"/中文 resources.jar";
-        QVERIFY(QFile::copy(qEnvironmentVariable("GARLIC_TEST_FIXTURES")+"/demo.jar", unicodePath));
+        const auto unicodePath = unicodeArchive.path() + "/中文 resources.jar";
+        QVERIFY(
+            QFile::copy(qEnvironmentVariable("GARLIC_TEST_FIXTURES") + "/demo.jar", unicodePath));
         QVERIFY(!Resources::inspect(unicodePath).value("entries").toArray().isEmpty());
         QString error;
         auto bytes = Resources::read(qEnvironmentVariable("GARLIC_TEST_FIXTURES") + "/demo.jar",
@@ -211,10 +212,21 @@ class InteractionTest : public QObject {
             xml.readNext();
         QVERIFY2(!xml.hasError(), qPrintable(xml.errorString()));
         const auto signature = Resources::signature(path);
-        QVERIFY2(signature.contains("证书 MD5") && signature.contains("RSA 指数: 65537") && signature.contains("v1 覆盖范围"), qPrintable(signature.left(2500)));
+        QVERIFY2(signature.contains("证书 MD5") && signature.contains("RSA 指数: 65537") &&
+                     signature.contains("v1 覆盖范围"),
+                 qPrintable(signature.left(2500)));
         QString error;
+        QMap<QString, QString> files;
         const auto table = Resources::describeTable(
-            Resources::read(path, "resources.arsc", 32 * 1024 * 1024, &error));
+            Resources::read(path, "resources.arsc", 32 * 1024 * 1024, &error), &files);
+        QVERIFY(!files.isEmpty());
+        for (auto it = files.cbegin(); it != files.cend(); ++it) {
+            QXmlStreamReader decoded(it.value());
+            while (!decoded.atEnd())
+                decoded.readNext();
+            QVERIFY2(!decoded.hasError(), qPrintable(it.key() + ": " + decoded.errorString()));
+        }
+        qInfo() << "Decoded resource files:" << files.size();
         QVERIFY2(!table.contains("解析失败"), qPrintable(table.left(500)));
         QVERIFY(table.contains("string/"));
     }
@@ -238,7 +250,8 @@ class InteractionTest : public QObject {
         window.openPath(path);
         QTRY_VERIFY_WITH_TIMEOUT(
             !window.backend()->busy() && !window.backend()->project()->classes().isEmpty(), 60000);
-        qInfo() << "Application candidates:" << window.backend()->project()->applicationCandidates();
+        qInfo() << "Application candidates:"
+                << window.backend()->project()->applicationCandidates();
         QElapsedTimer refsTimer;
         refsTimer.start();
         window.showReferences("Landroidx/activity/OnBackPressedCallback;");
@@ -248,7 +261,10 @@ class InteractionTest : public QObject {
         QTRY_VERIFY_WITH_TIMEOUT(refsTable->model()->rowCount() > 0, 3000);
         qInfo() << "Reference first results (ms):" << refsTimer.elapsed();
         refsTimer.restart();
-        QVERIFY(!window.backend()->project()->xrefs("Landroidx/activity/OnBackPressedCallback;").isEmpty());
+        QVERIFY(!window.backend()
+                     ->project()
+                     ->xrefs("Landroidx/activity/OnBackPressedCallback;")
+                     .isEmpty());
         qInfo() << "Warm reference lookup (ms):" << refsTimer.elapsed();
         refsDialog->close();
         window.openClass("androidx/activity/ComponentActivity$$ExternalSyntheticLambda0");
@@ -272,6 +288,30 @@ class InteractionTest : public QObject {
                 << "Search hits:" << result.hits.size() << "Max UI heartbeat gap (ms):" << maxGap;
         QVERIFY2(maxGap < 350, qPrintable(QString("UI event-loop gap was %1 ms").arg(maxGap)));
         heartbeat.stop();
+        auto resourceTree = window.findChild<QTreeView *>("classTree");
+        auto resourceTables = resourceTree->model()->match(resourceTree->model()->index(0, 0),
+                                                           Qt::UserRole + 4, "resource-table", 1,
+                                                           Qt::MatchExactly | Qt::MatchRecursive);
+        QVERIFY(!resourceTables.isEmpty());
+        auto tableIndex = resourceTables.first();
+        resourceTree->expand(tableIndex.parent());
+        resourceTree->expand(tableIndex);
+        QModelIndexList decoded;
+        QTRY_VERIFY_WITH_TIMEOUT(!(decoded = resourceTree->model()->match(
+                                       tableIndex, Qt::UserRole + 4, "decoded-resource", 1,
+                                       Qt::MatchExactly | Qt::MatchRecursive))
+                                      .isEmpty(),
+                                 15000);
+        QVERIFY(QMetaObject::invokeMethod(resourceTree, "activated",
+                                          Q_ARG(QModelIndex, decoded.first())));
+        auto sourceTabs = window.findChild<QTabWidget *>("sourceTabs");
+        auto preview = sourceTabs->currentWidget()->findChild<CodeEditor *>();
+        QVERIFY(preview);
+        QTRY_VERIFY_WITH_TIMEOUT(preview->toPlainText().contains("<resources>"), 5000);
+        if (!qEnvironmentVariable("GARLIC_SCREENSHOTS").isEmpty()) {
+            resourceTree->scrollTo(decoded.first());
+            window.grab().save(qEnvironmentVariable("GARLIC_SCREENSHOTS") + "/resource-table.png");
+        }
         if (!qEnvironmentVariable("GARLIC_SCREENSHOTS").isEmpty()) {
             auto settings = window.backend()->settings();
             settings.theme = "light";
@@ -280,14 +320,16 @@ class InteractionTest : public QObject {
             auto tree = window.findChild<QTreeView *>();
             for (const QString kind : {QString("summary"), QString("signature")}) {
                 auto nodes = tree->model()->match(tree->model()->index(0, 0), Qt::UserRole + 4,
-                                                 kind, 1, Qt::MatchExactly | Qt::MatchRecursive);
+                                                  kind, 1, Qt::MatchExactly | Qt::MatchRecursive);
                 QVERIFY(!nodes.isEmpty());
-                QVERIFY(QMetaObject::invokeMethod(tree, "activated", Q_ARG(QModelIndex, nodes.first())));
+                QVERIFY(QMetaObject::invokeMethod(tree, "activated",
+                                                  Q_ARG(QModelIndex, nodes.first())));
                 auto tabs = window.findChild<QTabWidget *>("sourceTabs");
                 auto report = tabs->currentWidget()->findChild<QTextBrowser *>("overviewReport");
                 QVERIFY(report);
                 QTRY_VERIFY_WITH_TIMEOUT(!report->toPlainText().contains("正在读取"), 15000);
-                window.grab().save(qEnvironmentVariable("GARLIC_SCREENSHOTS") + "/" + kind + ".png");
+                window.grab().save(qEnvironmentVariable("GARLIC_SCREENSHOTS") + "/" + kind +
+                                   ".png");
             }
         }
         window.close();

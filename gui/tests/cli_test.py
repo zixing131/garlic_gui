@@ -9,7 +9,7 @@ import sys
 import tempfile
 
 engine, fixtures = Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve()
-files = [fixtures / 'demo.jar', fixtures / 'Main.class']
+files = [fixtures / 'demo.jar', fixtures / 'Main.class', fixtures / 'unknown.jar']
 files += [p for p in (fixtures / 'classes.dex', fixtures / '示例 app.apk') if p.exists()]
 with tempfile.TemporaryDirectory(prefix='garlic-cli-test-') as temp:
     root = Path(temp)
@@ -19,7 +19,7 @@ with tempfile.TemporaryDirectory(prefix='garlic-cli-test-') as temp:
     unicode_root.mkdir()
     originals = list(files)
     for source in originals:
-        destination = unicode_root / ('输入 文件' + source.suffix)
+        destination = unicode_root / ('输入 文件' + source.name)
         shutil.copyfile(source, destination)
         files.append(destination)
     for number, source in enumerate(files):
@@ -54,7 +54,7 @@ with tempfile.TemporaryDirectory(prefix='garlic-cli-test-') as temp:
         result = subprocess.run([str(engine), str(files[0]), '-o', str(target), '-t', '8'],
                                 capture_output=True, timeout=20, env=env)
         assert result.returncode == 0, result.stdout + result.stderr
-        for name in ('Main', 'Extra', 'Use'):
+        for name in ('Main', 'Extra', 'Use', 'DupJoin'):
             assert (target / f'demo/{name}.java').is_file()
             assert json.loads((target / f'demo/{name}.map.json').read_text(encoding='utf-8'))
 print('Index / single-class / no-match contract passed for', len(files), 'formats at 1 and 2 threads')

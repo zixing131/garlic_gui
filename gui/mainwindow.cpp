@@ -12,7 +12,7 @@
 MainWindow::MainWindow(const QString &engine, QWidget *parent)
     : QMainWindow(parent), backend_(this) {
     setWindowTitle("Garlic — 代码浏览器");
-    setMinimumSize(880, 600);
+    setMinimumSize(640, 440);
     resize(1360, 860);
     setAcceptDrops(true);
     QSettings prefs;
@@ -131,6 +131,7 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     auto fileRow = new QHBoxLayout;
     fileLabel_ = new QLabel(tr("打开 APK / DEX / JAR / CLASS"));
     fileLabel_->setTextFormat(Qt::PlainText);
+    fileLabel_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     fileLabel_->setContentsMargins(8, 0, 0, 0);
     countLabel_ = new QLabel;
     countLabel_->setObjectName("muted");
@@ -138,8 +139,11 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     fileRow->addWidget(countLabel_);
     layout->addLayout(fileRow);
     auto splitter = new QSplitter;
+    splitter->setObjectName("mainSplitter");
+    splitter->setChildrenCollapsible(false);
     layout->addWidget(splitter, 1);
     auto left = new QWidget;
+    left->setMinimumWidth(160);
     auto leftLayout = new QVBoxLayout(left);
     leftLayout->setContentsMargins(12, 6, 6, 6);
     filter_ = new QLineEdit;
@@ -174,6 +178,7 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     leftLayout->addWidget(tree_, 1);
     splitter->addWidget(left);
     auto right = new QWidget;
+    right->setMinimumWidth(300);
     auto rightLayout = new QVBoxLayout(right);
     rightLayout->setContentsMargins(8, 4, 6, 0);
     auto search = new QHBoxLayout;
@@ -218,7 +223,8 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     rightLayout->addWidget(pages_, 1);
     splitter->addWidget(right);
     splitter->setSizes({310, 1050});
-    splitter->setStretchFactor(1, 1);
+    splitter->setStretchFactor(0, 1);
+    splitter->setStretchFactor(1, 3);
     setCentralWidget(central);
     tabs_->tabBar()->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(tabs_->tabBar(), &QTabBar::customContextMenuRequested, this, [this](const QPoint &p) {
@@ -248,13 +254,23 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
         if (i >= 0) {
             status_->setText(selectedClass());
             recordHistory();
+            QTimer::singleShot(0, this, &MainWindow::loadCurrent);
         }
     });
-    connect(filter_, &QLineEdit::textChanged, this, &MainWindow::filterTree);
+    auto filterTimer = new QTimer(this);
+    filterTimer->setSingleShot(true);
+    filterTimer->setInterval(180);
+    connect(filter_, &QLineEdit::textChanged, this, [filterTimer] { filterTimer->start(); });
+    connect(filterTimer, &QTimer::timeout, this, [this] { filterTree(filter_->text()); });
     auto activate = [this](const QModelIndex &index) {
         const auto kind = index.data(Qt::UserRole + 4).toString(),
                    path = index.data(Qt::UserRole + 5).toString();
-        if (kind == "resource") {
+        if (kind == "decoded-resource") {
+            openResource(path, index.data(Qt::UserRole + 6).toString(),
+                         index.data(Qt::UserRole + 7).toString());
+            return;
+        }
+        if (kind == "resource" || kind == "resource-table") {
             openResource(path, index.data(Qt::UserRole + 6).toString());
             return;
         }
@@ -288,23 +304,6 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     addDockWidget(Qt::BottomDockWidgetArea, logDock_);
     logDock_->hide();
     viewMenu->addAction(logDock_->toggleViewAction());
-    resultDock_ = new QDockWidget(tr("搜索 / 引用"), this);
-    resultDock_->setObjectName("searchResults");
-    results_ = new QTableWidget(0, 3);
-    results_->setHorizontalHeaderLabels({tr("类 / 方法"), tr("位置"), tr("内容 / 引用目标")});
-    results_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    results_->setSelectionBehavior(QAbstractItemView::SelectRows);
-    results_->horizontalHeader()->setStretchLastSection(true);
-    results_->setColumnWidth(0, 350);
-    resultDock_->setWidget(results_);
-    addDockWidget(Qt::BottomDockWidgetArea, resultDock_);
-    resultDock_->hide();
-    viewMenu->addAction(resultDock_->toggleViewAction());
-    connect(results_, &QTableWidget::cellDoubleClicked, this, [this](int row, int) {
-        auto item = results_->item(row, 0);
-        if (item)
-            navigateTo(item->data(Qt::UserRole).toString(), item->data(Qt::UserRole + 1).toInt());
-    });
     memoryLabel_ = new QLabel;
     memoryLabel_->setObjectName("memoryUsage");
     statusBar()->addPermanentWidget(memoryLabel_);
@@ -345,6 +344,12 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
         }
     });
     connect(&backend_, &Backend::sourceReady, this, &MainWindow::showSource);
+    connect(&backend_, &Backend::cacheCleared, this, [this] {
+        for (int i = 0; i < tabs_->count(); ++i)
+            if (auto page = qobject_cast<ClassView *>(tabs_->widget(i)))
+                page->invalidate();
+        status_->setText(tr("正在清理源码缓存…"));
+    });
     connect(&backend_, &Backend::busyChanged, this, &MainWindow::updateBusy);
     connect(&backend_, &Backend::preparationChanged, this, &MainWindow::updateBusy);
     connect(&backend_, &Backend::log, logs_, &QPlainTextEdit::appendPlainText);
@@ -357,28 +362,6 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     });
     connect(&backend_, &Backend::projectSourcesReady, this,
             [this] { status_->setText(tr("项目源码已就绪，可以全文搜索。")); });
-    connect(&backend_, &Backend::searchFinished, this,
-            [this](const QJsonArray &hits, bool truncated) {
-                results_->setRowCount(0);
-                for (const auto &v : hits) {
-                    const auto hit = v.toObject();
-                    int row = results_->rowCount();
-                    results_->insertRow(row);
-                    auto item = new QTableWidgetItem(hit.value("class").toString());
-                    item->setData(Qt::UserRole, Project::classId(item->text()));
-                    item->setData(Qt::UserRole + 1, hit.value("line").toInt());
-                    results_->setItem(row, 0, item);
-                    results_->setItem(
-                        row, 1, new QTableWidgetItem(QString::number(hit.value("line").toInt())));
-                    results_->setItem(row, 2, new QTableWidgetItem(hit.value("text").toString()));
-                }
-                resultDock_->setWindowTitle(
-                    tr("项目搜索：%1 条结果%2")
-                        .arg(hits.size())
-                        .arg(truncated ? tr("（达到 1000 条上限）") : QString()));
-                resultDock_->show();
-                status_->setText(tr("搜索完成，双击结果跳转。"));
-            });
     connect(backend_.project(), &Project::renamed, this, &MainWindow::refreshAliases);
     connect(&backend_, &Backend::exported, this, [this](const QString &path) {
         // Export aliases with the source so edits are reviewable and recoverable.
@@ -434,7 +417,6 @@ void MainWindow::openPaths(const QStringList &paths) {
     expandedNodes_.clear();
     model_->clear();
     filter_->clear();
-    results_->setRowCount(0);
     logs_->clear();
     history_.clear();
     historyIndex_ = -1;
@@ -445,6 +427,7 @@ void MainWindow::openPaths(const QStringList &paths) {
     QSettings().setValue("lastDirectory", QFileInfo(path).absolutePath());
     status_->setText(tr("正在读取类与符号索引…"));
     resourceInfo_.clear();
+    decodedResources_.clear();
     backend_.openPaths(paths);
     QStringList recent = QSettings().value("recentFiles").toStringList();
     for (const auto &p : paths) {
@@ -524,6 +507,10 @@ void MainWindow::populate(const QStringList &classes) {
     (*tick)();
 }
 void MainWindow::populateMembers(const QModelIndex &index) {
+    if (index.data(Qt::UserRole + 4) == "resource-table") {
+        expandResourceTable(index);
+        return;
+    }
     auto item = model_->itemFromIndex(proxy_->mapToSource(index));
     if (!item)
         return;
@@ -538,12 +525,31 @@ void MainWindow::populateMembers(const QModelIndex &index) {
     item->removeRow(placeholder);
     const auto name = Project::classOf(item->data(Qt::UserRole + 1).toString());
     auto info = backend_.project()->info(name);
+    struct Members {
+        QJsonArray entries;
+        int cursor = 0;
+    };
+    auto state = std::make_shared<Members>();
     for (const auto &kind : {QString("fields"), QString("methods")})
-        for (const auto &v : info.value(kind).toArray()) {
-            auto m = v.toObject();
+        for (const auto &value : info.value(kind).toArray()) {
+            auto member = value.toObject();
+            member["nodeKind"] = kind == "methods" ? "method" : "field";
+            state->entries.append(member);
+        }
+    const QPersistentModelIndex parent(item->index());
+    auto step = std::make_shared<std::function<void()>>();
+    std::weak_ptr<std::function<void()>> weak = step;
+    *step = [this, state, parent, name, weak] {
+        if (!parent.isValid())
+            return;
+        auto item = model_->itemFromIndex(parent);
+        QElapsedTimer clock;
+        clock.start();
+        while (state->cursor < state->entries.size() && clock.elapsed() < 6) {
+            auto m = state->entries[state->cursor++].toObject();
             const auto id = m.value("id").toString();
             auto child = new QStandardItem(
-                NodeIcons::icon(kind == "methods" ? "method" : "field", m.value("flags").toInt(),
+                NodeIcons::icon(m.value("nodeKind").toString(), m.value("flags").toInt(),
                                 m.value("name").toString() == "<init>"),
                 backend_.project()->symbolName(id) + m.value("descriptor").toString());
             child->setData(id, Qt::UserRole + 1);
@@ -551,6 +557,11 @@ void MainWindow::populateMembers(const QModelIndex &index) {
             child->setToolTip(id);
             item->appendRow(child);
         }
+        if (state->cursor < state->entries.size())
+            if (auto next = weak.lock())
+                QTimer::singleShot(0, this, [next] { (*next)(); });
+    };
+    (*step)();
 }
 void MainWindow::openClass(const QString &name, bool smali) {
     const auto n = Project::normalize(name);
@@ -633,11 +644,12 @@ void MainWindow::showSource(const QString &name, bool smali, const QString &path
         auto snapshot = backend_.project()->snapshot();
         auto watcher = new QFutureWatcher<SourceDocument>(this);
         QPointer<ClassView> target(page);
+        const int sourceGeneration = page->property("sourceGeneration").toInt();
         connect(watcher, &QFutureWatcher<SourceDocument>::finished, this,
-                [this, watcher, target, smali, key, name] {
+                [this, watcher, target, smali, key, name, sourceGeneration] {
                     const auto raw = watcher->result();
                     watcher->deleteLater();
-                    if (!target)
+                    if (!target || target->property("sourceGeneration").toInt() != sourceGeneration)
                         return;
                     target->setProperty(key, false);
                     target->setRawDocument(smali, raw);

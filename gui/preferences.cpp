@@ -172,33 +172,48 @@ void MainWindow::settingsDialog() {
         const double memoryBytes = stats.value("mode").toString() == "memory"
                                        ? stats.value("source_bytes").toDouble()
                                        : 0.;
-        auto task = new QFutureWatcher<qint64>(&dialog);
-        connect(task, &QFutureWatcher<qint64>::finished, &dialog,
+        auto task = new QFutureWatcher<QPair<qint64, qint64>>(&dialog);
+        connect(task, &QFutureWatcher<QPair<qint64, qint64>>::finished, &dialog,
                 [task, usage, scanning, memoryBytes] {
-                    usage->setText(
-                        QObject::tr("当前项目磁盘：%1 MiB（源码、映射与索引） · 内存缓存：%2 MiB")
-                            .arg(task->result() / 1048576., 0, 'f', 2)
-                            .arg(memoryBytes / 1048576., 0, 'f', 2));
+                    usage->setText(QObject::tr("源码磁盘缓存：%1 MiB · 内存缓存：%2 "
+                                               "MiB\n保留的类索引：%3 MiB（不属于源码缓存）")
+                                       .arg(task->result().first / 1048576., 0, 'f', 2)
+                                       .arg(memoryBytes / 1048576., 0, 'f', 2)
+                                       .arg(task->result().second / 1048576., 0, 'f', 2));
                     *scanning = false;
                     task->deleteLater();
                 });
         task->setFuture(QtConcurrent::run([path] {
-            qint64 n = 0;
+            qint64 n = 0, index = 0;
             if (!path.isEmpty()) {
                 QDirIterator it(path, QDir::Files, QDirIterator::Subdirectories);
                 while (it.hasNext()) {
                     it.next();
-                    n += it.fileInfo().size();
+                    auto relative = QDir(path).relativeFilePath(it.filePath());
+                    if (relative == "classes.jsonl" || relative.startsWith("index/"))
+                        index += it.fileInfo().size();
+                    else
+                        n += it.fileInfo().size();
                 }
             }
-            return n;
+            return QPair<qint64, qint64>{n, index};
         }));
     };
     connect(timer, &QTimer::timeout, &dialog, refreshUsage);
     timer->start(2000);
     refreshUsage();
     cache->addRow(clear);
-    connect(clear, &QPushButton::clicked, &dialog, [this] { backend_.clearCache(); });
+    auto updateClear = [this, clear] {
+        clear->setEnabled(!backend_.busy() && !backend_.preparing());
+    };
+    updateClear();
+    connect(&backend_, &Backend::busyChanged, &dialog, updateClear);
+    connect(&backend_, &Backend::preparationChanged, &dialog, updateClear);
+    connect(&backend_, &Backend::busyChanged, &dialog, refreshUsage);
+    connect(clear, &QPushButton::clicked, &dialog, [this, usage] {
+        usage->setText(tr("正在清理源码缓存…"));
+        backend_.clearCache();
+    });
     auto appearance = page(tr("界面"));
     auto font = spin(appearance, tr("代码字号"), settings.fontSize, 8, 32);
     auto memory = check(appearance, tr("显示内存占用（当前 / 可用 / 峰值）"), settings.showMemory);

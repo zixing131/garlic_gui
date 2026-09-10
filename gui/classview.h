@@ -21,6 +21,7 @@ class ClassView : public QWidget {
     void setSource(bool smali, const SourceDocument &document);
     void applySettings(const AppSettings &settings);
     void selectMode(bool smali);
+    void invalidate();
   signals:
     void modeChanged();
 

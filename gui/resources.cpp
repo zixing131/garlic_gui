@@ -74,6 +74,8 @@ QStringList pool(const Data &d, int start, int size) {
     return out;
 }
 QString value(quint8 type, quint32 n, const QStringList &strings) {
+    if (type == 0)
+        return n == 1 ? "@empty" : "@null";
     if (type == 3)
         return strings.value(n);
     if (type == 0x12)
@@ -86,6 +88,15 @@ QString value(quint8 type, quint32 n, const QStringList &strings) {
         return QString(type == 1 ? "@0x" : "?0x") + QString::number(n, 16).rightJustified(8, '0');
     if (type >= 0x1c && type <= 0x1f)
         return "#" + QString::number(n, 16).rightJustified(8, '0');
+    if (type == 5 || type == 6) {
+        static const double radix[] = {1. / 256, 1. / 32768, 1. / 8388608, 1. / 2147483648};
+        const double number = qint32(n & 0xffffff00u) * radix[(n >> 4) & 3];
+        const QStringList units = {"px", "dp", "sp", "pt", "in", "mm"};
+        if (type == 5 && (n & 15) < 6)
+            return QString::number(number, 'g', 9) + units[n & 15];
+        if (type == 6 && (n & 15) < 2)
+            return QString::number(number * 100, 'g', 9) + ((n & 15) ? "%p" : "%");
+    }
     if (type == 4) {
         float f;
         memcpy(&f, &n, 4);
@@ -341,7 +352,61 @@ QString decodeXml(const QByteArray &bytes) {
     }
 }
 // Android ResTable layout: frameworks/base/libs/androidfw/include/androidfw/ResourceTypes.h.
-QString describeTable(const QByteArray &bytes) {
+QString describeTable(const QByteArray &bytes, QMap<QString, QString> *files) {
+    QMap<QString, QString> generated;
+    QHash<QString, QString> names;
+    auto qualifier = [](const QByteArray &config) {
+        auto byte = [&](int i) { return i < config.size() ? quint8(config[i]) : quint8(0); };
+        auto word = [&](int i) { return int(byte(i)) | (int(byte(i + 1)) << 8); };
+        QStringList q;
+        if (word(0))
+            q << QString("mcc%1").arg(word(0));
+        if (word(2))
+            q << QString("mnc%1").arg(word(2));
+        if (byte(4) && !(byte(4) & 128)) {
+            q << QString::fromLatin1(config.mid(4, 2));
+            if (byte(6))
+                q << "r" + QString::fromLatin1(config.mid(6, 2));
+        }
+        if (byte(8) == 1)
+            q << "port";
+        if (byte(8) == 2)
+            q << "land";
+        if ((byte(25) & 0x30) == 0x20)
+            q << "night";
+        if ((byte(25) & 0x30) == 0x10)
+            q << "notnight";
+        const QMap<int, QString> densities{{120, "ldpi"},    {160, "mdpi"},     {213, "tvdpi"},
+                                           {240, "hdpi"},    {320, "xhdpi"},    {480, "xxhdpi"},
+                                           {640, "xxxhdpi"}, {65534, "anydpi"}, {65535, "nodpi"}};
+        if (word(10))
+            q << densities.value(word(10), QString::number(word(10)) + "dpi");
+        if (word(26))
+            q << QString("sw%1dp").arg(word(26));
+        if (word(28))
+            q << QString("w%1dp").arg(word(28));
+        if (word(30))
+            q << QString("h%1dp").arg(word(30));
+        if (word(20))
+            q << QString("v%1").arg(word(20));
+        // Preserve configurations not represented by the common Android qualifiers.
+        QByteArray remainder = config;
+        for (int i : {0, 1, 2, 3, 8, 10, 11, 20, 21, 26, 27, 28, 29, 30, 31})
+            if (i < remainder.size())
+                remainder[i] = 0;
+        if (!(byte(4) & 128) && !(byte(6) & 128))
+            for (int i = 4; i < 8 && i < remainder.size(); i++)
+                remainder[i] = 0;
+        if (remainder.size() > 25)
+            remainder[25] = char(byte(25) & ~0x30);
+        bool extra = false;
+        for (char c : remainder)
+            if (c)
+                extra = true;
+        if (extra)
+            q << "config-" + QString::fromLatin1(remainder.toHex());
+        return q.isEmpty() ? QString() : "-" + q.join('-');
+    };
     try {
         Data d{bytes};
         if (d.u16(0) != 2)
@@ -402,6 +467,11 @@ QString describeTable(const QByteArray &bytes) {
                             "\n[" + types.value(typeId - 1) + "; " +
                             (defaults ? QString("default") : QString::fromLatin1(config.toHex())) +
                             "]\n";
+                        const QString resourceType = types.value(typeId - 1);
+                        QString packagePath = package;
+                        packagePath.replace(QRegularExpression("[^A-Za-z0-9_.-]"), "_");
+                        const auto directory =
+                            packagePath + "/res/values" + qualifier(config) + "/";
                         for (quint32 i = 0; i < count; ++i) {
                             quint32 index = i, offset;
                             if (flags & 1) {
@@ -424,9 +494,15 @@ QString describeTable(const QByteArray &bytes) {
                             const auto key = (ef & 8) ? es : d.u32(e + 4);
                             const quint32 id =
                                 (packageId << 24) | ((typeId + typeOffset) << 16) | index;
+                            const QString resourceName = keys.value(key);
+                            const QString identity = QString::number(id, 16).rightJustified(8, '0');
+                            names[identity] = resourceType + "/" + resourceName;
+                            QList<QPair<QString, QString>> bag;
+                            quint32 parentId = 0;
                             out += QString("0x%1  %2/%3 = ")
                                        .arg(id, 8, 16, QChar('0'))
                                        .arg(types.value(typeId - 1), keys.value(key));
+                            const int valueStart = out.size();
                             if (ef & 8)
                                 out += value(ef >> 8, d.u32(e + 4), globals);
                             else {
@@ -438,10 +514,15 @@ QString describeTable(const QByteArray &bytes) {
                                     auto maps = d.u32(e + 12);
                                     if (quint64(maps) * 12 > end - e - es)
                                         throw QString("Invalid map entries");
+                                    parentId = d.u32(e + 8);
                                     out += QString("{ parent: @0x%1")
                                                .arg(d.u32(e + 8), 8, 16, QChar('0'));
                                     for (quint32 m = 0; m < maps; ++m) {
                                         auto v = e + es + m * 12;
+                                        bag.append(
+                                            {QString::number(d.u32(v), 16).rightJustified(8, '0'),
+                                             value(uchar(d.slice(v + 7, 1)[0]), d.u32(v + 8),
+                                                   globals)});
                                         out += QString("\n    @0x%1: %2")
                                                    .arg(d.u32(v), 8, 16, QChar('0'))
                                                    .arg(value(uchar(d.slice(v + 7, 1)[0]),
@@ -455,9 +536,58 @@ QString describeTable(const QByteArray &bytes) {
                                                  d.u32(e + es + 4), globals);
                                 }
                             }
+                            const auto decoded = out.mid(valueStart);
+                            if (files) {
+                                const auto nameXml = resourceName.toHtmlEscaped();
+                                QString xml;
+                                if ((ef & 1) && !(ef & 8)) {
+                                    QString tag = resourceType == "array" ? "array" : resourceType;
+                                    xml = "    <" + tag + " name=\"" + nameXml + "\"";
+                                    if (resourceType == "style" && parentId)
+                                        xml +=
+                                            " parent=\"@0x" +
+                                            QString::number(parentId, 16).rightJustified(8, '0') +
+                                            "\"";
+                                    xml += ">\n";
+                                    const QMap<QString, QString> quantities{
+                                        {"01000004", "other"}, {"01000005", "zero"},
+                                        {"01000006", "one"},   {"01000007", "two"},
+                                        {"01000008", "few"},   {"01000009", "many"}};
+                                    for (const auto &item : bag) {
+                                        QString attribute;
+                                        if (resourceType == "plurals")
+                                            attribute = " quantity=\"" +
+                                                        quantities.value(item.first, item.first) +
+                                                        "\"";
+                                        else if (resourceType != "array")
+                                            attribute = " name=\"@0x" + item.first + "\"";
+                                        xml += "        <item" + attribute + ">" +
+                                               item.second.toHtmlEscaped() + "</item>\n";
+                                    }
+                                    xml += "    </" + tag + ">\n";
+                                } else if (resourceType == "id")
+                                    xml = "    <item type=\"id\" name=\"" + nameXml + "\" />\n";
+                                else
+                                    xml = "    <item type=\"" + resourceType.toHtmlEscaped() +
+                                          "\" name=\"" + nameXml + "\">" + decoded.toHtmlEscaped() +
+                                          "</item>\n";
+                                QString filename = resourceType;
+                                if (!filename.endsWith('s'))
+                                    filename += 's';
+                                generated[directory + filename + ".xml"] += xml;
+                                if (defaults)
+                                    generated[packagePath + "/res/values/public.xml"] +=
+                                        "    <public type=\"" + resourceType.toHtmlEscaped() +
+                                        "\" name=\"" + nameXml + "\" id=\"0x" + identity +
+                                        "\" />\n";
+                            }
                             out += '\n';
-                            if (out.size() > 4 * 1024 * 1024)
-                                return out + "\n预览达到 4 MiB 上限，可导出完整资源表。\n";
+                            if (out.size() > 4 * 1024 * 1024) {
+                                if (!files)
+                                    return out +
+                                           "\n预览达到 4 MiB 上限，可展开资源表查看分类文件。\n";
+                                out.clear();
+                            }
                         }
                     }
                     t += ts;
@@ -465,8 +595,27 @@ QString describeTable(const QByteArray &bytes) {
             }
             p += size;
         }
+        if (files) {
+            for (auto it = generated.begin(); it != generated.end(); ++it) {
+                auto text = it.value();
+                QRegularExpression reference("([@?])0x([0-9a-f]{8})");
+                auto matches = reference.globalMatch(text);
+                QList<QRegularExpressionMatch> all;
+                while (matches.hasNext())
+                    all << matches.next();
+                for (auto m = all.crbegin(); m != all.crend(); ++m)
+                    if (names.contains(m->captured(2)))
+                        text.replace(m->capturedStart(), m->capturedLength(),
+                                     m->captured(1) + names.value(m->captured(2)));
+                it.value() = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<resources>\n" + text +
+                             "</resources>\n";
+            }
+            *files = generated;
+        }
         return out;
     } catch (const QString &e) {
+        if (files)
+            files->clear();
         return "资源表解析失败：" + e;
     }
 }

@@ -95,7 +95,7 @@ SearchDialog::SearchDialog(MainWindow *window) : QDialog(window), window_(window
     setObjectName("projectSearch");
     setWindowTitle(tr("项目搜索"));
     resize(1160, 700);
-    setMinimumSize(820, 480);
+    setMinimumSize(640, 480);
     setModal(false);
     auto root = new QVBoxLayout(this);
     auto top = new QHBoxLayout;
@@ -114,6 +114,7 @@ SearchDialog::SearchDialog(MainWindow *window) : QDialog(window), window_(window
     top->addWidget(automatic_);
     root->addLayout(top);
     auto filters = new QHBoxLayout;
+    filters_ = filters;
     auto group = new QGroupBox(tr("在以下位置搜索"));
     auto locations = new QHBoxLayout(group);
     auto check = [&](const QString &label, bool checked) {
@@ -153,8 +154,7 @@ SearchDialog::SearchDialog(MainWindow *window) : QDialog(window), window_(window
     table_->verticalHeader()->hide();
     table_->verticalHeader()->setDefaultSectionSize(28);
     table_->horizontalHeader()->setStretchLastSection(false);
-    table_->setColumnWidth(0, 500);
-    table_->setColumnWidth(1, 900);
+    table_->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     table_->setItemDelegate(new MatchDelegate(table_));
     root->addWidget(table_, 1);
     auto progress = new QHBoxLayout;
@@ -296,4 +296,10 @@ void SearchDialog::closeEvent(QCloseEvent *event) {
     debounce_->stop();
     window_->backend()->cancelSearch(request_);
     QDialog::closeEvent(event);
+}
+
+void SearchDialog::resizeEvent(QResizeEvent *event) {
+    QDialog::resizeEvent(event);
+    if (filters_)
+        filters_->setDirection(width() < 900 ? QBoxLayout::TopToBottom : QBoxLayout::LeftToRight);
 }

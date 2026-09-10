@@ -42,3 +42,13 @@ void ClassView::applySettings(const AppSettings &settings) {
     }
 }
 void ClassView::selectMode(bool smali) { modes_->setCurrentIndex(smali ? 1 : 0); }
+
+void ClassView::invalidate() {
+    setProperty("sourceGeneration", property("sourceGeneration").toInt() + 1);
+    for (int i=0; i<2; ++i) {
+        loaded_[i] = false;
+        raw_[i] = {};
+        setProperty(i ? "loadingSmali" : "loadingJava", false);
+        editor(i)->setSource({tr("源码缓存已清理。重新选择该标签或代码模式以加载。"), {}});
+    }
+}

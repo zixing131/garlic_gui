@@ -47,6 +47,7 @@ class Backend : public QObject {
     void searchProgress(int request, int scanned, int total);
     void searchCompleted(int request, const SearchResult &result);
     void projectSourcesReady();
+    void cacheCleared();
     void preparationChanged(bool active);
     void searchFinished(const QJsonArray &results, bool truncated);
     void indexed(const QStringList &classes);

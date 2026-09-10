@@ -66,6 +66,9 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
                        .arg(Project::classOf(id).replace('/', '.') +
                             (id.contains("->") ? "." + window->backend()->project()->symbolName(id)
                                                : QString())));
+    label->setWordWrap(true);
+    label->setMinimumWidth(0);
+    label->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     label->setTextFormat(Qt::PlainText);
     label->setTextInteractionFlags(Qt::TextSelectableByMouse);
     root->addWidget(label);
@@ -81,8 +84,7 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
     table->setWordWrap(false);
     table->verticalHeader()->hide();
     table->verticalHeader()->setDefaultSectionSize(28);
-    table->setColumnWidth(0, 560);
-    table->horizontalHeader()->setStretchLastSection(true);
+    table->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     auto delegate = new SnippetDelegate(table);
     delegate->token = window->backend()->project()->symbolName(id).section('$', -1);
     table->setItemDelegate(delegate);

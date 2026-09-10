@@ -7,6 +7,7 @@ class QCheckBox;
 class QTableView;
 class QLabel;
 class QTimer;
+class QBoxLayout;
 class QAbstractTableModel;
 class SearchDialog : public QDialog {
     Q_OBJECT
@@ -15,11 +16,13 @@ class SearchDialog : public QDialog {
     void startSearch(int limit = 50);
 
   protected:
+    void resizeEvent(QResizeEvent *event) override;
     void closeEvent(QCloseEvent *event) override;
 
   private:
     void navigate();
     MainWindow *window_;
+    QBoxLayout *filters_ = nullptr;
     QLineEdit *query_, *package_;
     QCheckBox *classes_, *methods_, *fields_, *code_, *comments_, *regex_, *sensitive_, *automatic_,
         *keep_;

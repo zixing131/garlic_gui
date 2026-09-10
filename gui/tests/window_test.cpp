@@ -17,9 +17,11 @@ class WindowTest : public QObject {
         window.show();
         window.activateWindow();
         window.openPath(qEnvironmentVariable("GARLIC_TEST_FIXTURES") + "/demo.jar");
-        QTRY_VERIFY_WITH_TIMEOUT(!window.backend()->busy() && !window.backend()->project()->classes().isEmpty(), 15000);
+        QTRY_VERIFY_WITH_TIMEOUT(
+            !window.backend()->busy() && !window.backend()->project()->classes().isEmpty(), 15000);
         window.openClass("demo/Main");
-        QTRY_VERIFY_WITH_TIMEOUT(window.editor() && window.editor()->toPlainText().contains("greet"), 15000);
+        QTRY_VERIFY_WITH_TIMEOUT(
+            window.editor() && window.editor()->toPlainText().contains("greet"), 15000);
         window.navigateTo("Ldemo/Main;->greet(I)Ljava/lang/String;");
         auto editor = window.editor();
         editor->setFocus();
@@ -33,22 +35,60 @@ class WindowTest : public QObject {
         QTimer::singleShot(100, &window, [&] {
             auto dialog = qobject_cast<QInputDialog *>(QApplication::activeModalWidget());
             renameOpened = dialog != nullptr;
-            if (dialog) dialog->reject();
+            if (dialog)
+                dialog->reject();
         });
         QTest::keyClick(editor, Qt::Key_N);
         QTRY_VERIFY(renameOpened);
         auto tree = window.findChild<QTreeView *>("classTree");
         auto filter = window.findChild<QLineEdit *>("classFilter");
-        auto matches = tree->model()->match(tree->model()->index(0,0), Qt::UserRole + 1, "Ldemo/Main;", 1, Qt::MatchExactly | Qt::MatchRecursive);
+        auto matches =
+            tree->model()->match(tree->model()->index(0, 0), Qt::UserRole + 1, "Ldemo/Main;", 1,
+                                 Qt::MatchExactly | Qt::MatchRecursive);
         QVERIFY(!matches.isEmpty());
         auto idx = matches.first();
-        tree->expand(idx.parent()); tree->expand(idx);
+        tree->expand(idx.parent());
+        tree->expand(idx);
         tree->setCurrentIndex(idx);
         filter->setText("no_matching_class_123");
+        QTest::qWait(220);
         filter->clear();
-        matches = tree->model()->match(tree->model()->index(0,0), Qt::UserRole + 1, "Ldemo/Main;", 1, Qt::MatchExactly | Qt::MatchRecursive);
+        QTest::qWait(220);
+        matches = tree->model()->match(tree->model()->index(0, 0), Qt::UserRole + 1, "Ldemo/Main;",
+                                       1, Qt::MatchExactly | Qt::MatchRecursive);
         QVERIFY(!matches.isEmpty());
         QVERIFY(tree->isExpanded(matches.first()));
+    }
+    void clearCacheAndResize() {
+        MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
+        window.show();
+        window.openPath(qEnvironmentVariable("GARLIC_TEST_FIXTURES") + "/demo.jar");
+        QTRY_VERIFY_WITH_TIMEOUT(
+            !window.backend()->busy() && !window.backend()->project()->classes().isEmpty(), 15000);
+        window.openClass("demo/Main");
+        QTRY_VERIFY_WITH_TIMEOUT(
+            window.editor() && window.editor()->toPlainText().contains("greet"), 15000);
+        const auto source = window.backend()->cachedPath("demo/Main", false);
+        QVERIFY(QFileInfo::exists(source));
+        window.backend()->clearCache();
+        QTRY_VERIFY_WITH_TIMEOUT(!window.backend()->busy(), 5000);
+        QVERIFY(!QFileInfo::exists(source));
+        QVERIFY(!window.editor()->toPlainText().contains("greet"));
+        window.openClass("demo/Main");
+        QTRY_VERIFY_WITH_TIMEOUT(window.editor()->toPlainText().contains("greet"), 15000);
+        auto splitter = window.findChild<QSplitter *>("mainSplitter");
+        QVERIFY(splitter);
+        window.resize(1200, 760);
+        QTest::qWait(50);
+        const auto wide = splitter->sizes();
+        window.resize(700, 500);
+        QTest::qWait(50);
+        QVERIFY2(window.width() <= 700,
+                 qPrintable(QString::number(window.minimumSizeHint().width())));
+        const auto narrow = splitter->sizes();
+        QVERIFY(narrow[0] < wide[0]);
+        QVERIFY(narrow[1] < wide[1]);
+        QVERIFY(narrow[1] >= 300);
     }
     void crlfSymbolPositions() {
         CodeEditor editor(false);

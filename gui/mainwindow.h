@@ -47,7 +47,9 @@ class MainWindow : public QMainWindow {
     QSet<QPersistentModelIndex> expandedNodes_;
     bool filtering_ = false;
     void projectNodes();
-    void openResource(const QString &path, const QString &entry);
+    void openResource(const QString &path, const QString &entry, const QString &generated = {});
+    void expandResourceTable(const QModelIndex &index);
+    QHash<QString, QMap<QString, QString>> decodedResources_;
     void showOverview(const QString &path, bool signature = false);
     void goApplication();
     void goManifest();
@@ -86,8 +88,7 @@ class MainWindow : public QMainWindow {
     QProgressBar *progress_;
     QPlainTextEdit *logs_;
     QStackedWidget *pages_;
-    QTableWidget *results_;
-    QDockWidget *resultDock_, *logDock_;
+    QDockWidget *logDock_;
     QAction *openAction_, *exportAction_, *stopAction_, *settingsAction_;
     QString pendingId_, pendingProject_;
     int pendingLine_ = 0;

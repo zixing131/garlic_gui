@@ -105,7 +105,10 @@ void MainWindow::projectNodes() {
                                 parent = state->dirs[dir];
                             }
                             auto child = new QStandardItem(NodeIcons::resource(n), parts.last());
-                            child->setData("resource", Qt::UserRole + 4);
+                            const bool table = n.endsWith(".arsc", Qt::CaseInsensitive);
+                            child->setData(table ? "resource-table" : "resource", Qt::UserRole + 4);
+                            if (table)
+                                child->appendRow(new QStandardItem(tr("展开解析资源表…")));
                             child->setData(path, Qt::UserRole + 5);
                             child->setData(n, Qt::UserRole + 6);
                             child->setData(n, Qt::UserRole + 2);
@@ -124,8 +127,11 @@ void MainWindow::projectNodes() {
     tree_->expand(proxy_->mapFromSource(root->index()));
     tree_->expand(proxy_->mapFromSource(sourceRoot_->index()));
 }
-void MainWindow::openResource(const QString &path, const QString &entry) {
-    const QString key = path + "!" + entry;
+void MainWindow::openResource(const QString &path, const QString &entry, const QString &generated) {
+    const QString key = path + "!" + entry + (generated.isEmpty() ? "" : "!" + generated);
+    const bool decoded = !generated.isEmpty();
+    const QString decodedText = decodedResources_.value(path + "!" + entry).value(generated);
+    const QString displayEntry = decoded ? generated : entry;
     for (int i = 0; i < tabs_->count(); i++)
         if (tabs_->widget(i)->property("resourceKey") == key) {
             tabs_->setCurrentIndex(i);
@@ -139,35 +145,39 @@ void MainWindow::openResource(const QString &path, const QString &entry) {
     layout->setContentsMargins(0, 0, 0, 0);
     auto code = new CodeEditor(false);
     code->setTheme(backend_.settings().theme == "light");
-    code->document()->setProperty("language",
-                                  entry.endsWith(".xml", Qt::CaseInsensitive) ? "xml" : "java");
+    code->document()->setProperty(
+        "language", displayEntry.endsWith(".xml", Qt::CaseInsensitive) ? "xml" : "java");
     code->setPlainText(tr("正在加载资源…"));
     layout->addWidget(code);
-    tabs_->setCurrentIndex(tabs_->addTab(page, NodeIcons::resource(entry),
-                                         QFileInfo(entry.isEmpty() ? path : entry).fileName()));
+    tabs_->setCurrentIndex(
+        tabs_->addTab(page, NodeIcons::resource(displayEntry),
+                      QFileInfo(displayEntry.isEmpty() ? path : displayEntry).fileName()));
     auto exportButton = new QPushButton(tr("导出资源…"));
     layout->addWidget(exportButton);
-    connect(exportButton, &QPushButton::clicked, page, [this, path, entry] {
-        auto target =
-            QFileDialog::getSaveFileName(this, tr("导出资源"), QFileInfo(entry).fileName());
-        if (target.isEmpty())
-            return;
-        auto task = new QFutureWatcher<QString>(this);
-        connect(task, &QFutureWatcher<QString>::finished, this, [this, task] {
-            status_->setText(task->result().isEmpty() ? tr("资源已导出") : task->result());
-            task->deleteLater();
-        });
-        task->setFuture(QtConcurrent::run([path, entry, target] {
-            QString error;
-            auto data = Resources::read(path, entry, 512LL * 1024 * 1024, &error);
-            if (!error.isEmpty())
-                return error;
-            QSaveFile f(target);
-            if (!f.open(QIODevice::WriteOnly) || f.write(data) != data.size() || !f.commit())
-                return f.errorString();
-            return QString();
-        }));
-    });
+    connect(exportButton, &QPushButton::clicked, page,
+            [this, path, entry, decoded, decodedText, displayEntry] {
+                auto target = QFileDialog::getSaveFileName(this, tr("导出资源"),
+                                                           QFileInfo(displayEntry).fileName());
+                if (target.isEmpty())
+                    return;
+                auto task = new QFutureWatcher<QString>(this);
+                connect(task, &QFutureWatcher<QString>::finished, this, [this, task] {
+                    status_->setText(task->result().isEmpty() ? tr("资源已导出") : task->result());
+                    task->deleteLater();
+                });
+                task->setFuture(QtConcurrent::run([path, entry, target, decoded, decodedText] {
+                    QString error;
+                    auto data = decoded ? decodedText.toUtf8()
+                                        : Resources::read(path, entry, 512LL * 1024 * 1024, &error);
+                    if (!error.isEmpty())
+                        return error;
+                    QSaveFile f(target);
+                    if (!f.open(QIODevice::WriteOnly) || f.write(data) != data.size() ||
+                        !f.commit())
+                        return f.errorString();
+                    return QString();
+                }));
+            });
     struct Preview {
         QString text, error;
         QImage image;
@@ -187,8 +197,14 @@ void MainWindow::openResource(const QString &path, const QString &entry) {
         } else
             code->setSource({result.error.isEmpty() ? result.text : result.error, {}});
     });
-    task->setFuture(QtConcurrent::run([path, entry, limit] {
+    task->setFuture(QtConcurrent::run([path, entry, limit, decoded, decodedText] {
         Preview result;
+        if (decoded) {
+            result.text = decodedText.size() * 2LL > qint64(limit) * 1024 * 1024
+                              ? QString("资源预览超过大小限制，请导出文件查看。")
+                              : decodedText;
+            return result;
+        }
         auto b = Resources::read(path, entry, qint64(limit) * 1024 * 1024, &result.error);
         if (!result.error.isEmpty())
             return result;
@@ -254,24 +270,8 @@ void MainWindow::showOverview(const QString &path, bool signature) {
         report->setHtml("<body style='font-family:sans-serif'>" + html + "</body>");
         task->deleteLater();
     });
-    int classes = 0, methods = 0, fields = 0, topLevel = 0, opened = 0;
-    qint64 units = 0;
-    QStringList owners;
-    QMap<QString, int> dex;
-    for (const auto &n : backend_.project()->classes()) {
-        auto c = backend_.project()->info(n);
-        if (c.value("input").toString() != path)
-            continue;
-        classes++;
-        if (!c.value("inner").toBool())
-            topLevel++;
-        units += qint64(c.value("instruction_units").toDouble());
-        owners << backend_.project()->owner(n);
-        methods += c.value("methods").toArray().size();
-        fields += c.value("fields").toArray().size();
-        dex[c.value("origin").toString()]++;
-    }
-    owners.removeDuplicates();
+    int opened = 0;
+    auto project = backend_.project()->snapshot();
     for (int i = 0; i < tabs_->count(); i++)
         if (auto v = qobject_cast<ClassView *>(tabs_->widget(i)))
             if (backend_.classInput(v->name()) == path)
@@ -281,11 +281,28 @@ void MainWindow::showOverview(const QString &path, bool signature) {
     const auto inputs = backend_.inputs();
     const auto errors = backend_.property("errorCount").toInt();
     const auto warnings = backend_.property("warningCount").toInt();
-    task->setFuture(QtConcurrent::run([path, signature, classes, methods, fields, dex, units,
-                                       topLevel, owners, opened, cache, work, inputs, errors,
-                                       warnings] {
+    task->setFuture(QtConcurrent::run([path, signature, project, opened, cache, work, inputs,
+                                       errors, warnings] {
         if (signature)
             return Resources::signature(path);
+        int classes = 0, methods = 0, fields = 0, topLevel = 0;
+        qint64 units = 0;
+        QStringList owners;
+        QMap<QString, int> dex;
+        for (const auto &n : project->classes()) {
+            auto c = project->info(n);
+            if (c.value("input").toString() != path)
+                continue;
+            classes++;
+            if (!c.value("inner").toBool())
+                topLevel++;
+            units += qint64(c.value("instruction_units").toDouble());
+            owners << project->owner(n);
+            methods += c.value("methods").toArray().size();
+            fields += c.value("fields").toArray().size();
+            dex[c.value("origin").toString()]++;
+        }
+        owners.removeDuplicates();
         auto info = Resources::inspect(path);
         QString origins;
         for (auto it = dex.begin(); it != dex.end(); ++it)
@@ -388,4 +405,85 @@ void MainWindow::goApplication() {
         dialog->setAttribute(Qt::WA_DeleteOnClose);
         dialog->open();
     }
+}
+
+void MainWindow::expandResourceTable(const QModelIndex &index) {
+    const auto source = proxy_->mapToSource(index);
+    auto item = model_->itemFromIndex(source);
+    if (!item || item->data(Qt::UserRole + 8).toBool())
+        return;
+    item->setData(true, Qt::UserRole + 8);
+    item->child(0)->setText(tr("正在后台解析资源表…"));
+    const auto path = index.data(Qt::UserRole + 5).toString(),
+               entry = index.data(Qt::UserRole + 6).toString();
+    const QPersistentModelIndex root(source);
+    using Result = QPair<QMap<QString, QString>, QString>;
+    auto task = new QFutureWatcher<Result>(this);
+    connect(task, &QFutureWatcher<Result>::finished, this, [this, task, root, path, entry] {
+        const auto result = task->result();
+        task->deleteLater();
+        if (!root.isValid())
+            return;
+        auto item = model_->itemFromIndex(root);
+        item->removeRows(0, item->rowCount());
+        if (!result.second.isEmpty()) {
+            item->setData(false, Qt::UserRole + 8);
+            item->appendRow(new QStandardItem(result.second));
+            return;
+        }
+        decodedResources_[path + "!" + entry] = result.first;
+        struct State {
+            QStringList files;
+            int i = 0;
+            QHash<QString, QPersistentModelIndex> dirs;
+        };
+        auto state = std::make_shared<State>();
+        state->files = result.first.keys();
+        state->dirs[""] = root;
+        auto step = std::make_shared<std::function<void()>>();
+        std::weak_ptr<std::function<void()>> weak = step;
+        *step = [this, state, root, path, entry, weak] {
+            if (!root.isValid())
+                return;
+            QElapsedTimer clock;
+            clock.start();
+            while (state->i < state->files.size() && clock.elapsed() < 6) {
+                auto file = state->files[state->i++];
+                auto parts = file.split('/');
+                QString dir;
+                auto parent = model_->itemFromIndex(root);
+                for (int n = 0; n < parts.size() - 1; n++) {
+                    dir += parts[n] + '/';
+                    if (!state->dirs.contains(dir)) {
+                        auto child = new QStandardItem(NodeIcons::icon("resfolder"), parts[n]);
+                        parent->appendRow(child);
+                        state->dirs[dir] = child->index();
+                    }
+                    parent = model_->itemFromIndex(state->dirs[dir]);
+                }
+                auto child = new QStandardItem(NodeIcons::resource(file), parts.last());
+                child->setData("decoded-resource", Qt::UserRole + 4);
+                child->setData(path, Qt::UserRole + 5);
+                child->setData(entry, Qt::UserRole + 6);
+                child->setData(file, Qt::UserRole + 7);
+                child->setData(file, Qt::UserRole + 2);
+                parent->appendRow(child);
+            }
+            if (state->i < state->files.size())
+                if (auto next = weak.lock())
+                    QTimer::singleShot(0, this, [next] { (*next)(); });
+        };
+        (*step)();
+    });
+    task->setFuture(QtConcurrent::run([path, entry] {
+        QString error;
+        auto bytes = Resources::read(path, entry, 128LL * 1024 * 1024, &error);
+        QMap<QString, QString> files;
+        if (error.isEmpty()) {
+            const auto description = Resources::describeTable(bytes, &files);
+            if (files.isEmpty())
+                error = description;
+        }
+        return Result{files, error};
+    }));
 }

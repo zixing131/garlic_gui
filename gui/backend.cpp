@@ -559,31 +559,37 @@ QJsonObject Backend::cacheStats() const {
             {"preparing", preparing_}};
 }
 void Backend::clearCache() {
-    if (busy() || preparing_)
+    if (busy() || preparing_) {
+        emit log(tr("请先停止正在运行的任务，再清理源码缓存。"));
         return;
+    }
     ++searchGeneration_;
     cancelSearch();
     cache_.clear();
     project_.clearDocuments();
     cacheOrder_.clear();
     fullReady_ = false;
-    if (!workspace_)
-        return;
+    emit cacheCleared();
+    if (!workspace_) return;
     clearing_ = true;
     emit busyChanged(true);
     auto workspace = workspace_;
-    auto task = new QFutureWatcher<void>(this);
-    connect(task, &QFutureWatcher<void>::finished, this, [this, task] {
+    auto task = new QFutureWatcher<QStringList>(this);
+    connect(task, &QFutureWatcher<QStringList>::finished, this, [this, task] {
+        const auto failures = task->result();
         task->deleteLater();
         clearing_ = false;
         emit busyChanged(false);
-        emit log(tr("源码缓存已清理。"));
+        if (failures.isEmpty()) emit log(tr("源码缓存已清理；类索引保留，已打开标签重新选择时按需加载。"));
+        else emit failed(tr("部分缓存删除失败（可能被占用）：\n%1").arg(failures.join('\n')));
     });
     task->setFuture(QtConcurrent::run([workspace] {
+        QStringList failures;
         QDir dir(workspace->path());
         for (const auto &name : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot))
-            if (name != "index")
-                QDir(dir.filePath(name)).removeRecursively();
+            if (name != "index" && !QDir(dir.filePath(name)).removeRecursively())
+                failures << dir.filePath(name);
+        return failures;
     }));
 }
 void Backend::prepareSources() {
