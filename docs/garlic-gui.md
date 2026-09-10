@@ -221,8 +221,8 @@ macOS 用同一 Qt SDK 的 `macdeployqt` 打包 app，包含 Qt 运行库和平�
 
 ```sh
 # 在已验证的提交上发布，推送时会运行六个平台的构建：
-git tag gui-v0.3.0
-git push origin main gui-v0.3.0
+git tag gui-v0.4.0
+git push origin main gui-v0.4.0
 ```
 
 打包由 `scripts/package_gui.py` 完成：包含匹配架构的 GUI、garlic 引擎、Qt

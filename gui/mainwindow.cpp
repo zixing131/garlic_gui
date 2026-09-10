@@ -202,7 +202,7 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     title->setObjectName("welcomeTitle");
     title->setAlignment(Qt::AlignCenter);
     welcomeLayout->addWidget(title);
-    auto desc = new QLabel(tr("Java / Smali 底部切换 · F12 跳转 · Shift+F12 引用 · F2 重命名"));
+    auto desc = new QLabel(tr("Java / Smali 底部切换 · F12 / 双击跳转 · X 引用 · N 重命名"));
     desc->setObjectName("muted");
     desc->setAlignment(Qt::AlignCenter);
     welcomeLayout->addWidget(desc);
