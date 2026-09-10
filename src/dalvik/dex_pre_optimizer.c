@@ -234,9 +234,8 @@ void pre_optimize_dex_method(jd_method *m)
     optimize_goto_to_return(m);
 
     optimize_share_suffix_v2(m);
-    // Shared-suffix folding can expose new goto-to-return chains. Keep this
-    // extra cleanup bounded and opt-in; this is not dispatcher unflattening.
-    const char *simplify = getenv("GARLIC_SIMPLIFY_CONTROL_FLOW");
-    if (simplify != NULL && strcmp(simplify, "1") == 0)
-        optimize_goto_to_return(m);
+    // Shared-suffix folding can expose new goto-to-return chains, but running
+    // the legacy rewrite a second time leaves stale predecessor/stack data in
+    // large flattened methods. The first pass above is safe; the dispatcher
+    // specializer in dex_method_init handles the opt-in control-flow work.
 }

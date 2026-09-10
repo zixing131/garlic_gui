@@ -290,7 +290,11 @@ void expression_to_stream(FILE *stream, jd_node *node, jd_exp *expression)
     if (expression->folded_string) {
         fputs("/* decoded: \"", stream);
         for (const unsigned char *s = (const unsigned char *)expression->folded_string; *s; ++s) {
-            if (*s < 32 || *s > 126 || *s == '*' || *s == '\\' || *s == '"')
+            /* folded_string is generated as UTF-8. Keep non-ASCII bytes
+             * readable in the source instead of exposing the old \xNN byte
+             * soup; escape only characters that would break the comment or
+             * the quoted preview. */
+            if (*s < 32 || *s == '*' || *s == '\\' || *s == '"')
                 fprintf(stream, "\\x%02x", *s);
             else fputc(*s, stream);
         }

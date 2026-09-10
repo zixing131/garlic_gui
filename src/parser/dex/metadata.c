@@ -816,6 +816,25 @@ static void parse_dex_class_data_items(jd_meta_dex *dex, dex_class_def *cdef)
     }
 }
 
+/* Static field initializers are useful to the deobfuscator (opaque boolean
+ * flags and short[] string tables are frequently stored here).  Keep the
+ * decoded representation in the class definition so consumers can inspect it
+ * without re-reading the DEX buffer. */
+static void parse_dex_static_values(jd_meta_dex *dex, dex_class_def *cdef)
+{
+    if (cdef->static_values_off == 0)
+        return;
+    setup_current_offset(dex, cdef->static_values_off);
+    encoded_array *array = make_obj_in(encoded_array, dex->pool);
+    array->size = read_unsigned_leb128(dex);
+    if (array->size > 65536)
+        return;
+    array->values = make_obj_arr_in(encoded_value, array->size, dex->pool);
+    for (u4 i = 0; i < array->size; ++i)
+        parse_dex_encoded_value(dex, &array->values[i]);
+    cdef->static_values = array;
+}
+
 static void parse_dex_class_defs(jd_meta_dex *dex)
 {
     dex_header *header = dex->header;
@@ -858,6 +877,7 @@ static void parse_dex_class_defs(jd_meta_dex *dex)
         parse_dex_class_interfaces(dex, class_def);
         parse_dex_class_defs_anos(dex, class_def);
         parse_dex_class_data_items(dex, class_def);
+        parse_dex_static_values(dex, class_def);
 
         if (dex_class_is_anonymous_class(dex, class_def))
             class_def->is_anonymous = true;

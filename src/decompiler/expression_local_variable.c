@@ -3,8 +3,49 @@
 #include "decompiler/expression.h"
 #include "decompiler/expression_node.h"
 #include "expression_visitor.h"
+#include <stdint.h>
 
 void variables_rename(jd_method *m);
+
+/* Debug local-variable tables are attacker-controlled input.  Obfuscators
+ * commonly use combining Arabic marks, zero-width format characters, or
+ * malformed UTF-8 as names.  Keep ordinary source names, but replace names
+ * that cannot be read reliably with the same type-based names used for
+ * compiler-generated locals. */
+static bool readable_debug_name(string name)
+{
+    if (name == NULL || *name == '\0')
+        return false;
+    const unsigned char *p = (const unsigned char *)name;
+    while (*p) {
+        uint32_t cp = 0;
+        size_t width = 1;
+        if (*p < 0x80) {
+            if (*p < 0x20 || *p == 0x7f)
+                return false;
+            cp = *p;
+        } else if ((*p & 0xe0) == 0xc0 && p[1] && (p[1] & 0xc0) == 0x80) {
+            cp = ((uint32_t)(p[0] & 0x1f) << 6) | (p[1] & 0x3f); width = 2;
+        } else if ((*p & 0xf0) == 0xe0 && p[1] && p[2] &&
+                   (p[1] & 0xc0) == 0x80 && (p[2] & 0xc0) == 0x80) {
+            cp = ((uint32_t)(p[0] & 0x0f) << 12) | ((uint32_t)(p[1] & 0x3f) << 6) |
+                 (p[2] & 0x3f); width = 3;
+        } else if ((*p & 0xf8) == 0xf0 && p[1] && p[2] && p[3] &&
+                   (p[1] & 0xc0) == 0x80 && (p[2] & 0xc0) == 0x80 &&
+                   (p[3] & 0xc0) == 0x80) {
+            cp = ((uint32_t)(p[0] & 7) << 18) | ((uint32_t)(p[1] & 0x3f) << 12) |
+                 ((uint32_t)(p[2] & 0x3f) << 6) | (p[3] & 0x3f); width = 4;
+        } else {
+            return false;
+        }
+        if ((cp >= 0x300 && cp <= 0x36f) || (cp >= 0x591 && cp <= 0x6ff) ||
+            (cp >= 0x200b && cp <= 0x200f) || (cp >= 0x202a && cp <= 0x206f) ||
+            (cp >= 0xe000 && cp <= 0xf8ff) || cp == 0xfffd)
+            return false;
+        p += width;
+    }
+    return true;
+}
 
 static void variables_declaration(jd_method *m);
 
@@ -340,7 +381,7 @@ void variables_rename(jd_method *m)
         jd_val *val = enter_stack->local_vars[i];
         if (val == NULL)
             continue;
-        if (val->name_type == JD_VAR_NAME_DEBUG)
+        if (val->name_type == JD_VAR_NAME_DEBUG && readable_debug_name(val->name))
             continue;
         if (STR_EQL(val->name, g_str_this))
             continue;
@@ -386,7 +427,7 @@ void variables_rename(jd_method *m)
             if (is_catch_param_v2(m, exp))
                 continue;
 
-            if (val->name_type == JD_VAR_NAME_DEBUG)
+            if (val->name_type == JD_VAR_NAME_DEBUG && readable_debug_name(val->name))
                 continue;
 
             string var_name = hget_s2s(m->var_name_map, val->name);

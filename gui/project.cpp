@@ -282,23 +282,26 @@ QString Project::rename(const QString &id, const QString &newName) {
     return {};
 }
 void Project::deobfuscateNames() {
-    // Only classes and fields: renaming virtual methods independently can break
-    // the visible override contract with classes outside the input archive.
     static const QRegularExpression identifier("^[\\p{L}_$][\\p{L}\\p{N}_$]*$");
+    static const QRegularExpression noisy("[\\p{Cc}\\p{Cf}\\p{Co}\\p{Cs}\\p{Cn}\\p{Mn}\\p{Mc}]");
     QSet<QString> used;
     for (auto it = symbols_.cbegin(); it != symbols_.cend(); ++it)
         used.insert(symbolName(it.key()));
     auto ids = symbols_.keys();
     std::sort(ids.begin(), ids.end());
-    int classNumber = 1, fieldNumber = 1;
+    int classNumber = 1, fieldNumber = 1, methodNumber = 1;
     for (const auto &id : ids) {
         const auto symbol = symbols_.value(id);
         const auto name = symbol.value("name").toString();
-        if (aliases_.contains(id) || id.contains('(') || name.isEmpty() ||
-            (name.size() > 2 && identifier.match(name).hasMatch()))
+        const bool suspicious = noisy.match(name).hasMatch() || name.contains(QChar(0xfffd)) ||
+                                name.size() <= 1;
+        if (aliases_.contains(id) || name.isEmpty() || name == "<init>" || name == "<clinit>" ||
+            (identifier.match(name).hasMatch() && !suspicious))
             continue;
-        const QString prefix = id.contains("->") ? "field_" : "Class_";
-        int &number = id.contains("->") ? fieldNumber : classNumber;
+        const bool method = id.contains("->") && id.contains('(');
+        const bool member = id.contains("->");
+        const QString prefix = !member ? "Class_" : method ? "method_" : "field_";
+        int &number = !member ? classNumber : method ? methodNumber : fieldNumber;
         QString replacement;
         do { replacement = prefix + QString::number(number++); } while (used.contains(replacement));
         aliases_.insert(id, replacement);

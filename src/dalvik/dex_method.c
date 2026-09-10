@@ -6,10 +6,387 @@
 #include "dex_annotation.h"
 #include <stdlib.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 // Specialize a dispatcher edge only when its state assignment is the unique
 // predecessor. No instruction with side effects is skipped. Inspired by the
 // constant-state edge specialization described by eShard's D810 (not copied).
+static int java_string_hash(const char *text)
+{
+    // DEX strings use UTF-8 while String.hashCode() iterates UTF-16 code units.
+    // Decode conservatively so malformed input can never make the optimizer read
+    // past the string terminator.
+    int32_t hash = 0;
+    const unsigned char *p = (const unsigned char *)text;
+    while (*p) {
+        uint32_t cp = 0;
+        size_t width = 1;
+        if (*p < 0x80) {
+            cp = *p;
+        } else if ((*p & 0xe0) == 0xc0 && p[1] && (p[1] & 0xc0) == 0x80) {
+            cp = ((uint32_t)(p[0] & 0x1f) << 6) | (p[1] & 0x3f); width = 2;
+        } else if ((*p & 0xf0) == 0xe0 && p[1] && p[2] &&
+                   (p[1] & 0xc0) == 0x80 && (p[2] & 0xc0) == 0x80) {
+            cp = ((uint32_t)(p[0] & 0x0f) << 12) | ((uint32_t)(p[1] & 0x3f) << 6) |
+                 (p[2] & 0x3f); width = 3;
+        } else if ((*p & 0xf8) == 0xf0 && p[1] && p[2] && p[3] &&
+                   (p[1] & 0xc0) == 0x80 && (p[2] & 0xc0) == 0x80 &&
+                   (p[3] & 0xc0) == 0x80) {
+            cp = ((uint32_t)(p[0] & 7) << 18) | ((uint32_t)(p[1] & 0x3f) << 12) |
+                 ((uint32_t)(p[2] & 0x3f) << 6) | (p[3] & 0x3f); width = 4;
+        } else {
+            cp = '?';
+        }
+        hash = hash * 31 + (int32_t)(cp > 0xffff ? (0xd800 + ((cp - 0x10000) >> 10)) : cp);
+        if (cp > 0xffff)
+            hash = hash * 31 + (int32_t)(0xdc00 + ((cp - 0x10000) & 0x3ff));
+        p += width;
+    }
+    return hash;
+}
+
+static encoded_method *find_encoded_method(jd_meta_dex *meta, unsigned method_index)
+{
+    if (method_index >= meta->header->method_ids_size)
+        return NULL;
+    const unsigned class_index = meta->method_ids[method_index].class_idx;
+    if (class_index >= meta->header->type_ids_size)
+        return NULL;
+    for (u4 i = 0; i < meta->header->class_defs_size; ++i) {
+        dex_class_def *klass = &meta->class_defs[i];
+        if (klass->class_idx != class_index || !klass->class_data)
+            continue;
+        dex_class_data_item *data = klass->class_data;
+        for (int kind = 0; kind < 2; ++kind) {
+            encoded_method *methods = kind ? data->virtual_methods : data->direct_methods;
+            unsigned count = kind ? data->virtual_methods_size : data->direct_methods_size;
+            for (unsigned j = 0; j < count; ++j)
+                if (methods[j].method_id == method_index)
+                    return &methods[j];
+        }
+    }
+    return NULL;
+}
+
+static bool is_hash_wrapper(jd_meta_dex *meta, unsigned method_index)
+{
+    encoded_method *wrapper = find_encoded_method(meta, method_index);
+    if (!wrapper || !wrapper->code)
+        return false;
+    const u2 *insns = wrapper->code->insns;
+    for (u4 i = 0; i < wrapper->code->insns_size;) {
+        const u1 opcode = insns[i] & 0xff;
+        const u4 length = dex_opcode_len(opcode);
+        if (!length || length > wrapper->code->insns_size - i)
+            break;
+        if (opcode == DEX_INS_INVOKE_VIRTUAL || opcode == DEX_INS_INVOKE_VIRTUAL_RANGE) {
+            const unsigned target_index = insns[i + 1];
+            if (target_index < meta->header->method_ids_size &&
+                strcmp(dex_str_of_method_id(meta, target_index), "hashCode") == 0)
+                return true;
+        }
+        i += length;
+    }
+    return false;
+}
+
+/* A common anti-analysis trick is to hide an opaque predicate behind a tiny
+ * static helper, for example `static int p() { return 0; }`.  Resolve only
+ * methods whose complete bytecode is a single literal followed by return.  A
+ * method with any other instruction is deliberately left alone: this keeps
+ * the optimizer side-effect free and avoids executing application code. */
+static bool eval_constant_static_method(jd_meta_dex *meta, unsigned method_index,
+                                        uint32_t *value)
+{
+    encoded_method *helper = find_encoded_method(meta, method_index);
+    if (!helper || !helper->code || helper->code->insns_size == 0)
+        return false;
+    bool have_const = false;
+    unsigned const_reg = 0;
+    uint32_t const_value = 0;
+    bool have_return = false;
+    for (u4 i = 0; i < helper->code->insns_size;) {
+        const u1 opcode = helper->code->insns[i] & 0xff;
+        const u4 length = dex_opcode_len(opcode);
+        if (!length || length > helper->code->insns_size - i)
+            return false;
+        const u2 *words = helper->code->insns + i;
+        switch (opcode) {
+            case 0x00: /* nop */
+                break;
+            case 0x12: /* const/4 */
+                if (have_const) return false;
+                const_reg = (words[0] >> 8) & 15;
+                const_value = (uint32_t)((int32_t)(words[0] >> 12) -
+                                         ((words[0] & 0x8000) ? 16 : 0));
+                have_const = true;
+                break;
+            case 0x13: /* const/16 */
+                if (have_const) return false;
+                const_reg = words[0] >> 8;
+                const_value = (uint32_t)(int32_t)(int16_t)words[1];
+                have_const = true;
+                break;
+            case 0x14: /* const */
+                if (have_const) return false;
+                const_reg = words[0] >> 8;
+                const_value = (uint32_t)words[1] | ((uint32_t)words[2] << 16);
+                have_const = true;
+                break;
+            case 0x15: /* const/high16 */
+                if (have_const) return false;
+                const_reg = words[0] >> 8;
+                const_value = (uint32_t)words[1] << 16;
+                have_const = true;
+                break;
+            case 0x0f: /* return */
+                if (!have_const || (words[0] >> 8) != const_reg || have_return)
+                    return false;
+                have_return = true;
+                break;
+            default:
+                return false;
+        }
+        i += length;
+    }
+    if (!have_const || !have_return)
+        return false;
+    *value = const_value;
+    return true;
+}
+
+static bool encoded_integer_value(const encoded_value *value, uint32_t *out)
+{
+    if (!value)
+        return false;
+    if (value->value_type == kDexAnnotationBoolean) {
+        *out = value->value_arg ? 1u : 0u;
+        return true;
+    }
+    if (value->value_type != kDexAnnotationByte && value->value_type != kDexAnnotationShort &&
+        value->value_type != kDexAnnotationChar && value->value_type != kDexAnnotationInt &&
+        value->value_type != kDexAnnotationLong)
+        return false;
+    const unsigned width = value->value_length > 4 ? 4 : (unsigned)value->value_length;
+    uint32_t bits = 0;
+    for (unsigned i = 0; i < width; ++i)
+        bits |= (uint32_t)value->value[i] << (i * 8);
+    if (value->value_type != kDexAnnotationChar && width < 4 && (bits & (1u << (width * 8 - 1))))
+        bits |= UINT32_MAX << (width * 8);
+    *out = bits;
+    return true;
+}
+
+static bool eval_static_field(jd_meta_dex *meta, unsigned field_index, uint32_t *value)
+{
+    if (field_index >= meta->header->field_ids_size)
+        return false;
+    const unsigned class_index = meta->field_ids[field_index].class_idx;
+    for (u4 i = 0; i < meta->header->class_defs_size; ++i) {
+        dex_class_def *klass = &meta->class_defs[i];
+        dex_class_data_item *data = klass->class_data;
+        encoded_array *initializers = klass->static_values;
+        if (klass->class_idx != class_index || !data || !initializers)
+            continue;
+        for (u4 j = 0; j < data->static_fields_size && j < initializers->size; ++j) {
+            if (data->static_fields[j].field_id == field_index)
+                return encoded_integer_value(&initializers->values[j], value);
+        }
+    }
+    return false;
+}
+
+static bool eval_constant_predicate(jd_method *m, jd_dex_ins *jump,
+                                    uint32_t *value, unsigned *reg)
+{
+    jd_dex_ins *move = jump->prev;
+    if (!move || !dex_ins_is_move_result(move))
+        return false;
+    jd_dex_ins *invoke = move->prev;
+    if (!invoke || !dex_ins_is_invokestatic(invoke))
+        return false;
+    jd_meta_dex *meta = ((jd_dex *)m->meta)->meta;
+    const unsigned method_index = dex_ins_parameter(invoke, 1);
+    if (method_index >= meta->header->method_ids_size)
+        return false;
+    dex_method_id *method = &meta->method_ids[method_index];
+    dex_proto_id *proto = &meta->proto_ids[method->proto_idx];
+    const char *return_type = dex_str_of_type_id(meta, proto->return_type_idx);
+    if (!return_type || (strcmp(return_type, "I") != 0 && strcmp(return_type, "Z") != 0))
+        return false;
+    if (!eval_constant_static_method(meta, method_index, value))
+        return false;
+    *reg = dex_ins_parameter(move, 0);
+    return true;
+}
+
+static bool eval_predicate_value(jd_method *m, jd_dex_ins *jump,
+                                 uint32_t *value, unsigned *reg)
+{
+    if (eval_constant_predicate(m, jump, value, reg))
+        return true;
+    jd_dex_ins *source = jump->prev;
+    if (!source || (source->code != DEX_INS_SGET && source->code != DEX_INS_SGET_BOOLEAN &&
+                    source->code != DEX_INS_SGET_BYTE && source->code != DEX_INS_SGET_CHAR &&
+                    source->code != DEX_INS_SGET_SHORT))
+        return false;
+    *reg = dex_ins_parameter(source, 0);
+    if (dex_ins_parameter(jump, 0) != *reg)
+        return false;
+    return eval_static_field(((jd_dex *)m->meta)->meta, dex_ins_parameter(source, 1), value);
+}
+
+static bool predicate_taken(jd_dex_ins *ins, uint32_t value)
+{
+    const int32_t v = (int32_t)value;
+    switch (ins->code) {
+        case DEX_INS_IF_EQZ: return v == 0;
+        case DEX_INS_IF_NEZ: return v != 0;
+        case DEX_INS_IF_LTZ: return v < 0;
+        case DEX_INS_IF_GEZ: return v >= 0;
+        case DEX_INS_IF_GTZ: return v > 0;
+        case DEX_INS_IF_LEZ: return v <= 0;
+        default: return false;
+    }
+}
+
+static int simplify_constant_predicates(jd_method *m)
+{
+    int changed = 0;
+    for (int i = 0; i < m->instructions->size; ++i) {
+        jd_dex_ins *jump = lget_obj(m->instructions, i);
+        if (!dex_ins_is_if(jump) || jump->code < DEX_INS_IF_EQZ)
+            continue;
+        uint32_t value;
+        unsigned reg;
+        if (!eval_predicate_value(m, jump, &value, &reg) ||
+            dex_ins_parameter(jump, 0) != reg)
+            continue;
+        jd_dex_ins *taken = dex_ins_of_offset(m, dex_ins_if_jump_offset(jump));
+        jd_dex_ins *fallthrough = jump->next;
+        jd_dex_ins *target = predicate_taken(jump, value) ? taken : fallthrough;
+        if (!target)
+            continue;
+        if (target == fallthrough) {
+            jump->code = 0;
+            jump->name = "nop";
+            jump->param_length = 1;
+            jump->param[0] = 0;
+        } else {
+            jump->code = DEX_INS_GOTO;
+            jump->name = "goto";
+            jump->param_length = 1;
+            dex_setup_goto_offset(jump, target->offset);
+        }
+        ++changed;
+    }
+    return changed;
+}
+
+static bool eval_hash_dispatcher_state(jd_method *m, jd_dex_ins *jump,
+                                       uint32_t *value, unsigned *reg)
+{
+    jd_dex_ins *move = jump->prev;
+    unsigned moved = 0;
+    while (move && dex_ins_is_move_to(move) && moved++ < 8)
+        move = move->prev;
+    if (!move || !dex_ins_is_move_result(move))
+        return false;
+    jd_dex_ins *invoke = move->prev;
+    if (!invoke || dex_ins_parameter(invoke, 0) != 1)
+        return false;
+    jd_dex *dex = m->meta;
+    jd_meta_dex *meta = dex->meta;
+    const unsigned method_index = dex_ins_parameter(invoke, 1);
+    if (method_index >= meta->header->method_ids_size)
+        return false;
+    dex_method_id *method = &meta->method_ids[method_index];
+    const char *method_name = dex_str_of_idx(meta, method->name_idx);
+    dex_proto_id *proto = &meta->proto_ids[method->proto_idx];
+    const char *return_type = dex_str_of_type_id(meta, proto->return_type_idx);
+    const bool direct_hash = dex_ins_is_invokevirtual(invoke) && method_name &&
+                             strcmp(method_name, "hashCode") == 0;
+    const bool wrapped_hash = dex_ins_is_invokestatic(invoke) && is_hash_wrapper(meta, method_index);
+    const bool no_params = !proto->type_list || proto->type_list->size == 0;
+    const bool one_object_param = proto->type_list && proto->type_list->size == 1;
+    if ((!direct_hash && !wrapped_hash) || !return_type || strcmp(return_type, "I") != 0 ||
+        (direct_hash && !no_params) || (wrapped_hash && !one_object_param))
+        return false;
+    const unsigned source_reg = dex_ins_parameter(invoke, 2);
+    jd_dex_ins *constant = invoke->prev;
+    if (!constant || (constant->code != DEX_INS_CONST_STRING &&
+                      constant->code != DEX_INS_CONST_STRING_JUMBO) ||
+        dex_ins_parameter(constant, 0) != source_reg)
+        return false;
+    uint32_t string_index = constant->param[1];
+    if (constant->code == DEX_INS_CONST_STRING_JUMBO)
+        string_index |= (uint32_t)constant->param[2] << 16;
+    if (string_index >= meta->header->string_ids_size)
+        return false;
+    const char *text = dex_str_of_idx(meta, string_index);
+    if (!text)
+        return false;
+    *value = (uint32_t)java_string_hash(text);
+    *reg = dex_ins_parameter(move, 0);
+    return true;
+}
+
+static jd_dex_ins *switch_target_for_value(jd_method *m, jd_dex_ins *dispatcher,
+                                           uint32_t value, unsigned reg)
+{
+    if (!dispatcher || !dex_ins_is_switch(dispatcher) ||
+        (dispatcher->param[0] >> 8) != reg)
+        return NULL;
+    uint32_t payload_offset = dispatcher->offset + (uint32_t)dispatcher->param[1] +
+                              ((uint32_t)dispatcher->param[2] << 16);
+    jd_dex_ins *payload = dex_ins_of_offset(m, payload_offset);
+    if (!payload || payload->param_length < 2)
+        return NULL;
+    unsigned count = payload->param[1];
+    bool packed = dex_ins_is_packed_switch(dispatcher);
+    if (payload->param[0] != (packed ? 0x0100 : 0x0200) ||
+        (unsigned)payload->param_length < (packed ? 4 + count * 2 : 2 + count * 4))
+        return NULL;
+    for (unsigned k = 0; k < count; ++k) {
+        unsigned key_index = packed ? 2 : 2 + k * 2;
+        uint32_t key = (uint32_t)payload->param[key_index] |
+                       ((uint32_t)payload->param[key_index + 1] << 16);
+        if (packed)
+            key += k;
+        if (key != value)
+            continue;
+        unsigned target_index = packed ? 4 + k * 2 : 2 + count * 2 + k * 2;
+        uint32_t relative = (uint32_t)payload->param[target_index] |
+                            ((uint32_t)payload->param[target_index + 1] << 16);
+        return dex_ins_of_offset(m, dispatcher->offset + relative);
+    }
+    return dispatcher->next;
+}
+
+static int specialize_hash_dispatchers(jd_method *m)
+{
+    int changed = 0;
+    for (int i = 0; i < m->instructions->size; ++i) {
+        jd_dex_ins *dispatcher = lget_obj(m->instructions, i);
+        if (!dex_ins_is_switch(dispatcher))
+            continue;
+        uint32_t value;
+        unsigned reg;
+        if (!eval_hash_dispatcher_state(m, dispatcher, &value, &reg)) {
+            continue;
+        }
+        jd_dex_ins *target = switch_target_for_value(m, dispatcher, value, reg);
+        if (!target || target == dispatcher || dex_ins_is_switch(target))
+            continue;
+        dispatcher->code = DEX_INS_GOTO;
+        dispatcher->name = "goto";
+        dispatcher->param_length = 1;
+        dex_setup_goto_offset(dispatcher, target->offset);
+        ++changed;
+    }
+    return changed;
+}
+
 static int unflatten_constant_dispatchers(jd_method *m)
 {
     int changed = 0;
@@ -22,7 +399,8 @@ static int unflatten_constant_dispatchers(jd_method *m)
             continue;
         uint32_t value;
         unsigned reg;
-        switch (assignment->code) {
+        bool evaluated = eval_hash_dispatcher_state(m, jump, &value, &reg);
+        if (!evaluated) switch (assignment->code) {
             case 0x12: // const/4
                 reg = (assignment->param[0] >> 8) & 15;
                 value = (uint32_t)((int32_t)(assignment->param[0] >> 12) -
@@ -46,28 +424,7 @@ static int unflatten_constant_dispatchers(jd_method *m)
         if (!dispatcher || !dex_ins_is_switch(dispatcher) ||
             (dispatcher->param[0] >> 8) != reg)
             continue;
-        uint32_t payloadOffset = dispatcher->offset + (uint32_t)dispatcher->param[1] +
-                                 ((uint32_t)dispatcher->param[2] << 16);
-        jd_dex_ins *payload = dex_ins_of_offset(m, payloadOffset);
-        if (!payload || payload->param_length < 2) continue;
-        unsigned count = payload->param[1];
-        bool packed = dex_ins_is_packed_switch(dispatcher);
-        if (payload->param[0] != (packed ? 0x0100 : 0x0200) ||
-            (unsigned)payload->param_length < (packed ? 4 + count * 2 : 2 + count * 4))
-            continue;
-        jd_dex_ins *target = dispatcher->next;
-        for (unsigned k = 0; k < count; ++k) {
-            unsigned keyIndex = packed ? 2 : 2 + k * 2;
-            uint32_t key = (uint32_t)payload->param[keyIndex] |
-                           ((uint32_t)payload->param[keyIndex + 1] << 16);
-            if (packed) key += k;
-            if (key != value) continue;
-            unsigned targetIndex = packed ? 4 + k * 2 : 2 + count * 2 + k * 2;
-            uint32_t relative = (uint32_t)payload->param[targetIndex] |
-                                ((uint32_t)payload->param[targetIndex + 1] << 16);
-            target = dex_ins_of_offset(m, dispatcher->offset + relative);
-            break;
-        }
+        jd_dex_ins *target = switch_target_for_value(m, dispatcher, value, reg);
         if (!target || target == dispatcher || target->param[0] == 0x0100 ||
             target->param[0] == 0x0200 || target->param[0] == 0x0300)
             continue;
@@ -323,8 +680,12 @@ void dex_method_init(jsource_file *jf, jd_method *m, encoded_method *em)
 
     const char *unflatten = getenv("GARLIC_UNFLATTEN");
     // Exception handlers introduce implicit predecessors: leave such methods intact.
-    if (unflatten && strcmp(unflatten, "1") == 0 && em->code->tries_size == 0 &&
-        unflatten_constant_dispatchers(m)) {
+    if (unflatten && strcmp(unflatten, "1") == 0 && em->code->tries_size == 0) {
+        bool changed = specialize_hash_dispatchers(m);
+        changed |= unflatten_constant_dispatchers(m);
+        changed |= simplify_constant_predicates(m);
+        if (!changed)
+            goto dex_method_graph_done;
         for (int i = 0; i < m->instructions->size; ++i) {
             jd_dex_ins *ins = lget_obj(m->instructions, i);
             lclear_object(ins->targets);
@@ -333,6 +694,7 @@ void dex_method_init(jsource_file *jf, jd_method *m, encoded_method *em)
         }
         init_dex_instruction_graph(m);
     }
+dex_method_graph_done:
 
     dex_method_exception_init(m, em);
 }

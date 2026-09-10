@@ -104,19 +104,22 @@ APK 和生成的源码，不会修改、重打包或签名原 APK。
 项目时清理。默认按类缓存 2048 MiB、12 个标签、单文件限制 8 MiB。
 
 反控制流平坦化参考 [eShard D810 的常量状态追踪和调度器边重定向](https://www.eshard.com/blog/d810-a-journey-into-control-flow-unflattening)，采用独立实现。
-勾选后，在 DEX 模拟和 CFG 构造前，将紧邻常量赋值的 `goto → packed/sparse-switch`
-改为已知分支（含默认分支），保留状态赋值。支持 const/4、const/16、const、const/high16；
-存在其他显式入边、异常处理或不能证明状态值的路径保持原样。它不处理 native OLLVM、
-JVM 调度器、加密状态或多指令状态计算，也不会修改原始 APK。设置持久保存，修改后源码缓存失效。
+勾选后，在 DEX 模拟和 CFG 构造前，会处理紧邻常量赋值的
+`goto → packed/sparse-switch`、以字符串 `hashCode()` 为状态的调度器，以及无副作用的
+常量谓词和纯常量辅助函数。支持 const/4、const/16、const、const/high16、Java UTF-16
+`String.hashCode()`、安全的静态整数字段读取；存在其他显式入边、异常处理或不能证明状态值的
+路径保持原样。不会执行目标方法、加载目标类或修改原始 APK。设置持久保存，修改后源码缓存失效。
 CLI 可用 `GARLIC_UNFLATTEN=1` 启用，默认关闭。
 
 “反混淆”同时启用静态常量处理（CLI：`GARLIC_DEOBFUSCATE=1`）。参考
 [D810 的表达式化简思路](https://www.eshard.com/blog/d810-deobfuscation-ida-pro)，独立实现
 32 位整数加减乘除、取余、位运算和移位折叠，以及仅针对局部整数读取的 `x ^ x` / `x - x` 化简。
 遵循 Java 溢出与移位规则，除零保持原样；不执行目标方法、不加载目标类，不做浮点或未知调用推测。
-静态字符串支持 ASCII 字符数组构造、substring、concat、replace 的嵌套组合。
-还原结果以 `/* decoded: "…" */` 显示，保留原表达式和对象身份，避免影响 `==` 或异常行为。
-未知自定义加密算法、运行时密钥、非 ASCII 索引语义及解密循环尚不支持；不能保证自动还原任意混淆字符串。
+静态字符串支持 ASCII 字符数组构造、substring、concat、replace 的嵌套组合，以及常见的
+`short[] + 起始位置 + 长度 + XOR key -> String` 字面量解码器。对控制流中合并的整数状态，
+只尝试当前方法内有限的常量候选，并要求结果是可读文本；不会执行目标解密方法。
+还原结果以 UTF-8 的 `/* decoded: "…" */` 显示，保留原表达式和对象身份，避免影响 `==` 或异常行为。
+未知自定义加密算法、运行时密钥、非字面量数组、非 ASCII 索引语义及解密循环尚不支持；不能保证自动还原任意混淆字符串。
 分析有递归深度、节点/字节预算和 64 KiB 字符串上限。
 
 方法的代码区和类树右键菜单提供“复制为 Frida Hook”与“复制为 Xposed Hook”。模板按
@@ -206,7 +209,9 @@ GARLIC_SOURCE_MAP_DIR=/tmp/java-output \
   jadx 所有引用与重构能力，也不自动重命名整个方法覆写族。
 - 多 DEX / split APK 中同名类仍按类名合并；无法分别选择重复定义。
 - 内部类 Java 页面显示所属顶层类源码，Smali 是独立原始类；没有两种代码行号同步。
-- 调试器、资源文本全局搜索、通用反混淆、包 / 局部变量重命名尚未实现；目前提供名称别名和上述有限 DEX 控制流处理。
+- 调试器和资源文本全局搜索尚未实现。GUI 的名称反混淆会为不可读的类、字段、方法生成稳定别名，
+  局部变量会拒绝控制字符、零宽字符、组合标记、私有区字符和替换字符，并回退到类型名；上述别名
+  只改变显示和导出映射，不改写原始 DEX。
 - Garlic 原有的反编译错误可能保留。进程成功和源码生成不等于每个方法恢复成功。
   全项目搜索只覆盖成功生成且未超过大小限制的文件。
 
@@ -381,13 +386,12 @@ Native 窗口中选择“Ghidra 伪代码”，点击“配置 Ghidra…”选�
 
 Windows x64 发布包显式收集 Rosemary DLL 的 GCC 运行库；临时 DLL 创建和加载使用 Unicode Windows API。Windows ARM64 目前没有仓库配套的 Rosemary 库，可使用独立 ELF 概览或配置兼容运行环境的 Ghidra；这不代表已经提供 ARM64 原生 Rosemary。Windows 修复尚需实际 Windows 机器验证。
 
-### 算法助手样本开关对比（2026-09-10）
+### 算法助手样本开关对比（2026-09-11）
 
 用户提供 APK 的 SHA-256：`febdee12bc13c0f510553e9c3cb49a286fc58415098fe0834b6e583dd49336d3`。
-对 `com/junge/algorithmAidePro/` 下 106 个类分别启用和关闭 `GARLIC_DEOBFUSCATE`、`GARLIC_UNFLATTEN`、`GARLIC_SIMPLIFY_CONTROL_FLOW`，每次按类反编译，所有进程正常退出。
-
-- 13 个类输出发生变化，观察到计算常量简化。
-- 两组输出均有 432 处 `switch`，本样本的主要平坦化未消除。
-- 两组均没有 `decoded:` 标记，现有字符串恢复未命中。
-
-样本包含自定义字符串状态计算后进入 switch 的分发器，以及依赖静态字段的分支。现有常量状态分发器还原不能覆盖这种模式。输出差异只证明转换发生，不是语义等价验证；未执行 APK 或其中的解密方法。不要把启用选项理解为所有混淆均可自动还原。
+对 `com/junge/algorithmAidePro/` 下的完整 2441 个类启用
+`GARLIC_DEOBFUSCATE=1 GARLIC_UNFLATTEN=1 GARLIC_SIMPLIFY_CONTROL_FLOW=1`，进程正常退出，
+生成 2441 个 Java 文件，并在静态 `[SIII]` 解码调用中恢复 336 个字符串预览。控制流选项同时
+处理 hash 状态调度器、纯常量谓词和安全常量辅助函数；仍会保留无法证明的运行时分支和自定义算法。
+这证明样本可以完整加载和批量输出，不代表每个运行时密钥或每个平坦化变体都能静态还原；没有执行 APK
+或其中的解密方法。

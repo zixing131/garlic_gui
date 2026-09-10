@@ -12,6 +12,7 @@
 #include "parser/dex/dex.h"
 #include "dex_decompile.h"
 #include "dex_class.h"
+#include <stdint.h>
 
 static void dex_copy_block(jd_dex_ins *copy);
 
@@ -40,6 +41,145 @@ static void dex_build_assignment(jd_exp *exp, jd_dex_ins *ins)
     jd_val *val = ins->stack_out->local_vars[slot];
     left->data = val;
     val->stack_var->def_count ++;
+}
+
+static bool dex_encoded_integer(const encoded_value *value, int32_t *out)
+{
+    if (!value || (value->value_type != kDexAnnotationByte &&
+                   value->value_type != kDexAnnotationShort &&
+                   value->value_type != kDexAnnotationChar &&
+                   value->value_type != kDexAnnotationInt))
+        return false;
+    unsigned width = value->value_length > 4 ? 4 : (unsigned)value->value_length;
+    uint32_t bits = 0;
+    for (unsigned i = 0; i < width; ++i)
+        bits |= (uint32_t)value->value[i] << (i * 8);
+    if (value->value_type != kDexAnnotationChar && width < 4 &&
+        (bits & (1u << (width * 8 - 1))))
+        bits |= UINT32_MAX << (width * 8);
+    *out = (int32_t)bits;
+    return true;
+}
+
+static encoded_array *dex_static_short_array(jd_meta_dex *meta, unsigned field_index)
+{
+    if (field_index >= meta->header->field_ids_size)
+        return NULL;
+    unsigned class_index = meta->field_ids[field_index].class_idx;
+    for (u4 i = 0; i < meta->header->class_defs_size; ++i) {
+        dex_class_def *klass = &meta->class_defs[i];
+        if (klass->class_idx != class_index || !klass->class_data || !klass->static_values)
+            continue;
+        dex_class_data_item *data = klass->class_data;
+        for (u4 j = 0; j < data->static_fields_size && j < klass->static_values->size; ++j) {
+            if (data->static_fields[j].field_id != field_index)
+                continue;
+            encoded_value *value = &klass->static_values->values[j];
+            if (value->value_type != kDexAnnotationArray || !value->value)
+                return NULL;
+            encoded_array *array = (encoded_array *)value->value;
+            if (array->size > 65536)
+                return NULL;
+            return array;
+        }
+    }
+    return NULL;
+}
+
+static encoded_array *dex_clinit_short_array(jd_meta_dex *meta, unsigned field_index)
+{
+    if (field_index >= meta->header->field_ids_size)
+        return NULL;
+    unsigned class_index = meta->field_ids[field_index].class_idx;
+    encoded_method *clinit = NULL;
+    for (u4 i = 0; i < meta->header->class_defs_size && !clinit; ++i) {
+        dex_class_def *klass = &meta->class_defs[i];
+        if (klass->class_idx != class_index || !klass->class_data)
+            continue;
+        dex_class_data_item *data = klass->class_data;
+        for (u4 j = 0; j < data->direct_methods_size; ++j) {
+            dex_method_id *method = &meta->method_ids[data->direct_methods[j].method_id];
+            if (!strcmp(dex_str_of_idx(meta, method->name_idx), "<clinit>")) {
+                clinit = &data->direct_methods[j];
+                break;
+            }
+        }
+    }
+    if (!clinit || !clinit->code)
+        return NULL;
+    const u2 *words = clinit->code->insns;
+    unsigned size = clinit->code->insns_size;
+    for (unsigned i = 0, offset = 0; i < size;) {
+        u1 opcode = words[i] & 0xff;
+        u4 length = dex_opcode_len(opcode);
+        if (!length || i + length > size)
+            break;
+        if (opcode == DEX_INS_NEW_ARRAY && i + 1 < size) {
+            unsigned array_reg = words[i] >> 8;
+            unsigned type_index = words[i + 1];
+            if (type_index >= meta->header->type_ids_size ||
+                strcmp(dex_str_of_type_id(meta, type_index), "[S") != 0) {
+                i += length; offset += length; continue;
+            }
+            unsigned j = i + length;
+            unsigned next_offset = offset + length;
+            if (j >= size || (words[j] & 0xff) != DEX_INS_FILL_ARRAY_DATA)
+                { i += length; offset += length; continue; }
+            int32_t payload_rel = (int32_t)((uint32_t)words[j + 1] |
+                                            ((uint32_t)words[j + 2] << 16));
+            int64_t payload_index_signed = (int64_t)j + payload_rel;
+            if (payload_index_signed < 0 || payload_index_signed > size)
+                { i += length; offset += length; continue; }
+            unsigned payload_index = (unsigned)payload_index_signed;
+            if (payload_index + 4 > size || words[payload_index] != 0x0300)
+                { i += length; offset += length; continue; }
+            unsigned count = words[payload_index + 2];
+            if (words[payload_index + 1] != 2 || count > 65536 || payload_index + 4 + count > size)
+                { i += length; offset += length; continue; }
+            bool stores_field = false;
+            for (unsigned k = j + 3; k < payload_index;) {
+                u1 next_opcode = words[k] & 0xff;
+                u4 next_length = dex_opcode_len(next_opcode);
+                if (!next_length || k + next_length > payload_index)
+                    break;
+                if (next_opcode == DEX_INS_SPUT_OBJECT && (words[k] >> 8) == array_reg &&
+                    words[k + 1] == field_index) {
+                    stores_field = true;
+                    break;
+                }
+                k += next_length;
+            }
+            if (!stores_field)
+                { i += length; offset += length; continue; }
+            encoded_array *array = make_obj(encoded_array);
+            array->size = count;
+            array->values = make_obj_arr(encoded_value, count);
+            for (unsigned n = 0; n < count; ++n) {
+                encoded_value *value = &array->values[n];
+                value->value_type = kDexAnnotationShort;
+                value->value_length = 2;
+                value->value = x_alloc(2);
+                value->value[0] = (u1)(words[payload_index + 4 + n] & 0xff);
+                value->value[1] = (u1)(words[payload_index + 4 + n] >> 8);
+            }
+            return array;
+        }
+        i += length;
+        offset += length;
+    }
+    return NULL;
+}
+
+static void dex_literal_int(jd_exp *exp, int32_t value)
+{
+    exp->type = JD_EXPRESSION_CONST;
+    jd_exp_const *constant = make_obj(jd_exp_const);
+    constant->val = stack_create_empty_val();
+    constant->val->type = JD_VAR_INT_T;
+    constant->val->data->cname = "int";
+    constant->val->data->primitive = make_obj(jd_primitive_union);
+    constant->val->data->primitive->int_val = value;
+    exp->data = constant;
 }
 
 jd_exp* get_store_right(jd_exp *store)
@@ -724,6 +864,35 @@ static void dex_static_get_expression(jd_exp *exp, jd_dex_ins *ins)
     get_static->owner_class_name = descriptor_to_s(owner_class_name);
     get_static->name = field_name;
     get_static->list = make_exp_list(1);
+    /* Materialize encoded short[] tables.  This gives the safe constant
+     * folder enough information to decode the common [SIII String obfuscator
+     * without executing arbitrary application code. */
+    encoded_array *array = NULL;
+    if (ins->code == DEX_INS_SGET_OBJECT &&
+        dex_str_of_field_type(meta, field_slot) &&
+        strcmp(dex_str_of_field_type(meta, field_slot), "[S") == 0) {
+        array = dex_static_short_array(meta, field_slot);
+        if (!array)
+            array = dex_clinit_short_array(meta, field_slot);
+    }
+    if (array) {
+        jd_exp_new_array *literal = make_obj(jd_exp_new_array);
+        literal->class_name = "short";
+        literal->list = make_exp_list(array->size);
+        for (u4 i = 0; i < array->size; ++i) {
+            int32_t number;
+            if (!dex_encoded_integer(&array->values[i], &number)) {
+                literal = NULL;
+                break;
+            }
+            dex_literal_int(&literal->list->args[i], number);
+        }
+        if (literal) {
+            right->type = JD_EXPRESSION_NEW_ARRAY;
+            right->data = literal;
+            return;
+        }
+    }
     right->type = JD_EXPRESSION_GET_STATIC;
     right->data = get_static;
 }
