@@ -268,3 +268,11 @@ if (RELEASE)
     endif ()
 
 endif ()
+
+# Native desktop browser; CLI-only builds keep their existing dependencies.
+option(GARLIC_BUILD_GUI "Build the C++ / Qt 6 desktop browser" OFF)
+if(GARLIC_BUILD_GUI)
+    enable_language(CXX)
+    enable_testing()
+    add_subdirectory(gui)
+endif()

@@ -1,3 +1,4 @@
+#include "class_selection.h"
 #include <errno.h>
 #include "dalvik/dex_decompile.h"
 #include "dalvik/dex_structure.h"
@@ -277,6 +278,8 @@ void dex_smali_class(jd_dex *dex, dex_class_def *cf)
     mem_init_pool();
     FILE *stream = dex_class_smali_save_dir(dex, cf);
     dex_class_def_to_smali(dex->meta, cf, stream);
+    if (stream != NULL)
+        fclose(stream);
     mem_free_pool();
 }
 
@@ -403,6 +406,9 @@ void dex_decompile_threadpool_start(jd_dex *dex)
             dex_class_is_anonymous_class(dex->meta, cf))
             continue;
 
+        if (!class_selection_accept(dex_str_of_type_id(meta, cf->class_idx)))
+            continue;
+
         if (dex->threadpool) {
             jd_dex_task *t = make_obj(jd_dex_task);
             t->dex = dex;
@@ -424,19 +430,24 @@ void dex_decompile_threadpool_start(jd_dex *dex)
 void dex_decompile_main_thread_start(jd_dex *dex)
 {
     jd_meta_dex *meta = dex->meta;
+    mem_pool *parse_pool = global_pool;
     for (int i = 0; i < meta->header->class_defs_size; ++i) {
-        mem_init_pool();
         dex_class_def *cf = &meta->class_defs[i];
         if (dex_class_is_inner_class(dex->meta, cf) ||
             dex_class_is_anonymous_class(dex->meta, cf))
             continue;
 
+        if (!class_selection_accept(dex_str_of_type_id(meta, cf->class_idx)))
+            continue;
+
+        mem_init_pool();
         jsource_file *jf = dex_class_inside(dex, cf, NULL);
         if (jf->parent == NULL) {
             writter_for_class(jf, NULL);
             fclose(jf->source);
         }
         mem_free_pool();
+        global_pool = parse_pool;
         dex->done ++;
         dex_main_thread_status(dex);
     }
@@ -447,6 +458,8 @@ void dex_smali_threadpool_start(jd_dex *dex)
     jd_meta_dex *meta = dex->meta;
     for (int i = 0; i < meta->header->class_defs_size; ++i) {
         dex_class_def *cf = &meta->class_defs[i];
+        if (!class_selection_accept(dex_str_of_type_id(meta, cf->class_idx)))
+            continue;
         jd_dex_task *t = make_obj(jd_dex_task);
         t->dex = dex;
         t->cf = cf;
@@ -459,15 +472,21 @@ void dex_smali_threadpool_start(jd_dex *dex)
 void dex_smali_main_thread_start(jd_dex *dex)
 {
     jd_meta_dex *meta = dex->meta;
+    mem_pool *parse_pool = global_pool;
     for (int i = 0; i < meta->header->class_defs_size; ++i) {
-        mem_init_pool();
         dex_class_def *cf = &meta->class_defs[i];
+        if (!class_selection_accept(dex_str_of_type_id(meta, cf->class_idx)))
+            continue;
 
+        mem_init_pool();
         FILE *stream = dex_class_smali_save_dir(dex, cf);
 
         dex_class_def_to_smali(dex->meta, cf, stream);
+        if (stream != NULL)
+            fclose(stream);
 
         mem_free_pool();
+        global_pool = parse_pool;
         dex->done ++;
         dex_main_thread_status(dex);
     }
@@ -509,6 +528,8 @@ void dex_file_analyse(string path, string save_dir, int thread_num, jd_dex_task_
     }
 
     dex_release(dex);
+    if (thread_num <= 1)
+        mem_free_pool();
 }
 
 void dex_file_dump(string path)

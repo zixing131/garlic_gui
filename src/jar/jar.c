@@ -1,3 +1,4 @@
+#include "class_selection.h"
 #include <errno.h>
 
 #include "jar/jar.h"
@@ -107,8 +108,10 @@ static void prepare_jar_zip(jd_jar *jar)
         char *buf = NULL;
         size_t buf_size;
         buf_size = zip_entry_size(zip);
-        buf = x_alloc_in(jar->pool, buf_size * sizeof(unsigned char));
-        zip_entry_noallocread(zip, (void *)buf, buf_size);
+        if (!class_selection_indexing()) {
+            buf = x_alloc_in(jar->pool, buf_size * sizeof(unsigned char));
+            zip_entry_noallocread(zip, (void *)buf, buf_size);
+        }
         zip_entry_close(zip);
 
         entry->buf = buf;
@@ -220,6 +223,8 @@ static void jar_threadpool_start(jd_jar *jar)
         jd_jar_entry *entry = lget_obj(jar->class_entries, i);
         if (entry->is_inner || entry->is_anoymous)
             continue;
+        if (!class_selection_accept(entry->path))
+            continue;
         threadpool_add(jar->threadpool, &jar_entry_thread_task, entry, 0);
         jar->added++;
     }
@@ -298,6 +303,8 @@ static void jar_main_thread(jd_jar *jar)
         */
 
         if (entry->is_inner || entry->is_anoymous)
+            continue;
+        if (!class_selection_accept(entry->path))
             continue;
 
         mem_init_pool();

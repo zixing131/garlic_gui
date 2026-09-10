@@ -9,6 +9,7 @@
 #include "analyzer/jd_analyzer.h"
 #include "ai/jd_mcp.h"
 #include <unistd.h>
+#include "class_selection.h"
 /* Embedded librosemarylib — extracted to temp dir and dlopen'd at runtime */
 #include "rosemary/rosemary_embed.h"
 /* License verification */
@@ -34,6 +35,8 @@ typedef enum {
 
 typedef struct jd_opt {
     char *path;
+    char *index_path;
+    char *class_name;
     char *out;
     jd_file_type_t ft;
     int option;
@@ -131,6 +134,8 @@ static void prepare_opt_threads(jd_opt *opt) {
 
 static void opt_usage(const char *progname) {
     fprintf(stderr, "Usage: %s file [-p] [-o outpath] [-t num] [-g] [-s]\n", progname);
+    fprintf(stderr, "    -I <file>: write top-level class index as JSONL (no decompilation)\n");
+    fprintf(stderr, "    -c <name>: decompile one class, e.g. com/example/Main\n");
     fprintf(stderr, "    -p: like javap or dexdump, print class info\n");
     fprintf(stderr, "    -o: output path for jar/dex/war files\n");
     fprintf(stderr, "    -t: number of threads to use (default is 4)\n");
@@ -161,8 +166,10 @@ static jd_opt* parse_opt(int argc, char **argv) {
     opt->path = path;
     opt->ft = ft;
 
-    while ((oc = getopt(argc, argv, "spo:t:ghmn")) != -1) {
+    while ((oc = getopt(argc, argv, "spo:t:ghmnI:c:")) != -1) {
         switch (oc) {
+            case 'I': opt->index_path = optarg; break;
+            case 'c': opt->class_name = optarg; break;
             case 'p': { // like javap
                 opt->option = JD_FILE_OPTION_DUMP;
                 break;
@@ -213,7 +220,8 @@ static jd_opt* parse_opt(int argc, char **argv) {
                                     "number of threads is set to less than 2, "
                                     "multithreading mode will be turned off\n");
                 }
-                break;
+                fprintf(stderr, "[garlic] Invalid or incomplete option: -%c\n", optopt);
+                exit(EXIT_FAILURE);
             }
             default:
                 opt_usage(argv[0]);
@@ -233,6 +241,10 @@ static void free_opt(jd_opt *opt) {
 static void run_for_jvm_class(jd_opt *opt) {
     mem_init_pool();
     jclass_file *jc = parse_class_file(opt->path);
+    if (!class_selection_accept(get_class_name(jc, pool_item(jc, jc->this_class)))) {
+        mem_free_pool();
+        return;
+    }
     if (opt->option == JD_FILE_OPTION_DUMP) {
         print_java_class_file_info(jc);
     }
@@ -359,6 +371,16 @@ int main(int argc, char **argv)
     }
 
     jd_opt *opt = parse_opt(argc, argv);
+    if ((opt->index_path || opt->class_name) &&
+        (opt->option != JD_FILE_OPTION_NONE && opt->option != JD_FILE_OPTION_SMALI)) {
+        fprintf(stderr, "[garlic] -I/-c only support Java or Smali browsing\n");
+        free_opt(opt);
+        return 1;
+    }
+    if (!class_selection_open(opt->index_path, opt->class_name)) {
+        free_opt(opt);
+        return 1;
+    }
 
     if (opt->option == JD_FILE_OPTION_ELF_ANALYSIS) {
         printf("[Garlic] ELF binary analysis\n");
@@ -408,5 +430,5 @@ int main(int argc, char **argv)
         exit(EXIT_FAILURE);
     }
 
-    return 0;
+    return class_selection_close();
 }

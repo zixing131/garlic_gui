@@ -1,3 +1,4 @@
+#include "class_selection.h"
 #include <errno.h>
 //#include "apk/apk.h"
 #include "parser/dex/metadata.h"
@@ -128,6 +129,9 @@ static void apk_process_dex_from_zip(jd_apk *apk, struct zip_t *zip)
                     continue;
             }
 
+            if (!class_selection_accept(dex_str_of_type_id(meta, cf->class_idx)))
+                continue;
+
             if (apk->threadpool) {
                 jd_dex_task *t = make_obj(jd_dex_task);
                 t->dex = dex;
@@ -152,13 +156,16 @@ static void apk_process_dex_from_zip(jd_apk *apk, struct zip_t *zip)
                 }
                 apk->added++;
             } else {
-                /* Single-threaded: process synchronously */
+                /* The class helpers create/free their own global scratch pool.
+                 * Preserve the APK parsing pool for the next DEX and release. */
+                mem_pool *parse_pool = global_pool;
+                apk->added++;
                 if (apk->type == JD_DEX_TASK_SMALI) {
                     dex_smali_class(dex, cf);
                 } else {
                     dex_decompile_class(dex, cf);
                 }
-                apk->done++;
+                global_pool = parse_pool;
                 apk_status(apk);
             }
         }
@@ -182,7 +189,7 @@ static void apk_decompile_task_start(jd_apk *apk)
             continue;
         }
 
-        if (str_end_with(path_in_zip, "AndroidManifest.xml")) {
+        if (!class_selection_indexing() && str_end_with(path_in_zip, "AndroidManifest.xml")) {
             apk_parse_manifest_from_zip(apk);
             zip_entry_close(zip);
             break;
