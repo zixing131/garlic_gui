@@ -1,6 +1,7 @@
 #pragma once
 #include "project.h"
 #include <QCache>
+#include <QHash>
 #include <QRegularExpression>
 #include <array>
 #include <atomic>
@@ -22,12 +23,15 @@ struct SearchResult {
 };
 struct SearchDocument {
     QStringList lines, searchable;
-    std::array<quint64, 64> grams{};
+    std::array<quint64, 128> grams{};
 };
 // Shared across requests within one project. KiB costs bound prepared source memory.
 struct SearchIndex {
     std::mutex mutex;
     QCache<QString, std::shared_ptr<const SearchDocument>> documents{64 * 1024};
+    // Compact per-file Bloom filters survive document-cache eviction. They let later queries
+    // reject most immutable project sources without opening or stat'ing every file again.
+    QHash<QString, std::array<quint64, 128>> filters;
 };
 class SearchEvents : public QObject {
     Q_OBJECT
@@ -43,6 +47,7 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
                            const std::shared_ptr<std::atomic_bool> &generating,
                            const std::shared_ptr<SearchControl> &control,
                            const std::shared_ptr<SearchEvents> &events, int request,
-                           const std::shared_ptr<SearchIndex> &index = {});
+                           const std::shared_ptr<SearchIndex> &index = {},
+                           bool immutableSources = false);
 
 Q_DECLARE_METATYPE(SearchResult)

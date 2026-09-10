@@ -689,7 +689,7 @@ int Backend::search(const SearchOptions &options) {
         [snapshot, settings, control, generating, workspace, single, events, request, index] {
             return searchProject(snapshot, settings,
                                  workspace ? workspace->path() + "/all-java" : QString(), single,
-                                 generating, control, events, request, index);
+                                 generating, control, events, request, index, true);
         }));
     return request;
 }

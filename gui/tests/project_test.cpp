@@ -65,6 +65,27 @@ class ProjectTest : public QObject {
         const QString id = "Ldemo/Main;->greet(I)Ljava/lang/String;";
         QVERIFY(!project->xrefs(id).isEmpty());
         QCOMPARE(project->overrideOf(id), QString("Ldemo/Contract;->greet(I)Ljava/lang/String;"));
+        QCOMPARE(project->overrideAnnotation(id),
+                 QString("@Override // demo.Contract.greet"));
+        auto searchPresentation = [&](QString query, bool code, bool comments) {
+            SearchOptions options;
+            options.query = query;
+            options.code = code;
+            options.comments = comments;
+            options.limit = 20;
+            return searchProject(project->snapshot(), options, QString(), false,
+                                 std::make_shared<std::atomic_bool>(false),
+                                 std::make_shared<SearchControl>(),
+                                 std::make_shared<SearchEvents>(), 1);
+        };
+        const auto annotationHits = searchPresentation("@Override", true, false).hits;
+        QVERIFY(std::any_of(annotationHits.cbegin(), annotationHits.cend(), [&id](const auto &hit) {
+            return hit.toObject().value("id").toString() == id;
+        }));
+        const auto commentHits = searchPresentation("demo.Contract.greet", false, true).hits;
+        QVERIFY(std::any_of(commentHits.cbegin(), commentHits.cend(), [&id](const auto &hit) {
+            return hit.toObject().value("id").toString() == id;
+        }));
         b.request("demo/Main", false);
         QTRY_COMPARE_WITH_TIMEOUT(sources.count(), 1, 15000);
         auto doc = project->document("demo/Main", false, b.cachedPath("demo/Main", false));

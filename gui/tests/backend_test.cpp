@@ -203,6 +203,37 @@ class BackendTest : public QObject {
                 << "index MiB:" << QFileInfo(backend.workspacePath() + "/classes.jsonl").size()/1048576
                 << "load ms:" << elapsed.elapsed();
     }
+    void realLargeSearch() {
+        const auto path = qEnvironmentVariable("GARLIC_TEST_SEARCH_APK");
+        if (path.isEmpty()) QSKIP("Set GARLIC_TEST_SEARCH_APK to benchmark full source search");
+        Backend backend;
+        backend.setEngine(engine_);
+        auto settings = backend.settings();
+        settings.background = false;
+        backend.configure(settings);
+        QSignalSpy completed(&backend, &Backend::searchCompleted), errors(&backend, &Backend::failed);
+        backend.open(path);
+        QTRY_VERIFY_WITH_TIMEOUT(!backend.busy(), 120000);
+        SearchOptions options;
+        options.classes = options.methods = options.fields = false;
+        options.code = options.comments = true;
+        options.query = "__garlic_search_missing_a__";
+        QElapsedTimer elapsed;
+        elapsed.start();
+        backend.search(options);
+        QTRY_COMPARE_WITH_TIMEOUT(completed.count(), 1, 300000);
+        const auto coldMs = elapsed.restart();
+        options.query = "__garlic_search_missing_b__";
+        backend.search(options);
+        QTRY_COMPARE_WITH_TIMEOUT(completed.count(), 2, 30000);
+        const auto warmMs = elapsed.elapsed();
+        const auto warm = qvariant_cast<SearchResult>(completed.last()[1]);
+        QVERIFY(errors.isEmpty());
+        QVERIFY(warm.indexRejected > 0);
+        qInfo() << "Full source search cold/warm ms:" << coldMs << warmMs
+                << "classes:" << backend.project()->classes().size()
+                << "Bloom rejects:" << warm.indexRejected;
+    }
     void cancelCrashAndBadIndex() {
         Backend backend;
         backend.setEngine(qEnvironmentVariable("GARLIC_TEST_FAKE_ENGINE"));

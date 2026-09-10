@@ -946,8 +946,8 @@ SourceDocument MainWindow::present(const SourceDocument &raw, bool smali) const 
     for (const auto &span : doc.spans) {
         if (!span.declaration || !span.id.contains("->"))
             continue;
-        const auto parent = backend_.project()->overrideOf(span.id);
-        if (parent.isEmpty())
+        const auto annotation = backend_.project()->overrideAnnotation(span.id);
+        if (annotation.isEmpty())
             continue;
         const int lineStart = doc.text.lastIndexOf('\n', span.start) + 1;
         const int previousStart = doc.text.lastIndexOf('\n', qMax(0, lineStart - 2)) + 1;
@@ -955,9 +955,7 @@ SourceDocument MainWindow::present(const SourceDocument &raw, bool smali) const 
             continue;
         const auto indentation =
             QRegularExpression("^\\s*").match(doc.text.mid(lineStart)).captured();
-        const auto label = Project::classOf(parent).replace('/', '.') + "." +
-                           backend_.project()->symbolName(parent);
-        notes << OverrideNote{lineStart, indentation + "@Override // " + label + '\n'};
+        notes << OverrideNote{lineStart, indentation + annotation + '\n'};
     }
     std::sort(notes.begin(), notes.end(),
               [](const OverrideNote &a, const OverrideNote &b) { return a.position > b.position; });

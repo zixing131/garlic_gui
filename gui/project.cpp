@@ -24,6 +24,7 @@ void Project::reset(const QString &input) {
     inputs_ = {input};
     documents_.clear();
     referenceIndex_ = std::make_shared<ReferenceIndex>();
+    overrideIndex_ = std::make_shared<OverrideIndex>();
     classes_.clear();
     symbols_.clear();
     classNames_.clear();
@@ -33,6 +34,8 @@ void Project::reset(const QString &input) {
 }
 void Project::addClass(const QJsonObject &entry) {
     referenceIndex_ = std::make_shared<ReferenceIndex>();
+    if (overrideIndex_->ready)
+        overrideIndex_ = std::make_shared<OverrideIndex>();
     const auto name = entry.value("name").toString();
     if (classes_.contains(name)) {
         const auto old = classes_.value(name);
@@ -601,6 +604,31 @@ QString Project::overrideOf(const QString &id) const {
     }
     return {};
 }
+QString Project::overrideAnnotation(const QString &id) const {
+    const auto parent = overrideOf(id);
+    if (parent.isEmpty())
+        return {};
+    return "@Override // " + classOf(parent).replace('/', '.') + "." + symbolName(parent);
+}
+QJsonArray Project::overrideAnnotations() const {
+    std::lock_guard<std::mutex> guard(overrideIndex_->lock);
+    if (!overrideIndex_->ready) {
+        for (auto it = symbols_.cbegin(); it != symbols_.cend(); ++it) {
+            const auto symbol = it.value();
+            if (symbol.value("kind") != "method")
+                continue;
+            const auto id = symbol.value("id").toString();
+            const auto text = overrideAnnotation(id);
+            if (!text.isEmpty())
+                overrideIndex_->entries.append(QJsonObject{{"id", id},
+                                                           {"owner", symbol.value("owner")},
+                                                           {"flags", symbol.value("flags")},
+                                                           {"text", text}});
+        }
+        overrideIndex_->ready = true;
+    }
+    return overrideIndex_->entries;
+}
 QString Project::methodSource(const SourceDocument &document, const QString &id) const {
     const auto mask = codeMask(document.text, false);
     for (const auto &span : document.spans)
@@ -629,6 +657,7 @@ std::shared_ptr<Project> Project::snapshot() const {
 void Project::replaceData(const Project &other) {
     documents_ = other.documents_;
     referenceIndex_ = other.referenceIndex_;
+    overrideIndex_ = other.overrideIndex_;
     input_ = other.input_;
     inputs_ = other.inputs_;
     classes_ = other.classes_;

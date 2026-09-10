@@ -48,6 +48,8 @@ class Project : public QObject {
     QString methodSource(const SourceDocument &document, const QString &id) const;
     // Returns the declared parent/interface method implemented by id, if indexed.
     QString overrideOf(const QString &id) const;
+    QString overrideAnnotation(const QString &id) const;
+    QJsonArray overrideAnnotations() const;
     QString resolve(const QString &token, const QString &context) const;
     static QString normalize(QString name);
     static QString classId(const QString &name) { return "L" + normalize(name) + ";"; }
@@ -72,6 +74,8 @@ class Project : public QObject {
     struct ReferencePosition { QString owner, from; int index; };
     struct ReferenceIndex { std::mutex lock; bool ready = false; QHash<QString, QList<ReferencePosition>> targets; };
     std::shared_ptr<ReferenceIndex> referenceIndex_ = std::make_shared<ReferenceIndex>();
+    struct OverrideIndex { std::mutex lock; bool ready = false; QJsonArray entries; };
+    std::shared_ptr<OverrideIndex> overrideIndex_ = std::make_shared<OverrideIndex>();
     QString input_;
     QStringList inputs_;
 };
