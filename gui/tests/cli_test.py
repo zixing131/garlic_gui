@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Integration contract for the GUI's CLI index and single-class requests."""
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -35,4 +36,15 @@ with tempfile.TemporaryDirectory(prefix='garlic-cli-test-') as temp:
             assert missing.returncode != 0
     bad = subprocess.run([str(engine), str(files[0]), '-I'], capture_output=True, timeout=20)
     assert bad.returncode != 0, 'Incomplete index flag must fail, never batch decompile'
+    # Exercise concurrent worker startup and full export, beyond the single-class path.
+    for attempt in range(12):
+        target = root / f'parallel-{attempt}'
+        env = os.environ.copy()
+        env['GARLIC_SOURCE_MAP_DIR'] = str(target)
+        result = subprocess.run([str(engine), str(files[0]), '-o', str(target), '-t', '8'],
+                                capture_output=True, timeout=20, env=env)
+        assert result.returncode == 0, result.stdout + result.stderr
+        for name in ('Main', 'Extra', 'Use'):
+            assert (target / f'demo/{name}.java').is_file()
+            assert json.loads((target / f'demo/{name}.map.json').read_text())
 print('Index / single-class / no-match contract passed for', len(files), 'formats at 1 and 2 threads')

@@ -212,6 +212,7 @@ void jar_entry_thread_task(jd_jar_entry *entry)
         fclose(jf->source);
     }
     mem_pool_free(tls->pool);
+    tls->pool = NULL;
 
     jar_status(entry->jar);
 }

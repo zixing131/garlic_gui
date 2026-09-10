@@ -142,6 +142,7 @@ def main():
         for binary in folder.rglob('*.dll'):
             architecture(binary, args.platform)
     run(gui, '--version', env=env, timeout=30)
+    run(gui, '--smoke-test', env=env, timeout=30)
     smoke = output / ('smoke-' + args.platform)
     smoke.mkdir()
     run(engine, build / 'fixtures/demo.jar', '-I', smoke / 'classes.jsonl', '-o', smoke, '-t', '1', env=env, timeout=30, stdout=subprocess.DEVNULL)

@@ -16,6 +16,7 @@ void create_tls_key() {
 }
 
 thread_local_data* get_thread_local_data() {
+    pthread_once(&tls_init_once, create_tls_key);
     return pthread_getspecific(tls_key);
 }
 
@@ -223,12 +224,15 @@ int threadpool_free(threadpool_t *pool)
 void thread_local_data_init(threadpool_t *pool, pthread_t tid) {
     pthread_once(&tls_init_once, create_tls_key);
     mem_pool *mpool = pool->mem_pool;
+    /* The arena is shared by all starting workers and is not thread safe. */
+    pthread_mutex_lock(pool->lock);
     thread_local_data *tls = x_alloc_in(mpool, sizeof(thread_local_data));
+    pthread_mutex_unlock(pool->lock);
     if (!tls) {
         perror("Failed to allocate thread local storage");
         exit(EXIT_FAILURE);
     }
-    tls->pool = mem_create_pool();
+    tls->pool = NULL; /* Each task owns and releases its own arena. */
     pthread_setspecific(tls_key, tls);
 }
 

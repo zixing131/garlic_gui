@@ -99,8 +99,10 @@ class BackendTest : public QObject {
         }
         QTemporaryDir output;
         backend.exportSources(output.path() + "/export", false);
-        QTRY_COMPARE_WITH_TIMEOUT(exported.count(), 1, 15000);
-        QVERIFY(errors.isEmpty());
+        QTRY_VERIFY_WITH_TIMEOUT(!exported.isEmpty() || !errors.isEmpty(), 15000);
+        QVERIFY2(errors.isEmpty(),
+                 errors.isEmpty() ? "" : qPrintable(errors.first().first().toString()));
+        QCOMPARE(exported.count(), 1);
         QVERIFY(
             QFileInfo::exists(output.path() + (file == "Main.class" ? "/export/source.java"
                                                                     : "/export/demo/Main.java")));

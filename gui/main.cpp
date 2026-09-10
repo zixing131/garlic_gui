@@ -6,12 +6,26 @@
 #include <QStyleFactory>
 #include <QTimer>
 #include <cstring>
+#include <cstdio>
 
 int main(int argc, char **argv) {
-    for (int i = 1; i < argc; i++)
+    for (int i = 1; i < argc; i++) {
         if (std::strcmp(argv[i], "--mcp") == 0)
             return runMcpBridge(argc, argv);
+        if (std::strcmp(argv[i], "--version") == 0) {
+            // QCommandLineParser shows a blocking message box for Windows GUI applications.
+            std::puts("Garlic GUI 0.4.0");
+            return 0;
+        }
+    }
     QApplication app(argc, argv);
+    for (int i = 1; i < argc; i++)
+        if (std::strcmp(argv[i], "--smoke-test") == 0) {
+            QWidget probe;
+            probe.show();
+            app.processEvents();
+            return 0;
+        }
     app.setApplicationName("Garlic GUI");
     app.setOrganizationName("Garlic");
     app.setApplicationVersion("0.4.0");
