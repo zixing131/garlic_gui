@@ -64,6 +64,7 @@ class Backend : public QObject {
     void readOutput();
     void prepareFinished(int code, QProcess::ExitStatus status);
     std::shared_ptr<SearchControl> searchControl_;
+    std::shared_ptr<SearchIndex> searchIndex_ = std::make_shared<SearchIndex>();
     std::shared_ptr<std::atomic_bool> sourceGenerating_ = std::make_shared<std::atomic_bool>(false);
     void applyEnvironment(QProcess &process, const QString &directory);
     QString argumentClass_, activeInput_;

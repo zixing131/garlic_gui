@@ -90,6 +90,49 @@ class WindowTest : public QObject {
         QVERIFY(narrow[1] < wide[1]);
         QVERIFY(narrow[1] >= 300);
     }
+    void treeModesSyncAndSideButtons() {
+        QSettings().setValue("view/flatPackages", true);
+        MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
+        window.show();
+        window.openPath(qEnvironmentVariable("GARLIC_TEST_FIXTURES") + "/demo.jar");
+        QTRY_VERIFY_WITH_TIMEOUT(
+            !window.backend()->busy() && !window.backend()->project()->classes().isEmpty(), 15000);
+        auto tree = window.findChild<QTreeView *>("classTree");
+        auto flat = window.findChild<QAction *>("flatPackages");
+        QVERIFY(flat && flat->isChecked());
+        auto matches = [&](const QString &id) {
+            return tree->model()->match(tree->model()->index(0, 0), Qt::UserRole + 1, id, 1,
+                                        Qt::MatchExactly | Qt::MatchRecursive);
+        };
+        QTRY_VERIFY(!matches("Ldemo/deep/nested/Leaf;").isEmpty());
+        QCOMPARE(matches("Ldemo/deep/nested/Leaf;").first().parent().data().toString(),
+                 QString("demo.deep.nested"));
+        flat->setChecked(false);
+        QTRY_VERIFY(!matches("Ldemo/deep/nested/Leaf;").isEmpty());
+        auto leaf = matches("Ldemo/deep/nested/Leaf;").first();
+        QCOMPARE(leaf.parent().data().toString(), QString("nested"));
+        QCOMPARE(leaf.parent().parent().data().toString(), QString("deep"));
+        QCOMPARE(QSettings().value("view/flatPackages").toBool(), false);
+        window.openClass("demo/deep/nested/Leaf");
+        QTRY_VERIFY_WITH_TIMEOUT(
+            window.editor() && window.editor()->toPlainText().contains("return 7"), 15000);
+        window.findChild<QLineEdit *>("classFilter")->setText("hidden");
+        window.findChild<QAction *>("syncEditor")->trigger();
+        QCOMPARE(tree->currentIndex().data(Qt::UserRole + 1).toString(),
+                 QString("Ldemo/deep/nested/Leaf;"));
+        QVERIFY(tree->isExpanded(tree->currentIndex().parent()));
+        if (!qEnvironmentVariable("GARLIC_SCREENSHOTS").isEmpty()) {
+            window.resize(1100, 720);
+            QTest::qWait(100);
+            window.grab().save(qEnvironmentVariable("GARLIC_SCREENSHOTS") + "/tree-modes.png");
+        }
+        window.openClass("demo/Main");
+        QTRY_VERIFY_WITH_TIMEOUT(window.editor()->toPlainText().contains("greet"), 15000);
+        QTest::mouseClick(window.editor()->viewport(), Qt::BackButton);
+        QTRY_VERIFY(window.editor()->toPlainText().contains("return 7"));
+        QTest::mouseClick(window.editor()->viewport(), Qt::ForwardButton);
+        QTRY_VERIFY(window.editor()->toPlainText().contains("greet"));
+    }
     void crlfSymbolPositions() {
         CodeEditor editor(false);
         const QString text = "// 中文\r\npublic class Example {\r\n    void greet() {}\r\n}\r\n";

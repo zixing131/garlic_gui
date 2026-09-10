@@ -4,6 +4,18 @@
 #include <QtConcurrent>
 #include <QtWidgets>
 
+namespace {
+class PreferenceItemDelegate : public QStyledItemDelegate {
+  public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+    void paint(QPainter *p, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override {
+        QStyleOptionViewItem clean(option);
+        clean.state &= ~QStyle::State_HasFocus;
+        QStyledItemDelegate::paint(p, clean, index);
+    }
+};
+} // namespace
 void MainWindow::applySettings(const AppSettings &settings) {
     backend_.configure(settings);
     memoryLabel_->setVisible(settings.showMemory);
@@ -93,7 +105,9 @@ void MainWindow::settingsDialog() {
     auto navigation = new QListWidget;
     navigation->setObjectName("preferencesNavigation");
     navigation->setFixedWidth(160);
-    navigation->setStyleSheet("QListWidget::item { padding: 10px 14px; }");
+    navigation->setItemDelegate(new PreferenceItemDelegate(navigation));
+    navigation->setStyleSheet("QListWidget::item { padding: 10px 14px; } QListWidget::item:focus { "
+                              "outline: none; border: none; }");
     auto tabs = new QStackedWidget;
     auto body = new QHBoxLayout;
     body->addWidget(navigation);

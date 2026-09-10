@@ -12,6 +12,75 @@ class InteractionTest : public QObject {
         QCoreApplication::setApplicationName("InteractionTest");
         QSettings().clear();
     }
+    void launcherAliases() {
+        const QString manifest =
+            "<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\" "
+            "package=\"demo\">"
+            "        <application><activity android:name=\".NotLauncher\"><intent-filter><action "
+            "android:name=\"android.intent.action.MAIN\"/></intent-filter>"
+            "        <intent-filter><category "
+            "android:name=\"android.intent.category.LAUNCHER\"/></intent-filter></activity>"
+            "        <activity-alias android:name=\".Alias\" "
+            "android:targetActivity=\".Main\"><intent-filter>"
+            "        <action android:name=\"android.intent.action.MAIN\"/><category "
+            "android:name=\"android.intent.category.LAUNCHER\"/>"
+            "        </intent-filter></activity-alias><activity android:name=\"Disabled\" "
+            "android:enabled=\"false\"><intent-filter>"
+            "        <action android:name=\"android.intent.action.MAIN\"/><category "
+            "android:name=\"android.intent.category.LAUNCHER\"/>"
+            "        </intent-filter></activity></application></manifest>";
+        QCOMPARE(Resources::launcherActivities(manifest), QStringList{"demo.Main"});
+        QVERIFY(Resources::launcherActivities(manifest.left(40)).isEmpty());
+    }
+    void searchIndexCache() {
+        QTemporaryDir dir;
+        QDir().mkpath(dir.path() + "/demo");
+        const auto path = dir.path() + "/demo/Main.java";
+        auto write = [&](const QByteArray &text) {
+            QFile file(path);
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            file.write(text);
+        };
+        write("class Main {\n void greet() {} // commentOnly\n}\n");
+        auto project = std::make_shared<Project>();
+        project->addClass({{"name", "demo/Main"}});
+        auto index = std::make_shared<SearchIndex>();
+        auto generating = std::make_shared<std::atomic_bool>(false);
+        auto events = std::make_shared<SearchEvents>();
+        SearchOptions options;
+        options.query = "greet";
+        auto run = [&](bool cached) {
+            return searchProject(project, options, dir.path(), false, generating,
+                                 std::make_shared<SearchControl>(), events, 1,
+                                 cached ? index : nullptr);
+        };
+        auto cold = run(true);
+        QCOMPARE(cold.hits.size(), 1);
+        QCOMPARE(cold.cachedFiles, 0);
+        auto warm = run(true);
+        QCOMPARE(warm.hits, cold.hits);
+        QCOMPARE(warm.cachedFiles, 1);
+        options.query = "totallyMissing";
+        auto rejected = run(true);
+        QCOMPARE(rejected.indexRejected, 1);
+        QVERIFY(rejected.hits.isEmpty());
+        options.query = "commentOnly";
+        QVERIFY(run(true).hits.isEmpty());
+        options.code = false;
+        options.comments = true;
+        QCOMPARE(run(true).hits.size(), 1);
+        options.code = true;
+        options.comments = false;
+        options.regex = true;
+        options.query = "gr.*t";
+        QCOMPARE(run(true).hits, run(false).hits);
+        options.regex = false;
+        options.query = "updated";
+        write("class Main { void updated() {} }\n");
+        auto changed = run(true);
+        QCOMPARE(changed.hits.size(), 1);
+        QCOMPARE(changed.cachedFiles, 0);
+    }
     void referencesAndInputsTree() {
         MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
         window.show();
@@ -227,6 +296,7 @@ class InteractionTest : public QObject {
             QVERIFY2(!decoded.hasError(), qPrintable(it.key() + ": " + decoded.errorString()));
         }
         qInfo() << "Decoded resource files:" << files.size();
+        qInfo() << "Launcher activities:" << info.value("main_activities");
         QVERIFY2(!table.contains("解析失败"), qPrintable(table.left(500)));
         QVERIFY(table.contains("string/"));
     }
@@ -267,6 +337,10 @@ class InteractionTest : public QObject {
                      .isEmpty());
         qInfo() << "Warm reference lookup (ms):" << refsTimer.elapsed();
         refsDialog->close();
+        window.findChild<QAction *>("mainActivity")->trigger();
+        QTRY_VERIFY_WITH_TIMEOUT(window.editor() && window.editor()->toPlainText().contains("class MainActivity"),15000);
+        window.findChild<QAction *>("syncEditor")->trigger();
+        QCOMPARE(window.findChild<QTreeView *>("classTree")->currentIndex().data(Qt::UserRole+1).toString(),QString("Lcom/nobi/mmsd/offline/MainActivity;"));
         window.openClass("androidx/activity/ComponentActivity$$ExternalSyntheticLambda0");
         QTRY_VERIFY_WITH_TIMEOUT(window.editor() &&
                                      window.editor()->toPlainText().contains("implements Runnable"),
@@ -288,6 +362,26 @@ class InteractionTest : public QObject {
                 << "Search hits:" << result.hits.size() << "Max UI heartbeat gap (ms):" << maxGap;
         QVERIFY2(maxGap < 350, qPrintable(QString("UI event-loop gap was %1 ms").arg(maxGap)));
         heartbeat.stop();
+        const auto snapshot = window.backend()->project()->snapshot();
+        const auto index = std::make_shared<SearchIndex>();
+        const auto events = std::make_shared<SearchEvents>();
+        const auto control = std::make_shared<SearchControl>();
+        const auto generating = std::make_shared<std::atomic_bool>(false);
+        QElapsedTimer searchClock;
+        searchClock.start();
+        auto cold =
+            searchProject(snapshot, options, window.backend()->workspacePath() + "/all-java", false,
+                          generating, control, events, 1, index);
+        const auto coldMs = searchClock.elapsed();
+        searchClock.restart();
+        auto warm =
+            searchProject(snapshot, options, window.backend()->workspacePath() + "/all-java", false,
+                          generating, control, events, 2, index);
+        QCOMPARE(warm.hits, cold.hits);
+        QVERIFY(warm.cachedFiles > 0);
+        qInfo() << "Search cold/warm (ms):" << coldMs << searchClock.elapsed()
+                << "cached files:" << warm.cachedFiles << "index rejected:" << warm.indexRejected;
+
         auto resourceTree = window.findChild<QTreeView *>("classTree");
         auto resourceTables = resourceTree->model()->match(resourceTree->model()->index(0, 0),
                                                            Qt::UserRole + 4, "resource-table", 1,

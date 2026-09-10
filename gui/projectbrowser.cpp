@@ -1,3 +1,4 @@
+#include "classview.h"
 #include "mainwindow.h"
 #include "nodeicons.h"
 #include "resources.h"
@@ -472,6 +473,13 @@ void MainWindow::expandResourceTable(const QModelIndex &index) {
             if (state->i < state->files.size())
                 if (auto next = weak.lock())
                     QTimer::singleShot(0, this, [next] { (*next)(); });
+            if (state->i == state->files.size() && !pendingSyncResource_.isEmpty()) {
+                auto key = pendingSyncResource_;
+                pendingSyncResource_.clear();
+                if (tabs_->currentWidget() &&
+                    tabs_->currentWidget()->property("resourceKey") == key)
+                    syncEditor();
+            }
         };
         (*step)();
     });
@@ -486,4 +494,85 @@ void MainWindow::expandResourceTable(const QModelIndex &index) {
         }
         return Result{files, error};
     }));
+}
+
+void MainWindow::goMainActivity() {
+    QStringList names;
+    for (const auto &path : backend_.inputs())
+        for (const auto &value : resourceInfo_.value(path).value("main_activities").toArray()) {
+            const auto name = value.toString();
+            if (!names.contains(name))
+                names << name;
+        }
+    if (names.isEmpty()) {
+        status_->setText(tr("未找到声明 MAIN + LAUNCHER 的 Activity 入口。"));
+        return;
+    }
+    QString name = names.first();
+    if (names.size() > 1) {
+        bool ok = false;
+        name = QInputDialog::getItem(this, tr("主 Activity"), tr("选择启动入口："), names, 0, false,
+                                     &ok);
+        if (!ok)
+            return;
+    }
+    name.replace('.', '/');
+    if (backend_.project()->info(name).isEmpty()) {
+        status_->setText(tr("入口类不在当前输入中：%1").arg(name));
+        return;
+    }
+    openClass(name);
+}
+void MainWindow::syncEditor() {
+    auto page = tabs_->currentWidget();
+    if (!page)
+        return;
+    // Reveal even when an active filter hides the current editor's file.
+    filter_->clear();
+    filterTree({});
+    const auto cls = qobject_cast<ClassView *>(page);
+    const auto key = page->property("resourceKey").toString();
+    QModelIndex found, resourceTable;
+    std::function<void(const QModelIndex &)> visit = [&](const QModelIndex &parent) {
+        for (int row = 0; row < model_->rowCount(parent) && !found.isValid(); row++) {
+            auto index = model_->index(row, 0, parent);
+            const auto kind = index.data(Qt::UserRole + 4).toString();
+            QString resourceKey = index.data(Qt::UserRole + 5).toString();
+            if (kind == "resource" || kind == "resource-table" || kind == "decoded-resource") {
+                resourceKey += "!" + index.data(Qt::UserRole + 6).toString();
+                if (kind == "decoded-resource")
+                    resourceKey += "!" + index.data(Qt::UserRole + 7).toString();
+            } else if (kind == "summary")
+                resourceKey += "!overview";
+            else if (kind == "signature")
+                resourceKey += "!signature";
+            if (!cls && kind == "resource-table" && key.startsWith(resourceKey + "!"))
+                resourceTable = index;
+            if ((cls && index.data(Qt::UserRole + 1).toString() == Project::classId(cls->name())) ||
+                (!cls && !key.isEmpty() && resourceKey == key))
+                found = index;
+            else
+                visit(index);
+        }
+    };
+    visit({});
+    if (!found.isValid() && resourceTable.isValid()) {
+        pendingSyncResource_ = key;
+        auto visible = proxy_->mapFromSource(resourceTable);
+        for (auto parent = visible.parent(); parent.isValid(); parent = parent.parent())
+            tree_->expand(parent);
+        tree_->expand(visible);
+        tree_->scrollTo(visible);
+        return;
+    }
+    if (!found.isValid()) {
+        status_->setText(tr("当前文件的目录节点尚未加载。"));
+        return;
+    }
+    pendingSyncResource_.clear();
+    auto visible = proxy_->mapFromSource(found);
+    for (auto parent = visible.parent(); parent.isValid(); parent = parent.parent())
+        tree_->expand(parent);
+    tree_->setCurrentIndex(visible);
+    tree_->scrollTo(visible, QAbstractItemView::PositionAtCenter);
 }

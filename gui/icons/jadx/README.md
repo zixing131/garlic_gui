@@ -25,3 +25,6 @@ Toolbar assets prefixed `tool` come from the same commit’s `icons/ui` director
 The SVG contents and copyright headers are unchanged.
 
 Resource assets prefixed `res` are unchanged icons from the same upstream `icons/nodes` directory, selected by extension in `NodeIcons::resource`.
+
+Navigation additions: `toolmainActivity` = `ui/home.svg`, `toolsync` = `ui/locate.svg`,
+`toolpackages` = `ui/moduleGroup.svg`, from the same local jadx icon set.

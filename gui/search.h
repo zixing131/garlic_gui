@@ -1,6 +1,8 @@
 #pragma once
 #include "project.h"
+#include <QCache>
 #include <QRegularExpression>
+#include <array>
 #include <atomic>
 #include <functional>
 struct SearchOptions {
@@ -14,9 +16,18 @@ struct SearchControl {
 };
 struct SearchResult {
     QJsonArray hits;
-    int scanned = 0, missing = 0, skipped = 0;
+    int scanned = 0, missing = 0, skipped = 0, cachedFiles = 0, indexRejected = 0;
     bool truncated = false, canceled = false;
     QString error;
+};
+struct SearchDocument {
+    QStringList lines, searchable;
+    std::array<quint64, 64> grams{};
+};
+// Shared across requests within one project. KiB costs bound prepared source memory.
+struct SearchIndex {
+    std::mutex mutex;
+    QCache<QString, std::shared_ptr<const SearchDocument>> documents{64 * 1024};
 };
 class SearchEvents : public QObject {
     Q_OBJECT
@@ -31,6 +42,7 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
                            const QString &directory, bool singleClass,
                            const std::shared_ptr<std::atomic_bool> &generating,
                            const std::shared_ptr<SearchControl> &control,
-                           const std::shared_ptr<SearchEvents> &events, int request);
+                           const std::shared_ptr<SearchEvents> &events, int request,
+                           const std::shared_ptr<SearchIndex> &index = {});
 
 Q_DECLARE_METATYPE(SearchResult)

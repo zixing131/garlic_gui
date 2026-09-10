@@ -160,6 +160,7 @@ void Backend::openPaths(const QStringList &paths) {
             inputs_ << QFileInfo(p).absoluteFilePath();
     indexQueue_ = inputs_;
     cache_.clear();
+    searchIndex_ = std::make_shared<SearchIndex>();
     project_.clearDocuments();
     cacheOrder_.clear();
     setProperty("errorCount", 0);
@@ -566,6 +567,7 @@ void Backend::clearCache() {
     ++searchGeneration_;
     cancelSearch();
     cache_.clear();
+    searchIndex_ = std::make_shared<SearchIndex>();
     project_.clearDocuments();
     cacheOrder_.clear();
     fullReady_ = false;
@@ -699,6 +701,7 @@ int Backend::search(const SearchOptions &options) {
         prepareSources();
     auto snapshot = project_.snapshot();
     auto control = searchControl_;
+    auto index = searchIndex_;
     auto generating = sourceGenerating_;
     auto workspace = workspace_;
     auto events = std::make_shared<SearchEvents>();
@@ -714,10 +717,10 @@ int Backend::search(const SearchOptions &options) {
     settings.sourceMiB = settings_.sourceMiB;
     const bool single = inputs_.size() == 1 && QFileInfo(input_).suffix() == "class";
     watcher->setFuture(QtConcurrent::run(
-        [snapshot, settings, control, generating, workspace, single, events, request] {
+        [snapshot, settings, control, generating, workspace, single, events, request, index] {
             return searchProject(snapshot, settings,
                                  workspace ? workspace->path() + "/all-java" : QString(), single,
-                                 generating, control, events, request);
+                                 generating, control, events, request, index);
         }));
     return request;
 }

@@ -16,6 +16,7 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     resize(1360, 860);
     setAcceptDrops(true);
     QSettings prefs;
+    flatPackages_ = prefs.value("view/flatPackages", true).toBool();
     restoreGeometry(prefs.value("geometry").toByteArray());
     if (!engine.isEmpty())
         backend_.setEngine(QFileInfo(engine).absoluteFilePath());
@@ -98,7 +99,20 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
         if (editor())
             editor()->zoomOut();
     });
+    auto syncAction = viewMenu->addAction(tr("与编辑器同步"), this, &MainWindow::syncEditor);
+    syncAction->setObjectName("syncEditor");
+    auto flatAction = viewMenu->addAction(tr("展开显示代码包"));
+    flatAction->setObjectName("flatPackages");
+    flatAction->setCheckable(true);
+    flatAction->setChecked(flatPackages_);
+    connect(flatAction, &QAction::toggled, this, [this](bool flat) {
+        flatPackages_ = flat;
+        QSettings().setValue("view/flatPackages", flat);
+        if (!backend_.project()->classes().isEmpty())
+            populate(backend_.project()->classes());
+    });
     auto toolbar = addToolBar("Main");
+    toolbar->setObjectName("mainToolbar");
     toolbar->setMovable(false);
     toolbar->addAction(openAction_);
     toolbar->addAction(exportAction_);
@@ -125,6 +139,19 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
             action->setIcon(NodeIcons::icon(toolIcons.value(ti++)));
             action->setToolTip(action->text());
         }
+    auto mainActivity = edit->addAction(tr("前往主 Activity"), this, &MainWindow::goMainActivity);
+    mainActivity->setObjectName("mainActivity");
+    mainActivity->setIcon(NodeIcons::icon("toolmainActivity"));
+    mainActivity->setToolTip(mainActivity->text());
+    toolbar->insertAction(applicationAction, mainActivity);
+    syncAction->setIcon(NodeIcons::icon("toolsync"));
+    flatAction->setIcon(NodeIcons::icon("toolpackages"));
+    syncAction->setToolTip(syncAction->text());
+    flatAction->setToolTip(flatAction->text());
+    toolbar->insertAction(back, syncAction);
+    toolbar->insertAction(back, flatAction);
+    back->setObjectName("navigateBack");
+    forward->setObjectName("navigateForward");
     auto central = new QWidget;
     auto layout = new QVBoxLayout(central);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -452,6 +479,7 @@ void MainWindow::populate(const QStringList &classes) {
         QStringList names;
         int offset = 0;
         QHash<QString, QStandardItem *> packages, items;
+        QSet<QString> leafPackages;
     };
     auto state = std::make_shared<State>();
     state->names = classes;
@@ -467,11 +495,21 @@ void MainWindow::populate(const QStringList &classes) {
             const QString pkg = name.contains('/')
                                     ? QString(name.section('/', 0, -2)).replace('/', '.')
                                     : tr("默认包");
+            state->leafPackages.insert(pkg);
             if (!state->packages.contains(pkg)) {
-                auto p = new QStandardItem(NodeIcons::icon("package"), pkg);
-                p->setData(pkg, Qt::UserRole + 2);
-                sourceRoot_->appendRow(p);
-                state->packages[pkg] = p;
+                auto parent = sourceRoot_;
+                QString full;
+                const auto parts = flatPackages_ ? QStringList{pkg} : pkg.split('.');
+                for (const auto &part : parts) {
+                    full += (full.isEmpty() ? "" : ".") + part;
+                    if (!state->packages.contains(full)) {
+                        auto p = new QStandardItem(NodeIcons::icon("package"), part);
+                        p->setData(full, Qt::UserRole + 2);
+                        parent->appendRow(p);
+                        state->packages[full] = p;
+                    }
+                    parent = state->packages[full];
+                }
             }
             auto info = backend_.project()->info(name);
             auto item = new QStandardItem(
@@ -500,8 +538,9 @@ void MainWindow::populate(const QStringList &classes) {
         }
         if (state->packages.size() <= 12)
             tree_->expand(proxy_->mapFromSource(sourceRoot_->index()));
-        countLabel_->setText(
-            tr("%1 个包 / %2 个类与接口  ").arg(state->packages.size()).arg(state->names.size()));
+        countLabel_->setText(tr("%1 个包 / %2 个类与接口  ")
+                                 .arg(state->leafPackages.size())
+                                 .arg(state->names.size()));
         status_->setText(tr("目录就绪，展开类加载成员。"));
     };
     (*tick)();
@@ -860,6 +899,21 @@ SourceDocument MainWindow::present(const SourceDocument &raw, bool smali) const 
 }
 
 bool MainWindow::eventFilter(QObject *object, QEvent *event) {
+    if (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::MouseButtonRelease) {
+        auto widget = qobject_cast<QWidget *>(object);
+        auto mouse = static_cast<QMouseEvent *>(event);
+        if (widget && widget->window() == this &&
+            (mouse->button() == Qt::BackButton || mouse->button() == Qt::ForwardButton)) {
+            if (event->type() == QEvent::MouseButtonPress) {
+                auto action = findChild<QAction *>(
+                    mouse->button() == Qt::BackButton ? "navigateBack" : "navigateForward");
+                if (action)
+                    action->trigger();
+            }
+            return true;
+        }
+    }
+
     auto focused = QApplication::focusWidget();
     const bool codeFocus = qobject_cast<CodeEditor *>(focused) != nullptr;
     if ((focused == tree_ || codeFocus) && event->type() == QEvent::KeyPress) {

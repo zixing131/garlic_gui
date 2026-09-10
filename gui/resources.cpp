@@ -679,8 +679,60 @@ QJsonObject inspect(const QString &path) {
             {"manifest", manifest},
             {"package", package},
             {"application", application},
+            {"main_activities", QJsonArray::fromStringList(launcherActivities(manifest))},
             {"version", version},
             {"bytes", double(QFileInfo(path).size())}};
+}
+QStringList launcherActivities(const QString &manifest) {
+    QXmlStreamReader xml(manifest);
+    const QString ns = "http://schemas.android.com/apk/res/android";
+    QString package, target;
+    QStringList result;
+    bool main = false, launcher = false, inFilter = false, enabled = true, appEnabled = true;
+    while (!xml.atEnd()) {
+        xml.readNext();
+        const auto name = xml.name();
+        if (xml.isStartElement()) {
+            auto attrs = xml.attributes();
+            if (name == u"manifest")
+                package = attrs.value("package").toString();
+            if (name == u"application")
+                appEnabled = attrs.value(ns, "enabled") != u"false";
+            if (name == u"activity" || name == u"activity-alias") {
+                target = attrs.value(ns, name == u"activity-alias" ? "targetActivity" : "name")
+                             .toString();
+                enabled = appEnabled && attrs.value(ns, "enabled") != u"false";
+            }
+            if (name == u"intent-filter") {
+                inFilter = true;
+                main = false;
+                launcher = false;
+            }
+            if (inFilter && name == u"action" &&
+                attrs.value(ns, "name") == u"android.intent.action.MAIN")
+                main = true;
+            if (inFilter && name == u"category" &&
+                (attrs.value(ns, "name") == u"android.intent.category.LAUNCHER" ||
+                 attrs.value(ns, "name") == u"android.intent.category.LEANBACK_LAUNCHER"))
+                launcher = true;
+        } else if (xml.isEndElement()) {
+            if (name == u"intent-filter") {
+                if (main && launcher && enabled && !target.isEmpty()) {
+                    auto full = target;
+                    if (full.startsWith('.'))
+                        full = package + full;
+                    else if (!full.contains('.'))
+                        full = package + '.' + full;
+                    if (!result.contains(full))
+                        result << full;
+                }
+                inFilter = false;
+            }
+            if (name == u"activity" || name == u"activity-alias")
+                target.clear();
+        }
+    }
+    return xml.hasError() ? QStringList() : result;
 }
 QString signature(const QString &path) {
     QString out = "APK 签名信息\n\n";

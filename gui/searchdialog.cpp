@@ -251,6 +251,7 @@ SearchDialog::SearchDialog(MainWindow *window) : QDialog(window), window_(window
                     status_->setText(tr("搜索错误：%1").arg(r.error));
                     return;
                 }
+                status_->setToolTip(tr("复用 %1 个源码缓存；索引排除 %2 个不匹配文件").arg(r.cachedFiles).arg(r.indexRejected));
                 status_->setText(tr("%1 条结果%2 · %3 个文件 · %4 未生成 / %5 超出大小限制")
                                      .arg(model_->rowCount())
                                      .arg(r.canceled    ? tr("（已停止）")

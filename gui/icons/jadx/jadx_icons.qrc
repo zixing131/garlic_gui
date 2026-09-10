@@ -184,10 +184,18 @@
     <file>png/toolleft@2x.png</file>
     <file>png/toolleft@3x.png</file>
     <file>png/toolleft@4x.png</file>
+    <file>png/toolmainActivity@1x.png</file>
+    <file>png/toolmainActivity@2x.png</file>
+    <file>png/toolmainActivity@3x.png</file>
+    <file>png/toolmainActivity@4x.png</file>
     <file>png/toolopenDisk@1x.png</file>
     <file>png/toolopenDisk@2x.png</file>
     <file>png/toolopenDisk@3x.png</file>
     <file>png/toolopenDisk@4x.png</file>
+    <file>png/toolpackages@1x.png</file>
+    <file>png/toolpackages@2x.png</file>
+    <file>png/toolpackages@3x.png</file>
+    <file>png/toolpackages@4x.png</file>
     <file>png/toolright@1x.png</file>
     <file>png/toolright@2x.png</file>
     <file>png/toolright@3x.png</file>
@@ -196,5 +204,9 @@
     <file>png/toolsettings@2x.png</file>
     <file>png/toolsettings@3x.png</file>
     <file>png/toolsettings@4x.png</file>
+    <file>png/toolsync@1x.png</file>
+    <file>png/toolsync@2x.png</file>
+    <file>png/toolsync@3x.png</file>
+    <file>png/toolsync@4x.png</file>
   </qresource>
 </RCC>

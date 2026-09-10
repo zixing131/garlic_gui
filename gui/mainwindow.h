@@ -52,6 +52,10 @@ class MainWindow : public QMainWindow {
     QHash<QString, QMap<QString, QString>> decodedResources_;
     void showOverview(const QString &path, bool signature = false);
     void goApplication();
+    void goMainActivity();
+    void syncEditor();
+    bool flatPackages_ = true;
+    QString pendingSyncResource_;
     void goManifest();
     void refreshRecent();
     void closeTabs(int index, const QString &mode);
