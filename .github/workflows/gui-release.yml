@@ -61,7 +61,13 @@ jobs:
         run: |
           set -euo pipefail
           python gui/tests/make_fixtures.py build/fixtures
-          ctest --test-dir build --output-on-failure --timeout 120
+          if ! ctest --test-dir build --output-on-failure --timeout 120; then
+            # The public Actions view hides failed test output for unsigned-in
+            # readers.  Re-run the backend suite verbosely so a failing
+            # assertion is available in the build log on every platform.
+            ctest --test-dir build --rerun-failed -V --timeout 120 || true
+            exit 1
+          fi
       - name: Package runtime and smoke test
         shell: bash
         env:
@@ -119,7 +125,11 @@ jobs:
           set -euo pipefail
           export PATH="$(cygpath -u "$JAVA_HOME")/bin:$PATH"
           python gui/tests/make_fixtures.py build/fixtures
-          ctest --test-dir build --output-on-failure --timeout 120
+          if ! ctest --test-dir build --output-on-failure --timeout 120; then
+            # Preserve the QtTest assertion in the CI log for all platforms.
+            ctest --test-dir build --rerun-failed -V --timeout 120 || true
+            exit 1
+          fi
       - name: Package runtime and smoke test
         env:
           TARGET_PLATFORM: ${{ matrix.platform }}
