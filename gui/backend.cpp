@@ -18,6 +18,15 @@
 
 Backend::Backend(QObject *parent)
     : QObject(parent), project_(this), settings_(AppSettings::load()) {
+    connect(this, &Backend::failed, this,
+            [this] { setProperty("errorCount", property("errorCount").toInt() + 1); });
+    connect(this, &Backend::log, this, [this](const QString &text) {
+        int n = 0;
+        for (const auto &line : text.split('\n'))
+            if (line.contains("warning", Qt::CaseInsensitive))
+                n++;
+        setProperty("warningCount", property("warningCount").toInt() + n);
+    });
     connect(&background_, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this,
             &Backend::prepareFinished);
     connect(&background_, &QProcess::readyReadStandardError, this, [this] {
@@ -34,7 +43,7 @@ Backend::Backend(QObject *parent)
                                                                       ".exe"
 #endif
         ;
-    engine_ = QFileInfo::exists(adjacent) ? adjacent : QStandardPaths::findExecutable("garlic");
+    engine_ = adjacent;
     connect(&process_, &QProcess::readyReadStandardOutput, this, &Backend::readOutput);
     connect(&process_, &QProcess::readyReadStandardError, this, &Backend::readOutput);
     connect(&process_, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this,
@@ -43,7 +52,7 @@ Backend::Backend(QObject *parent)
         if (error == QProcess::FailedToStart && busy()) {
             job_ = Job::None;
             emit busyChanged(false);
-            emit failed(tr("无法启动 garlic：%1\n请在“文件 → 选择引擎”中指定本项目编译的 garlic。")
+            emit failed(tr("无法启动 garlic：%1\n请检查安装包内的 garlic 引擎是否完整。")
                             .arg(process_.errorString()));
         }
     });
@@ -150,7 +159,10 @@ void Backend::openPaths(const QStringList &paths) {
             inputs_ << QFileInfo(p).absoluteFilePath();
     indexQueue_ = inputs_;
     cache_.clear();
+    project_.clearDocuments();
     cacheOrder_.clear();
+    setProperty("errorCount", 0);
+    setProperty("warningCount", 0);
     project_.reset(input_);
     project_.setInputs(inputs_);
     nextIndex();
@@ -301,6 +313,9 @@ void Backend::finish(int code, QProcess::ExitStatus status) {
                 nextIndex();
                 return;
             }
+            const auto referenceSnapshot = project_.snapshot();
+            QThreadPool::globalInstance()->start(
+                [referenceSnapshot] { referenceSnapshot->xrefs(QString()); });
             emit indexed(project_.classes());
             emit busyChanged(false);
             if (settings_.background)
@@ -332,6 +347,52 @@ void Backend::finish(int code, QProcess::ExitStatus status) {
         if (!QFileInfo(path).isFile() || QFileInfo(path).size() == 0) {
             emit failed(
                 tr("引擎没有生成该类的%1源码。详情见日志。").arg(smali_ ? " Smali " : " Java "));
+            return;
+        }
+        if (settings_.cacheMode == "memory") {
+            if (QFileInfo(path).size() > qint64(settings_.sourceMiB) * 1048576) {
+                emit failed(tr("源码超过单文件大小限制，请在设置中提高限制后重试。"));
+                const QString directory = jobDir_;
+                auto workspace = workspace_;
+                QThreadPool::globalInstance()->start([directory, workspace] { QDir(directory).removeRecursively(); });
+                return;
+            }
+            const QString name = currentName_, key = name + (smali_ ? ":smali" : ":java");
+            const bool mode = smali_;
+            const QString directory = jobDir_;
+            auto snapshot = project_.snapshot();
+            auto workspace = workspace_;
+            auto watcher = new QFutureWatcher<SourceDocument>(this);
+            postprocessing_ = true;
+            emit busyChanged(true);
+            connect(watcher, &QFutureWatcher<SourceDocument>::finished, this,
+                    [this, watcher, name, key, mode] {
+                        auto doc = watcher->result();
+                        watcher->deleteLater();
+                        project_.cacheDocument(key, doc);
+                        cache_[key] = "memory:" + key;
+                        cacheOrder_.removeAll(key);
+                        cacheOrder_.append(key);
+                        qint64 bytes = 0;
+                        for (const auto &k : cacheOrder_)
+                            bytes += project_.documentBytes(k);
+                        while (bytes > qint64(settings_.cacheMiB) * 1048576 &&
+                               cacheOrder_.size() > 1) {
+                            auto old = cacheOrder_.takeFirst();
+                            bytes -= project_.documentBytes(old);
+                            project_.removeDocument(old);
+                            cache_.remove(old);
+                        }
+                        postprocessing_ = false;
+                        emit sourceReady(name, mode, "memory:" + key);
+                        emit busyChanged(false);
+                    });
+            watcher->setFuture(
+                QtConcurrent::run([snapshot, name, mode, path, directory, workspace] {
+                    auto doc = snapshot->document(name, mode, path, false);
+                    QDir(directory).removeRecursively();
+                    return doc;
+                }));
             return;
         }
         cache_.insert(currentName_ + (smali_ ? ":smali" : ":java"), path);
@@ -453,14 +514,15 @@ void Backend::applyEnvironment(QProcess &process, const QString &directory) {
 }
 void Backend::configure(const AppSettings &settings) {
     const bool engineChange = settings_.escapeUnicode != settings.escapeUnicode ||
-                              settings_.excluded != settings.excluded;
+                              settings_.excluded != settings.excluded ||
+                              settings_.cacheMode != settings.cacheMode;
     settings_ = settings;
     if (engineChange && !busy() && !preparing_)
         clearCache();
 }
 QString Backend::cachedPath(const QString &name, bool smali) const {
     const auto direct = cache_.value(name + (smali ? ":smali" : ":java"));
-    if (QFileInfo::exists(direct))
+    if (direct.startsWith("memory:") || QFileInfo::exists(direct))
         return direct;
     if (fullReady_ && !smali && workspace_) {
         const auto path =
@@ -475,10 +537,12 @@ QString Backend::cachedPath(const QString &name, bool smali) const {
 }
 QJsonObject Backend::cacheStats() const {
     qint64 bytes = 0;
-    for (const auto &path : cache_)
-        bytes += QFileInfo(path).size();
+    for (auto i = cache_.cbegin(); i != cache_.cend(); ++i)
+        bytes += i.value().startsWith("memory:") ? project_.documentBytes(i.key())
+                                                 : QFileInfo(i.value()).size();
     return {{"cached_documents", cache_.size()},
             {"source_bytes", double(bytes)},
+            {"mode", settings_.cacheMode},
             {"full_project_ready", fullReady_},
             {"preparing", preparing_}};
 }
@@ -488,6 +552,7 @@ void Backend::clearCache() {
     ++searchGeneration_;
     cancelSearch();
     cache_.clear();
+    project_.clearDocuments();
     cacheOrder_.clear();
     fullReady_ = false;
     if (!workspace_)

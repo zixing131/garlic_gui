@@ -53,6 +53,7 @@ class McpTest : public QObject {
         settings.mcpEnabled = true;
         settings.mcpTransport = "http";
         settings.mcpPort = port;
+        settings.mcpHost = "0.0.0.0";
         window.applySettings(settings);
         auto server = window.findChild<McpServer *>();
         QVERIFY(server);
@@ -63,13 +64,7 @@ class McpTest : public QObject {
         request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
         QByteArray body =
             R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1"}}})";
-        auto denied = manager.post(request, body);
-        QTRY_VERIFY_WITH_TIMEOUT(denied->isFinished(), 5000);
-        QCOMPARE(denied->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(), 401);
-        denied->deleteLater();
-        request.setRawHeader(
-            "Authorization",
-            config.value("headers").toObject().value("Authorization").toString().toUtf8());
+        QVERIFY(!config.contains("headers"));
         auto reply = manager.post(request, body);
         QTRY_VERIFY_WITH_TIMEOUT(reply->isFinished(), 5000);
         QCOMPARE(reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(), 200);
@@ -157,9 +152,13 @@ class McpTest : public QObject {
                             {{"settings", QJsonObject{{"threads", 1}, {"escapeUnicode", true}}}});
         QCOMPARE(changed.value("threads").toInt(), 1);
         QCoreApplication::processEvents();
+        QTemporaryDir alternateTemp;
         QProcess bridge;
+        auto environment = QProcessEnvironment::systemEnvironment();
+        environment.insert("TMPDIR", alternateTemp.path());
+        bridge.setProcessEnvironment(environment);
         bridge.start(qEnvironmentVariable("GARLIC_TEST_GUI"),
-                     {"--mcp", "--socket", window.mcpEndpoint()});
+                     {"--mcp", "--socket", "garlic-gui-legacy-missing-endpoint"});
         QVERIFY(bridge.waitForStarted(3000));
         bridge.write("{\"jsonrpc\":\"2.0\",\"id\":42,\"method\":\"tools/list\"}\n");
         bridge.closeWriteChannel();

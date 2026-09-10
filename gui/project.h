@@ -5,6 +5,7 @@
 #include <QObject>
 #include <QVector>
 #include <memory>
+#include <mutex>
 
 struct SourceSpan {
     int start = 0, end = 0;
@@ -49,6 +50,11 @@ class Project : public QObject {
     static QString normalize(QString name);
     static QString classId(const QString &name) { return "L" + normalize(name) + ";"; }
     static QString classOf(const QString &id);
+    void cacheDocument(const QString &key, const SourceDocument &doc) { documents_[key] = doc; }
+    void removeDocument(const QString &key) { documents_.remove(key); }
+    void clearDocuments() { documents_.clear(); }
+    qint64 documentBytes(const QString &key) const;
+    QStringList applicationCandidates() const;
     QString input() const { return input_; }
     void setInputs(const QStringList &inputs) { inputs_ = inputs; }
     QStringList inputs() const { return inputs_; }
@@ -58,8 +64,11 @@ class Project : public QObject {
   private:
     QHash<QString, QJsonObject> classes_, symbols_;
     QHash<QString, QString> aliases_;
-    QHash<QString, QStringList> classNames_;
+    QHash<QString, QStringList> classNames_, parents_;
     QVector<QHash<QString, QString>> undo_;
+    QHash<QString, SourceDocument> documents_;
+    struct ReferenceIndex { std::mutex lock; bool ready = false; QHash<QString, QList<QPair<QString, int>>> targets; };
+    std::shared_ptr<ReferenceIndex> referenceIndex_ = std::make_shared<ReferenceIndex>();
     QString input_;
     QStringList inputs_;
 };

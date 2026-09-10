@@ -23,3 +23,5 @@ fields and methods only, in that order. Annotation types use the original green
 
 Toolbar assets prefixed `tool` come from the same commit’s `icons/ui` directory.
 The SVG contents and copyright headers are unchanged.
+
+Resource assets prefixed `res` are unchanged icons from the same upstream `icons/nodes` directory, selected by extension in `NodeIcons::resource`.

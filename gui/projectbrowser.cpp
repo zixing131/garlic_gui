@@ -35,11 +35,10 @@ void MainWindow::projectNodes() {
     inputs->appendRow(files);
     sourceRoot_ = new QStandardItem(NodeIcons::icon("package"), tr("源代码"));
     root->appendRow(sourceRoot_);
-    resourceRoot_ = new QStandardItem(NodeIcons::icon("package"), tr("资源文件"));
+    resourceRoot_ = new QStandardItem(NodeIcons::icon("resresourcesRoot"), tr("资源文件"));
     root->appendRow(resourceRoot_);
     for (const auto &path : backend_.inputs()) {
-        auto item = new QStandardItem(style()->standardIcon(QStyle::SP_FileIcon),
-                                      QFileInfo(path).fileName());
+        auto item = new QStandardItem(NodeIcons::resource(path), QFileInfo(path).fileName());
         item->setData("input", Qt::UserRole + 4);
         item->setData(path, Qt::UserRole + 5);
         item->setToolTip(path);
@@ -99,14 +98,13 @@ void MainWindow::projectNodes() {
                                 dir += parts[j] + '/';
                                 if (!state->dirs.contains(dir)) {
                                     auto child =
-                                        new QStandardItem(NodeIcons::icon("package"), parts[j]);
+                                        new QStandardItem(NodeIcons::icon("resfolder"), parts[j]);
                                     parent->appendRow(child);
                                     state->dirs[dir] = child;
                                 }
                                 parent = state->dirs[dir];
                             }
-                            auto child = new QStandardItem(
-                                style()->standardIcon(QStyle::SP_FileIcon), parts.last());
+                            auto child = new QStandardItem(NodeIcons::resource(n), parts.last());
                             child->setData("resource", Qt::UserRole + 4);
                             child->setData(path, Qt::UserRole + 5);
                             child->setData(n, Qt::UserRole + 6);
@@ -141,9 +139,11 @@ void MainWindow::openResource(const QString &path, const QString &entry) {
     layout->setContentsMargins(0, 0, 0, 0);
     auto code = new CodeEditor(false);
     code->setTheme(backend_.settings().theme == "light");
+    code->document()->setProperty("language",
+                                  entry.endsWith(".xml", Qt::CaseInsensitive) ? "xml" : "java");
     code->setPlainText(tr("正在加载资源…"));
     layout->addWidget(code);
-    tabs_->setCurrentIndex(tabs_->addTab(page, style()->standardIcon(QStyle::SP_FileIcon),
+    tabs_->setCurrentIndex(tabs_->addTab(page, NodeIcons::resource(entry),
                                          QFileInfo(entry.isEmpty() ? path : entry).fileName()));
     auto exportButton = new QPushButton(tr("导出资源…"));
     layout->addWidget(exportButton);
@@ -228,46 +228,122 @@ void MainWindow::showOverview(const QString &path, bool signature) {
     auto page = new QWidget;
     page->setProperty("resourceKey", key);
     auto layout = new QVBoxLayout(page);
-    auto code = new CodeEditor(false);
-    code->setTheme(backend_.settings().theme == "light");
-    layout->addWidget(code);
-    code->setPlainText(tr("正在读取…"));
-    tabs_->setCurrentIndex(tabs_->addTab(page, signature ? tr("APK signature") : tr("总览")));
+    auto report = new QTextBrowser;
+    report->setObjectName("overviewReport");
+    report->setOpenExternalLinks(false);
+    layout->addWidget(report);
+    report->setPlainText(tr("正在读取…"));
+    tabs_->setCurrentIndex(
+        tabs_->addTab(page, NodeIcons::icon(signature ? "toolandroidManifest" : "resdetailView"),
+                      signature ? tr("APK signature") : tr("总览")));
     auto task = new QFutureWatcher<QString>(page);
-    connect(task, &QFutureWatcher<QString>::finished, page, [task, code] {
-        code->setPlainText(task->result());
+    connect(task, &QFutureWatcher<QString>::finished, page, [task, report] {
+        QString html;
+        const QSet<QString> headings{"输入",         "代码来源",          "Native 库",
+                                     "统计",         "反编译状态",        "问题",
+                                     "APK 签名信息", "警告 / v1 覆盖范围"};
+        for (const auto &line : task->result().split('\n')) {
+            auto escaped = line.toHtmlEscaped();
+            if (headings.contains(line))
+                html += "<h2>" + escaped + "</h2>";
+            else if (line.startsWith("签名方案:") || line.startsWith("v1 签名条目:"))
+                html += "<h3>" + escaped + "</h3>";
+            else
+                html += "<div style='white-space:pre-wrap;margin:3px 0'>" + escaped + "</div>";
+        }
+        report->setHtml("<body style='font-family:sans-serif'>" + html + "</body>");
         task->deleteLater();
     });
-    int classes = 0, methods = 0, fields = 0;
+    int classes = 0, methods = 0, fields = 0, topLevel = 0, opened = 0;
+    qint64 units = 0;
+    QStringList owners;
     QMap<QString, int> dex;
     for (const auto &n : backend_.project()->classes()) {
         auto c = backend_.project()->info(n);
         if (c.value("input").toString() != path)
             continue;
         classes++;
+        if (!c.value("inner").toBool())
+            topLevel++;
+        units += qint64(c.value("instruction_units").toDouble());
+        owners << backend_.project()->owner(n);
         methods += c.value("methods").toArray().size();
         fields += c.value("fields").toArray().size();
         dex[c.value("origin").toString()]++;
     }
-    task->setFuture(QtConcurrent::run([path, signature, classes, methods, fields, dex] {
+    owners.removeDuplicates();
+    for (int i = 0; i < tabs_->count(); i++)
+        if (auto v = qobject_cast<ClassView *>(tabs_->widget(i)))
+            if (backend_.classInput(v->name()) == path)
+                opened++;
+    const auto cache = backend_.cachedSources();
+    const auto work = backend_.workspacePath();
+    const auto inputs = backend_.inputs();
+    const auto errors = backend_.property("errorCount").toInt();
+    const auto warnings = backend_.property("warningCount").toInt();
+    task->setFuture(QtConcurrent::run([path, signature, classes, methods, fields, dex, units,
+                                       topLevel, owners, opened, cache, work, inputs, errors,
+                                       warnings] {
         if (signature)
             return Resources::signature(path);
         auto info = Resources::inspect(path);
         QString origins;
         for (auto it = dex.begin(); it != dex.end(); ++it)
             origins += QString("  %1: %2 classes\n").arg(it.key()).arg(it.value());
-        return QString("文件: %1\n大小: %2 MiB\n包名: %3\n版本: %4\nApplication: %5\n\n类: "
-                       "%6\n方法: %7\n字段: %8\n资源条目: %9\n\n输入来源:\n%10")
+        QMap<QString, QStringList> native;
+        for (const auto &v : info.value("entries").toArray()) {
+            auto name = v.toObject().value("name").toString();
+            if (name.endsWith(".so"))
+                native[name.section('/', 1, 1)] << name;
+        }
+        QString libs;
+        int nativeCount = 0;
+        for (auto it = native.begin(); it != native.end(); ++it) {
+            nativeCount += it.value().size();
+            libs += "  " + it.key() + ":\n    " + it.value().join("\n    ") + '\n';
+        }
+        int generated = 0;
+        for (const auto &name : owners) {
+            const auto cached = cache.value(name + ":java");
+            if (cached.startsWith("memory:") || QFileInfo::exists(cached) ||
+                QFileInfo::exists(work + "/all-java/" + name + ".java"))
+                generated++;
+        }
+        auto ratio = [owners](int n) { return owners.isEmpty() ? 0. : n * 100. / owners.size(); };
+        return QString(
+                   "输入\n文件列表:\n%1\n\n当前文件: %2\n大小: %3 MiB\n包名: %4\n版本: "
+                   "%5\nApplication: %6\n\n代码来源\nCount: %7\n%8\nNative 库\nTotal count: "
+                   "%9\n%10\n统计\n类: %11\n方法: %12\n字段: %13\n指令存储单元: %14（DEX: 16-bit "
+                   "units；JVM: bytes）\n资源条目: %15\n\n反编译状态\n顶层类: "
+                   "%16\n可生成源码的类单元: %17\n当前打开的类标签: %18\n已缓存源码: %19 "
+                   "(%20%)\n尚未缓存: %21 (%22%)\n\n问题\n当前项目任务错误: %23\n引擎日志警告行数: "
+                   "%24\n方法级错误数及成功率：引擎未提供，不能据此推算。\n")
+            .arg(inputs.join("\n"))
             .arg(path)
             .arg(info.value("bytes").toDouble() / 1048576., 0, 'f', 2)
             .arg(info.value("package").toString())
             .arg(info.value("version").toString())
-            .arg(info.value("application").toString())
+            .arg(info.value("application").toString().isEmpty()
+                     ? QString("android.app.Application（Manifest 未声明自定义类）")
+                     : info.value("application").toString())
+            .arg(dex.size())
+            .arg(origins)
+            .arg(nativeCount)
+            .arg(libs)
             .arg(classes)
             .arg(methods)
             .arg(fields)
+            .arg(units)
             .arg(info.value("entries").toArray().size())
-            .arg(origins);
+            .arg(topLevel)
+            .arg(owners.size())
+            .arg(opened)
+            .arg(generated)
+            .arg(ratio(generated), 0, 'f', 1)
+            .arg(owners.size() - generated)
+            .arg(ratio(owners.size() - generated), 0, 'f', 1)
+            .arg(errors)
+            .arg(warnings);
     }));
 }
 void MainWindow::goManifest() {
@@ -291,5 +367,25 @@ void MainWindow::goApplication() {
             return;
         }
     }
-    status_->setText(tr("Manifest 未声明自定义 Application，或资源目录仍在加载。"));
+    const auto candidates = backend_.project()->applicationCandidates();
+    if (candidates.size() == 1) {
+        openClass(candidates.first());
+        status_->setText(
+            tr("Manifest 未声明 Application；根据继承关系定位候选类（不代表运行时入口）。"));
+    } else if (!candidates.isEmpty()) {
+        bool ok = false;
+        auto selected = QInputDialog::getItem(this, tr("Application 候选类"),
+                                              tr("Manifest 未声明名称，以下类继承 Application："),
+                                              candidates, 0, false, &ok);
+        if (ok)
+            openClass(selected);
+    } else {
+        auto dialog = new QMessageBox(
+            QMessageBox::Information, tr("Application"),
+            tr("Manifest 未声明自定义 Application，当前输入中也没有继承 Application "
+               "的候选类。\nAndroid 将使用系统 android.app.Application；它不打包在 APK 中。"),
+            QMessageBox::Ok, this);
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->open();
+    }
 }

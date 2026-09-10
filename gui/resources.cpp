@@ -1,5 +1,6 @@
 #include "resources.h"
 #include <QSslCertificate>
+#include <QSslKey>
 #include <QtCore>
 extern "C" {
 #include "zip.h"
@@ -94,13 +95,158 @@ QString value(quint8 type, quint32 n, const QStringList &strings) {
 }
 struct Archive {
     zip_t *z = nullptr;
-    explicit Archive(const QString &path)
-        : z(zip_open(path.toUtf8().constData(), 0, 'r')) {}
+    explicit Archive(const QString &path) : z(zip_open(path.toUtf8().constData(), 0, 'r')) {}
     ~Archive() {
         if (z)
             zip_close(z);
     }
 };
+struct DerNode {
+    int tag = 0;
+    QByteArray raw, value;
+};
+QList<DerNode> derNodes(const QByteArray &data) {
+    QList<DerNode> nodes;
+    qsizetype p = 0;
+    while (p < data.size() && nodes.size() < 4096) {
+        const auto start = p;
+        if (p + 2 > data.size())
+            return {};
+        int tag = uchar(data[p++]);
+        quint64 length = uchar(data[p++]);
+        if (length & 128) {
+            const int count = length & 127;
+            if (!count || count > 4 || p + count > data.size())
+                return {};
+            length = 0;
+            for (int i = 0; i < count; i++)
+                length = (length << 8) | uchar(data[p++]);
+        }
+        if (length > quint64(data.size() - p))
+            return {};
+        nodes << DerNode{tag, data.mid(start, p + length - start), data.mid(p, length)};
+        p += length;
+    }
+    return nodes;
+}
+QList<QSslCertificate> certificatesIn(const QByteArray &data, int depth = 0) {
+    QList<QSslCertificate> result;
+    if (depth > 12 || data.size() > 8 * 1024 * 1024)
+        return result;
+    for (const auto &node : derNodes(data)) {
+        if (node.tag == 0x30) {
+            const auto children = derNodes(node.value);
+            if (children.size() == 3 && children[0].tag == 0x30 && children[1].tag == 0x30 &&
+                children[2].tag == 3) {
+                auto cert = QSslCertificate(node.raw, QSsl::Der);
+                if (!cert.isNull() && !cert.serialNumber().isEmpty()) {
+                    result << cert;
+                    continue;
+                }
+            }
+        }
+        if (node.tag & 0x20)
+            result.append(certificatesIn(node.value, depth + 1));
+    }
+    return result;
+}
+QString oidText(const QByteArray &data) {
+    if (data.isEmpty())
+        return {};
+    QStringList values;
+    quint64 n = 0;
+    bool first = true;
+    for (auto ch : data) {
+        if (n > (quint64(1) << 55))
+            return {};
+        n = (n << 7) | (uchar(ch) & 127);
+        if (!(uchar(ch) & 128)) {
+            if (first) {
+                auto a = qMin(quint64(2), n / 40);
+                values << QString::number(a) << QString::number(n - a * 40);
+                first = false;
+            } else
+                values << QString::number(n);
+            n = 0;
+        }
+    }
+    return values.join('.');
+}
+QString certificateDetails(const QSslCertificate &c) {
+    auto distinguished = [](const QSslCertificate &cert, bool issuer) {
+        QStringList fields;
+        for (const auto &pair : QList<QPair<QString, QSslCertificate::SubjectInfo>>{
+                 {"C", QSslCertificate::CountryName},
+                 {"ST", QSslCertificate::StateOrProvinceName},
+                 {"L", QSslCertificate::LocalityName},
+                 {"O", QSslCertificate::Organization},
+                 {"OU", QSslCertificate::OrganizationalUnitName},
+                 {"CN", QSslCertificate::CommonName}}) {
+            const auto value =
+                issuer ? cert.issuerInfo(pair.second) : cert.subjectInfo(pair.second);
+            if (!value.isEmpty())
+                fields << pair.first + "=" + value.join(", ");
+        }
+        return fields.join(", ");
+    };
+    auto key = c.publicKey();
+    QString algorithm = key.algorithm() == QSsl::Rsa   ? "RSA"
+                        : key.algorithm() == QSsl::Ec  ? "EC"
+                        : key.algorithm() == QSsl::Dsa ? "DSA"
+                                                       : "Opaque";
+    QString out = "\n类型: X.509\n版本: " + c.version() + "\n序列号: " + c.serialNumber() +
+                  "\n证书主体: " + distinguished(c, false) + "\n签发者: " + distinguished(c, true) +
+                  "\n有效期开始: " + c.effectiveDate().toString(Qt::ISODate) +
+                  "\n有效期截止: " + c.expiryDate().toString(Qt::ISODate) +
+                  "\n公钥类型: " + algorithm + QString("\n公钥大小: %1 bits\n").arg(key.length());
+    auto outer = derNodes(c.toDer());
+    if (!outer.isEmpty()) {
+        auto parts = derNodes(outer.first().value);
+        if (parts.size() > 1) {
+            auto alg = derNodes(parts[1].value);
+            if (!alg.isEmpty()) {
+                auto oid = oidText(alg[0].value);
+                const QMap<QString, QString> names{{"1.2.840.113549.1.1.11", "SHA256withRSA"},
+                                                   {"1.2.840.113549.1.1.5", "SHA1withRSA"},
+                                                   {"1.2.840.113549.1.1.12", "SHA384withRSA"},
+                                                   {"1.2.840.10045.4.3.2", "SHA256withECDSA"}};
+                out += "签名算法: " + names.value(oid, oid) + "\n签名 OID: " + oid + '\n';
+            }
+        }
+    }
+    if (key.algorithm() == QSsl::Rsa) {
+        std::function<bool(const QByteArray &, int)> rsa = [&](const QByteArray &data, int depth) {
+            if (depth > 6)
+                return false;
+            auto nodes = derNodes(data);
+            if (nodes.size() == 2 && nodes[0].tag == 2 && nodes[1].tag == 2 &&
+                nodes[1].value.size() <= 8) {
+                quint64 exponent = 0;
+                for (auto b : nodes[1].value)
+                    exponent = (exponent << 8) | uchar(b);
+                out += QString("RSA 指数: %1\nRSA 模数（十六进制）: %2\n")
+                           .arg(exponent)
+                           .arg(QString::fromLatin1(nodes[0].value.toHex()));
+                return true;
+            }
+            for (const auto &node : nodes) {
+                if ((node.tag & 0x20) && rsa(node.value, depth + 1))
+                    return true;
+                if (node.tag == 3 && !node.value.isEmpty() && node.value[0] == 0 &&
+                    rsa(node.value.mid(1), depth + 1))
+                    return true;
+            }
+            return false;
+        };
+        rsa(key.toDer(), 0);
+    }
+    for (const auto &h : QList<QPair<QString, QCryptographicHash::Algorithm>>{
+             {"MD5", QCryptographicHash::Md5},
+             {"SHA-1", QCryptographicHash::Sha1},
+             {"SHA-256", QCryptographicHash::Sha256}})
+        out += "证书 " + h.first + ": " + c.digest(h.second).toHex(' ').toUpper() + '\n';
+    return out;
+}
 } // namespace
 namespace Resources {
 QByteArray read(const QString &path, const QString &entry, qint64 limit, QString *error) {
@@ -396,24 +542,26 @@ QString signature(const QString &path) {
     hash.addData(&f);
     out += "文件 SHA-256: " + QString::fromLatin1(hash.result().toHex()) + '\n';
     auto certs = [&](const QByteArray &der) {
-        auto list = QSslCertificate::fromData(der, QSsl::Der);
-        for (const auto &c : list) {
-            out += "\n证书主体: " + c.subjectInfo(QSslCertificate::CommonName).join(", ") +
-                   "\n签发者: " + c.issuerInfo(QSslCertificate::CommonName).join(", ") +
-                   "\n序列号: " + c.serialNumber() +
-                   "\n有效期: " + c.effectiveDate().toString(Qt::ISODate) + " — " +
-                   c.expiryDate().toString(Qt::ISODate) +
-                   "\n证书 SHA-256: " + c.digest(QCryptographicHash::Sha256).toHex() + '\n';
-        }
+        for (const auto &c : certificatesIn(der))
+            out += certificateDetails(c);
     };
+    QStringList entryNames;
     Archive a(path);
     if (a.z)
         for (int i = 0; i < zip_entries_total(a.z); i++) {
             zip_entry_openbyindex(a.z, i);
             QString n = QString::fromUtf8(zip_entry_name(a.z));
-            if (n.startsWith("META-INF/") &&
-                (n.endsWith(".RSA") || n.endsWith(".DSA") || n.endsWith(".EC")))
-                out += "v1 签名条目: " + n + '\n';
+            entryNames << n;
+            if (n.startsWith("META-INF/", Qt::CaseInsensitive) &&
+                (n.endsWith(".RSA", Qt::CaseInsensitive) ||
+                 n.endsWith(".DSA", Qt::CaseInsensitive) ||
+                 n.endsWith(".EC", Qt::CaseInsensitive))) {
+                out += "\nv1 签名条目: " + n + '\n';
+                QString error;
+                certs(read(path, n, 8 * 1024 * 1024, &error));
+                if (!error.isEmpty())
+                    out += error + '\n';
+            }
             zip_entry_close(a.z);
         }
     try {
@@ -479,6 +627,32 @@ QString signature(const QString &path) {
         }
     } catch (const QString &e) {
         out += '\n' + e + '\n';
+    }
+    QString error;
+    auto manifest = read(path, "META-INF/MANIFEST.MF", 16 * 1024 * 1024, &error);
+    if (error.isEmpty()) {
+        manifest.replace("\r\n", "\n");
+        manifest.replace("\n ", "");
+        QSet<QString> covered;
+        for (const auto &section : manifest.split('\n'))
+            if (section.startsWith("Name: "))
+                covered.insert(QString::fromUtf8(section.mid(6)));
+        QStringList uncovered;
+        for (const auto &name : entryNames) {
+            auto upper = name.toUpper();
+            if (name.endsWith('/') || upper == "META-INF/MANIFEST.MF" ||
+                (upper.startsWith("META-INF/") &&
+                 (upper.endsWith(".SF") || upper.endsWith(".RSA") || upper.endsWith(".DSA") ||
+                  upper.endsWith(".EC"))))
+                continue;
+            if (!covered.contains(name))
+                uncovered << name;
+        }
+        out +=
+            QString("\n警告 / v1 覆盖范围\n未列入 v1 Manifest 的条目: %1\n").arg(uncovered.size());
+        out += uncovered.join('\n');
+        if (!uncovered.isEmpty())
+            out += "\n这些条目不受 v1 摘要保护；是否受 v2/v3 保护须执行完整签名验证。\n";
     }
     return out + "\n以上为签名块与证书解析，未执行 APK 完整性或信任链验证。\n";
 }

@@ -2,6 +2,8 @@
 #include "backend.h"
 #include "classview.h"
 #include <QMainWindow>
+#include <QSet>
+#include <QPersistentModelIndex>
 class QMenu;
 class QStandardItem;
 class QTreeView;
@@ -35,11 +37,15 @@ class MainWindow : public QMainWindow {
   protected:
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dropEvent(QDropEvent *event) override;
+    bool eventFilter(QObject *object, QEvent *event) override;
     void closeEvent(QCloseEvent *event) override;
 
   private:
     ClassView *view() const;
     void chooseFile();
+    void filterTree(const QString &text);
+    QSet<QPersistentModelIndex> expandedNodes_;
+    bool filtering_ = false;
     void projectNodes();
     void openResource(const QString &path, const QString &entry);
     void showOverview(const QString &path, bool signature = false);
@@ -74,13 +80,15 @@ class MainWindow : public QMainWindow {
     QSortFilterProxyModel *proxy_;
     QTabWidget *tabs_;
     QLineEdit *filter_, *find_;
+    QLabel *memoryLabel_;
+    quint64 peakMemory_ = 0;
     QLabel *fileLabel_, *countLabel_, *status_;
     QProgressBar *progress_;
     QPlainTextEdit *logs_;
     QStackedWidget *pages_;
     QTableWidget *results_;
     QDockWidget *resultDock_, *logDock_;
-    QAction *openAction_, *exportAction_, *stopAction_, *engineAction_, *settingsAction_;
+    QAction *openAction_, *exportAction_, *stopAction_, *settingsAction_;
     QString pendingId_, pendingProject_;
     int pendingLine_ = 0;
     QVector<QPair<QString, int>> history_;

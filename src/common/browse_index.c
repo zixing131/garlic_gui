@@ -17,6 +17,7 @@ static cJSON *class_json(const char *name, unsigned flags, int inner) {
                             : flags & 0x0200 ? "interface"
                             : flags & 0x0400 ? "abstract"
                                              : "class");
+    cJSON_AddNumberToObject(entry, "instruction_units", 0);
     cJSON_AddBoolToObject(entry, "inner", inner);
     cJSON_AddItemToObject(entry, "methods", cJSON_CreateArray());
     cJSON_AddItemToObject(entry, "fields", cJSON_CreateArray());
@@ -93,6 +94,8 @@ static void dex_methods(cJSON *entry, jd_meta_dex *meta, encoded_method *methods
         dex_code_item *code = em->code;
         if (!code)
             continue;
+        cJSON *units = cJSON_GetObjectItem(entry, "instruction_units");
+        cJSON_SetNumberValue(units, units->valuedouble + code->insns_size);
         string from = dex_mid(meta, em->method_id);
         for (u4 i = 0; i < code->insns_size;) {
             u2 word = code->insns[i];
@@ -177,8 +180,15 @@ void browse_index_jvm(jclass_file *jc, int inner) {
     global_pool = mem_create_pool();
     string name = get_class_name(jc, pool_item(jc, jc->this_class));
     cJSON *entry = class_json(name, be16toh(jc->access_flags), inner);
+    if (jc->super_class)
+        reference(cJSON_GetObjectItem(entry, "refs"), str_create("L%s;", name),
+                  str_create("L%s;", get_class_name(jc, pool_item(jc, jc->super_class))), -1, "extends");
     for (unsigned i = 0; i < be16toh(jc->methods_count); i++) {
         jmethod *m = &jc->methods[i];
+        if (m->code_attribute) {
+            cJSON *units = cJSON_GetObjectItem(entry, "instruction_units");
+            cJSON_SetNumberValue(units, units->valuedouble + be32toh(m->code_attribute->code_length));
+        }
         member(cJSON_GetObjectItem(entry, "methods"), name, pool_str(jc, m->name_index),
                pool_str(jc, m->descriptor_index), be16toh(m->access_flags), 1);
     }

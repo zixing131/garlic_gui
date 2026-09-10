@@ -2,8 +2,8 @@
 #include <QString>
 inline QString garlicStyleSheet() { return R"(
         QMainWindow { background: #17212d; }
-        QToolBar { border: 0; background: #1b2937; spacing: 12px; padding: 12px 10px; }
-        QToolButton { padding: 6px 10px; border-radius: 5px; }
+        QToolBar { border: 0; background: #1b2937; spacing: 3px; padding: 3px 6px; }
+        QToolButton { padding: 4px 5px; border-radius: 5px; }
         QToolButton:hover { background: #304354; }
         QLabel#brand { color: #a4e4bd; font-size: 19px; font-weight: 700; letter-spacing: 3px; }
         QLabel#muted { color: #8c9dad; line-height: 1.5; }
@@ -21,7 +21,7 @@ inline QString garlicStyleSheet() { return R"(
         QTreeView::item:selected { background: #28534d; border-radius: 4px; }
         QPlainTextEdit { border: 0; padding: 4px; selection-background-color: #38635b; }
         QTabWidget::pane { border: 1px solid #2a3949; }
-        QTabBar::tab { padding: 10px 14px; background: #1b2937; border-bottom: 2px solid transparent; }
+        QTabBar::tab { padding: 6px 10px; background: #1b2937; border-bottom: 2px solid transparent; }
         QTabBar::tab:selected { background: #111b26; border-bottom: 2px solid #97d6b1; }
         QStatusBar { color: #95a8b9; background: #14202b; padding: 3px; }
         QSplitter::handle { background: #2a3949; width: 1px; }

@@ -7,7 +7,7 @@ static void initNodeResources() { Q_INIT_RESOURCE(jadx_icons); }
 
 namespace NodeIcons {
 QString baseName(const QString &kind, quint32 flags, bool constructor) {
-    if (kind.startsWith("tool"))
+    if (kind.startsWith("tool") || kind.startsWith("res"))
         return kind;
     if (kind == "package")
         return "package";
@@ -84,5 +84,40 @@ QIcon icon(const QString &kind, quint32 flags, bool constructor) {
     }
     cache.insert(key, result);
     return result;
+}
+QIcon resource(const QString &path) {
+    const QString name = path.section('/', -1).toLower(), ext = name.section('.', -1);
+    QString iconName = "unknown";
+    if (name == "androidmanifest.xml")
+        iconName = "manifest";
+    else if (ext == "arsc")
+        iconName = "resourceBundle";
+    else if (ext == "xml")
+        iconName = "xml";
+    else if (QStringList{"png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico", "avif"}.contains(
+                 ext))
+        iconName = "ImagesFileType";
+    else if (QStringList{"dex", "class", "java", "smali"}.contains(ext))
+        iconName = "java";
+    else if (QStringList{"so", "dll", "dylib", "exe"}.contains(ext))
+        iconName = "binaryFile";
+    else if (ext == "apk")
+        iconName = "archiveApk";
+    else if (QStringList{"zip", "jar", "war", "gz", "apks", "xapk"}.contains(ext))
+        iconName = "archive";
+    else if (QStringList{"mp3", "wav", "ogg", "flac", "m4a"}.contains(ext))
+        iconName = "audioFile";
+    else if (QStringList{"mp4", "webm", "mkv", "avi"}.contains(ext))
+        iconName = "videoFile";
+    else if (QStringList{"ttf", "otf", "woff", "woff2"}.contains(ext))
+        iconName = "fontFile";
+    else if (ext == "json")
+        iconName = "json";
+    else if (ext == "html" || ext == "htm")
+        iconName = "html";
+    else if (QStringList{"txt", "properties", "md", "js", "css", "yaml", "yml", "csv", "log"}
+                 .contains(ext))
+        iconName = "text";
+    return icon("res" + iconName);
 }
 } // namespace NodeIcons

@@ -210,7 +210,8 @@ class InteractionTest : public QObject {
         while (!xml.atEnd())
             xml.readNext();
         QVERIFY2(!xml.hasError(), qPrintable(xml.errorString()));
-        QVERIFY(Resources::signature(path).contains("SHA"));
+        const auto signature = Resources::signature(path);
+        QVERIFY2(signature.contains("证书 MD5") && signature.contains("RSA 指数: 65537") && signature.contains("v1 覆盖范围"), qPrintable(signature.left(2500)));
         QString error;
         const auto table = Resources::describeTable(
             Resources::read(path, "resources.arsc", 32 * 1024 * 1024, &error));
@@ -237,6 +238,19 @@ class InteractionTest : public QObject {
         window.openPath(path);
         QTRY_VERIFY_WITH_TIMEOUT(
             !window.backend()->busy() && !window.backend()->project()->classes().isEmpty(), 60000);
+        qInfo() << "Application candidates:" << window.backend()->project()->applicationCandidates();
+        QElapsedTimer refsTimer;
+        refsTimer.start();
+        window.showReferences("Landroidx/activity/OnBackPressedCallback;");
+        auto refsDialog = window.findChild<ReferencesDialog *>();
+        QVERIFY(refsDialog);
+        auto refsTable = refsDialog->findChild<QTableView *>("referenceResults");
+        QTRY_VERIFY_WITH_TIMEOUT(refsTable->model()->rowCount() > 0, 3000);
+        qInfo() << "Reference first results (ms):" << refsTimer.elapsed();
+        refsTimer.restart();
+        QVERIFY(!window.backend()->project()->xrefs("Landroidx/activity/OnBackPressedCallback;").isEmpty());
+        qInfo() << "Warm reference lookup (ms):" << refsTimer.elapsed();
+        refsDialog->close();
         window.openClass("androidx/activity/ComponentActivity$$ExternalSyntheticLambda0");
         QTRY_VERIFY_WITH_TIMEOUT(window.editor() &&
                                      window.editor()->toPlainText().contains("implements Runnable"),
@@ -258,6 +272,24 @@ class InteractionTest : public QObject {
                 << "Search hits:" << result.hits.size() << "Max UI heartbeat gap (ms):" << maxGap;
         QVERIFY2(maxGap < 350, qPrintable(QString("UI event-loop gap was %1 ms").arg(maxGap)));
         heartbeat.stop();
+        if (!qEnvironmentVariable("GARLIC_SCREENSHOTS").isEmpty()) {
+            auto settings = window.backend()->settings();
+            settings.theme = "light";
+            settings.showMemory = true;
+            window.applySettings(settings);
+            auto tree = window.findChild<QTreeView *>();
+            for (const QString kind : {QString("summary"), QString("signature")}) {
+                auto nodes = tree->model()->match(tree->model()->index(0, 0), Qt::UserRole + 4,
+                                                 kind, 1, Qt::MatchExactly | Qt::MatchRecursive);
+                QVERIFY(!nodes.isEmpty());
+                QVERIFY(QMetaObject::invokeMethod(tree, "activated", Q_ARG(QModelIndex, nodes.first())));
+                auto tabs = window.findChild<QTabWidget *>("sourceTabs");
+                auto report = tabs->currentWidget()->findChild<QTextBrowser *>("overviewReport");
+                QVERIFY(report);
+                QTRY_VERIFY_WITH_TIMEOUT(!report->toPlainText().contains("正在读取"), 15000);
+                window.grab().save(qEnvironmentVariable("GARLIC_SCREENSHOTS") + "/" + kind + ".png");
+            }
+        }
         window.close();
     }
 };

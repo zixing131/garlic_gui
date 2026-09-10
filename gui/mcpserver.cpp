@@ -136,13 +136,14 @@ QString memberId(Project *project, const QString &kind, const QJsonObject &args,
 }
 } // namespace
 McpServer::McpServer(MainWindow *window, QObject *parent) : QObject(parent), window_(window) {
-    httpToken_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
     connect(&http_, &QTcpServer::newConnection, this, &McpServer::acceptHttp);
+    QDir().mkpath(QDir::homePath() + "/.garlic");
+#ifdef Q_OS_WIN
+    endpoint_ = "garlic-gui-" + QString::number(QCoreApplication::applicationPid());
+#else
     endpoint_ =
-        "garlic-gui-" + QString::fromLatin1(QCryptographicHash::hash(QDir::homePath().toUtf8(),
-                                                                     QCryptographicHash::Sha256)
-                                                .toHex()
-                                                .left(12));
+        QDir::homePath() + "/.garlic/mcp-" + QString::number(QCoreApplication::applicationPid());
+#endif
     server_.setSocketOptions(QLocalServer::UserAccessOption);
     connect(&server_, &QLocalServer::newConnection, this, [this] {
         while (server_.hasPendingConnections()) {
@@ -175,9 +176,17 @@ McpServer::McpServer(MainWindow *window, QObject *parent) : QObject(parent), win
 bool McpServer::start(QString *error) {
     const auto settings = window_->backend()->settings();
     if (settings.mcpTransport == "http") {
-        if (http_.isListening() && http_.serverPort() != settings.mcpPort)
+        QHostAddress address;
+        if (!address.setAddress(settings.mcpHost)) {
+            if (error)
+                *error = tr("MCP 绑定 IP 无效：%1").arg(settings.mcpHost);
+            return false;
+        }
+        if (http_.isListening() && (http_.serverPort() != settings.mcpPort ||
+                                    http_.serverAddress() != QHostAddress(settings.mcpHost)))
             http_.close();
-        if (!http_.isListening() && !http_.listen(QHostAddress::LocalHost, settings.mcpPort)) {
+        if (!http_.isListening() &&
+            !http_.listen(QHostAddress(settings.mcpHost), settings.mcpPort)) {
             if (error)
                 *error = tr("MCP HTTP 启动失败：%1").arg(http_.errorString());
             return false;
@@ -186,16 +195,24 @@ bool McpServer::start(QString *error) {
         http_.close();
     if (server_.isListening())
         return true;
-    if (server_.listen(endpoint_))
+    if (server_.listen(endpoint_)) {
+        QFile registry(QDir::homePath() + "/.garlic/mcp-endpoint");
+        if (registry.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            registry.write(endpoint_.toUtf8());
         return true;
+    }
     QLocalSocket probe;
     probe.connectToServer(endpoint_);
     if (probe.waitForConnected(100)) {
         endpoint_ += "-" + QString::number(QCoreApplication::applicationPid());
     } else
         QLocalServer::removeServer(endpoint_);
-    if (server_.listen(endpoint_))
+    if (server_.listen(endpoint_)) {
+        QFile registry(QDir::homePath() + "/.garlic/mcp-endpoint");
+        if (registry.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            registry.write(endpoint_.toUtf8());
         return true;
+    }
     if (error)
         *error = tr("MCP 启动失败：%1").arg(server_.errorString());
     return false;
@@ -205,6 +222,13 @@ void McpServer::stop() {
     for (auto socket : http_.findChildren<QTcpSocket *>())
         socket->disconnectFromHost();
     server_.close();
+    QFile registry(QDir::homePath() + "/.garlic/mcp-endpoint");
+    if (registry.open(QIODevice::ReadOnly)) {
+        const auto endpoint = QString::fromUtf8(registry.readAll()).trimmed();
+        registry.close();
+        if (endpoint == endpoint_)
+            registry.remove();
+    }
     for (auto socket : server_.findChildren<QLocalSocket *>())
         socket->disconnectFromServer();
 }
@@ -253,7 +277,7 @@ void McpServer::dispatch(QLocalSocket *socket, const QJsonObject &request) {
                              ? version
                              : "2025-06-18"},
                         {"capabilities", QJsonObject{{"tools", QJsonObject{}}}},
-                        {"serverInfo", QJsonObject{{"name", "garlic-gui"}, {"version", "0.4.0"}}}});
+                        {"serverInfo", QJsonObject{{"name", "garlic-gui"}, {"version", "0.5.0"}}}});
         return;
     }
     if (method == "ping") {
@@ -558,16 +582,20 @@ void McpServer::dispatch(QLocalSocket *socket, const QJsonObject &request) {
 }
 
 QString McpServer::httpUrl() const {
-    return QString("http://127.0.0.1:%1/mcp")
+    auto host = window_->backend()->settings().mcpHost;
+    if (host == "0.0.0.0" || host == "::")
+        host = "127.0.0.1";
+    if (host.contains(':'))
+        host = "[" + host + "]";
+    return QString("http://%1:%2/mcp")
+        .arg(host)
         .arg(http_.isListening() ? http_.serverPort() : window_->backend()->settings().mcpPort);
 }
 QJsonObject McpServer::httpConfig(int port) const {
-    return {
-        {"mcpServers",
-         QJsonObject{
-             {"garlic",
-              QJsonObject{{"url", port ? QString("http://127.0.0.1:%1/mcp").arg(port) : httpUrl()},
-                          {"headers", QJsonObject{{"Authorization", "Bearer " + httpToken_}}}}}}}};
+    QUrl url(httpUrl());
+    if (port)
+        url.setPort(port);
+    return {{"mcpServers", QJsonObject{{"garlic", QJsonObject{{"url", url.toString()}}}}}};
 }
 void McpServer::acceptHttp() {
     while (http_.hasPendingConnections()) {
@@ -634,7 +662,9 @@ void McpServer::acceptHttp() {
                 return;
             }
             const QUrl host("http://" + QString::fromLatin1(headers.value("host")));
-            if (host.host() != "127.0.0.1" && host.host() != "localhost") {
+            if (host.host().isEmpty() ||
+                (http_.serverAddress().isLoopback() && host.host() != "127.0.0.1" &&
+                 host.host() != "localhost" && host.host() != "::1")) {
                 reply(403, {});
                 return;
             }
@@ -645,10 +675,6 @@ void McpServer::acceptHttp() {
                     reply(403, {});
                     return;
                 }
-            }
-            if (headers.value("authorization") != ("Bearer " + httpToken_).toUtf8()) {
-                reply(401, {});
-                return;
             }
             if (request[0] != "POST") {
                 reply(405, {});
@@ -713,15 +739,24 @@ int runMcpBridge(int argc, char **argv) {
     QCoreApplication app(argc, argv);
     const auto args = app.arguments();
     int index = args.indexOf("--socket");
-    if (index < 0 || index + 1 >= args.size()) {
-        std::cerr << "Use --mcp --socket <endpoint from GUI settings>\n";
-        return 2;
-    }
+    QString endpoint = index >= 0 && index + 1 < args.size() ? args[index + 1] : QString();
     QLocalSocket socket;
-    socket.connectToServer(args[index + 1]);
-    if (!socket.waitForConnected(3000)) {
-        std::cerr << "Garlic GUI MCP is unavailable. Open the GUI and enable MCP in settings.\n";
-        return 1;
+    auto connectEndpoint = [&](const QString &value) {
+        if (value.isEmpty())
+            return false;
+        socket.abort();
+        socket.connectToServer(value);
+        return socket.waitForConnected(1500);
+    };
+    if (!connectEndpoint(endpoint)) {
+        QFile registry(QDir::homePath() + "/.garlic/mcp-endpoint");
+        if (registry.open(QIODevice::ReadOnly))
+            endpoint = QString::fromUtf8(registry.readAll()).trimmed();
+        if (!connectEndpoint(endpoint)) {
+            std::cerr << "Garlic GUI MCP is unavailable at " << endpoint.toStdString()
+                      << ". Open the GUI, enable MCP and save settings.\n";
+            return 1;
+        }
     }
     std::string line;
     QByteArray buffer;

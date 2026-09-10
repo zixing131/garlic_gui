@@ -1,11 +1,12 @@
 #include "mainwindow.h"
-#include "theme.h"
 #include "mcpserver.h"
+#include "theme.h"
 #include <QtConcurrent>
 #include <QtWidgets>
 
 void MainWindow::applySettings(const AppSettings &settings) {
     backend_.configure(settings);
+    memoryLabel_->setVisible(settings.showMemory);
     for (int i = 0; i < tabs_->count(); i++)
         if (auto page = qobject_cast<ClassView *>(tabs_->widget(i)))
             page->applySettings(settings);
@@ -67,10 +68,20 @@ void MainWindow::applySettings(const AppSettings &settings) {
         mcp_->stop();
     for (auto action : findChildren<QAction *>())
         if (!action->text().isEmpty()) {
-            const auto shortcut = QSettings().value("shortcuts/" + action->text());
+            const auto shortcut = QSettings().value("shortcuts-v2/" + action->text());
             if (shortcut.isValid())
                 action->setShortcut(QKeySequence(shortcut.toString()));
         }
+    auto hint = findChild<QLabel *>("shortcutHint");
+    if (hint) {
+        QStringList keys;
+        for (auto action : findChildren<QAction *>())
+            if (action->text() == tr("查找引用") || action->text() == tr("重命名") ||
+                action->text() == tr("跳转到声明"))
+                keys << action->shortcut().toString(QKeySequence::NativeText) + " " +
+                            action->text();
+        hint->setText(tr("Java / Smali 底部切换 · ") + keys.join(" · "));
+    }
     updateBusy();
 }
 void MainWindow::settingsDialog() {
@@ -134,11 +145,18 @@ void MainWindow::settingsDialog() {
     note->setWordWrap(true);
     decompile->addRow(note);
     auto cache = page(tr("缓存"));
-    auto cacheLimit = spin(cache, tr("按类源码磁盘缓存上限（MiB）"), settings.cacheMiB, 16, 4096);
+    auto cacheMode = new QComboBox;
+    cacheMode->setObjectName("cacheMode");
+    cacheMode->addItem(tr("磁盘缓存"), "disk");
+    cacheMode->addItem(tr("内存缓存"), "memory");
+    cacheMode->setCurrentIndex(settings.cacheMode == "memory" ? 1 : 0);
+    cache->addRow(tr("按类源码缓存模式"), cacheMode);
+    auto cacheLimit = spin(cache, tr("按类源码缓存上限（MiB）"), settings.cacheMiB, 16, 4096);
     auto maxTabs = spin(cache, tr("最多打开的类标签"), settings.maxTabs, 1, 64);
     auto sourceLimit =
         spin(cache, tr("单文件查看 / 搜索大小限制（MiB）"), settings.sourceMiB, 1, 64);
-    cache->addRow(new QLabel(tr("全项目搜索源码保留到关闭项目，不计入按类缓存上限。")));
+    cache->addRow(
+        new QLabel(tr("内存模式读取后删除按类临时文件；全项目搜索工作文件仍使用临时磁盘。")));
     auto clear = new QPushButton(tr("清理当前源码缓存"));
     auto usage = new QLabel(tr("正在统计磁盘缓存…"));
     usage->setObjectName("cacheUsage");
@@ -150,13 +168,20 @@ void MainWindow::settingsDialog() {
             return;
         *scanning = true;
         auto path = backend_.workspacePath();
+        const auto stats = backend_.cacheStats();
+        const double memoryBytes = stats.value("mode").toString() == "memory"
+                                       ? stats.value("source_bytes").toDouble()
+                                       : 0.;
         auto task = new QFutureWatcher<qint64>(&dialog);
-        connect(task, &QFutureWatcher<qint64>::finished, &dialog, [task, usage, scanning] {
-            usage->setText(QObject::tr("当前项目磁盘缓存：%1 MiB（包含源码、映射与索引）")
-                               .arg(task->result() / 1048576., 0, 'f', 2));
-            *scanning = false;
-            task->deleteLater();
-        });
+        connect(task, &QFutureWatcher<qint64>::finished, &dialog,
+                [task, usage, scanning, memoryBytes] {
+                    usage->setText(
+                        QObject::tr("当前项目磁盘：%1 MiB（源码、映射与索引） · 内存缓存：%2 MiB")
+                            .arg(task->result() / 1048576., 0, 'f', 2)
+                            .arg(memoryBytes / 1048576., 0, 'f', 2));
+                    *scanning = false;
+                    task->deleteLater();
+                });
         task->setFuture(QtConcurrent::run([path] {
             qint64 n = 0;
             if (!path.isEmpty()) {
@@ -176,6 +201,7 @@ void MainWindow::settingsDialog() {
     connect(clear, &QPushButton::clicked, &dialog, [this] { backend_.clearCache(); });
     auto appearance = page(tr("界面"));
     auto font = spin(appearance, tr("代码字号"), settings.fontSize, 8, 32);
+    auto memory = check(appearance, tr("显示内存占用（当前 / 可用 / 峰值）"), settings.showMemory);
     auto wrap = check(appearance, tr("代码自动换行"), settings.wordWrap);
     auto theme = new QComboBox;
     theme->addItem(tr("深色"), "dark");
@@ -199,17 +225,30 @@ void MainWindow::settingsDialog() {
     transport->addItem("HTTP (Streamable HTTP)", "http");
     transport->setCurrentIndex(settings.mcpTransport == "http" ? 1 : 0);
     mcp->addRow(tr("传输模式"), transport);
-    auto port = spin(mcp, tr("HTTP 本机端口"), settings.mcpPort, 1024, 65535);
+    auto host = new QLineEdit(settings.mcpHost);
+    host->setObjectName("mcpHost");
+    host->setPlaceholderText("127.0.0.1 / 0.0.0.0 / ::");
+    mcp->addRow(tr("HTTP 绑定 IP"), host);
+    auto port = spin(mcp, tr("HTTP 端口"), settings.mcpPort, 1024, 65535);
     auto config = new QPlainTextEdit;
     config->setReadOnly(true);
     config->setPlainText(QJsonDocument(mcp_->clientConfig()).toJson(QJsonDocument::Indented));
     mcp->addRow(tr("客户端配置"), config);
-    auto updateConfig = [this, config, transport, port] {
+    auto updateConfig = [this, config, transport, port, host] {
         port->setEnabled(transport->currentData() == "http");
         QJsonObject value;
-        if (transport->currentData() == "http")
-            value = mcp_->httpConfig(port->value());
-        else
+        if (transport->currentData() == "http") {
+            QString ip = host->text().trimmed();
+            if (ip == "0.0.0.0" || ip == "::")
+                ip = "127.0.0.1";
+            if (ip.contains(':'))
+                ip = "[" + ip + "]";
+            value = {{"mcpServers",
+                      QJsonObject{
+                          {"garlic",
+                           QJsonObject{
+                               {"url", QString("http://%1:%2/mcp").arg(ip).arg(port->value())}}}}}};
+        } else
             value = {{"mcpServers",
                       QJsonObject{{"garlic",
                                    QJsonObject{{"command", QCoreApplication::applicationFilePath()},
@@ -219,14 +258,16 @@ void MainWindow::settingsDialog() {
     };
     connect(transport, &QComboBox::currentIndexChanged, &dialog, updateConfig);
     connect(port, &QSpinBox::valueChanged, &dialog, updateConfig);
+    connect(host, &QLineEdit::textChanged, &dialog, updateConfig);
     updateConfig();
     auto copy = new QPushButton(tr("复制配置"));
     mcp->addRow(copy);
     connect(copy, &QPushButton::clicked, &dialog,
             [config] { QApplication::clipboard()->setText(config->toPlainText()); });
-    auto mcpNote = new QLabel(
-        tr("stdio 使用本地套接字；HTTP 仅监听 127.0.0.1，配置含访问令牌。\nGUI 需保持打开；AI "
-           "的重命名会同步到当前项目，可撤销。"));
+    auto mcpNote = new QLabel(tr(
+        "stdio 自动发现已启用的 GUI；HTTP 无 auth，绑定 0.0.0.0 "
+        "可供局域网访问。\n局域网客户端需将配置 URL 的 IP 换成本机局域网 IP。\nGUI 需保持打开；AI "
+        "的重命名会同步到当前项目，可撤销。"));
     mcpNote->setWordWrap(true);
     mcp->addRow(mcpNote);
     auto capabilities = page(tr("引擎能力"));
@@ -250,6 +291,9 @@ void MainWindow::settingsDialog() {
             [&] {
                 AppSettings defaults;
                 threads->setValue(defaults.threads);
+                cacheMode->setCurrentIndex(0);
+                memory->setChecked(false);
+                host->setText("127.0.0.1");
                 cacheLimit->setValue(defaults.cacheMiB);
                 maxTabs->setValue(defaults.maxTabs);
                 sourceLimit->setValue(defaults.sourceMiB);
@@ -264,9 +308,15 @@ void MainWindow::settingsDialog() {
                 transport->setCurrentIndex(0);
                 port->setValue(8650);
                 theme->setCurrentIndex(0);
+                for (const auto &entry : edits)
+                    entry.second->setKeySequence(
+                        QKeySequence(entry.first->property("defaultShortcut").toString()));
             });
     if (dialog.exec() != QDialog::Accepted)
         return;
+    settings.cacheMode = cacheMode->currentData().toString();
+    settings.showMemory = memory->isChecked();
+    settings.mcpHost = host->text().trimmed();
     settings.threads = threads->value();
     settings.cacheMiB = cacheLimit->value();
     settings.maxTabs = maxTabs->value();
@@ -284,7 +334,7 @@ void MainWindow::settingsDialog() {
     settings.mcpEnabled = enabled->isChecked();
     for (const auto &edit : edits) {
         edit.first->setShortcut(edit.second->keySequence());
-        QSettings().setValue("shortcuts/" + edit.first->text(),
+        QSettings().setValue("shortcuts-v2/" + edit.first->text(),
                              edit.second->keySequence().toString());
     }
     settings.save();

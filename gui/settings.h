@@ -7,7 +7,8 @@ struct AppSettings {
     bool escapeUnicode = false, background = false, wordWrap = false, showMetadata = true;
     bool showNotice = true, mcpEnabled = false;
     int mcpPort = 8650;
-    QString mcpTransport = "stdio";
+    QString mcpTransport = "stdio", mcpHost = "127.0.0.1", cacheMode = "disk";
+    bool showMemory = false;
     QStringList excluded;
     QString theme = "dark";
     QJsonObject toJson() const;

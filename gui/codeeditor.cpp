@@ -52,11 +52,48 @@ class Highlighter : public QSyntaxHighlighter {
         static const QRegularExpression smaliOps(
             QStringLiteral("(?:^\\s*\\.[\\w-]+|\\b(?:[vp][0-9]+|invoke-[\\w/-]+|move[\\w/"
                            "-]*|return[\\w/-]*|const[\\w/-]*|iget[\\w/-]*|iput[\\w/-]*)\\b)"));
+        static const QRegularExpression types(QStringLiteral("\\b[A-Z][A-Za-z0-9_$]*\\b"));
+        static const QRegularExpression calls(
+            QStringLiteral("\\b[\\p{L}_$][\\p{L}\\p{N}_$]*(?=\\s*\\()"));
+        static const QRegularExpression constants(QStringLiteral("\\b[A-Z][A-Z0-9_]{2,}\\b"));
+        static const QRegularExpression primitives(
+            QStringLiteral("\\b(?:boolean|byte|char|short|int|long|float|double|void)\\b"));
+        apply(types, color("#7dcfff", "#006b8f"));
+        apply(calls, color("#82aaff", "#2556a8"));
+        apply(constants, color("#e0af68", "#935400"));
         apply(keywords, color("#c4a3ff", "#6530a3"));
+        apply(primitives, color("#56b6c2", "#007b83"));
         apply(numbers, color("#e6b878", "#925800"));
         apply(annotations, color("#72cbd2", "#006e87"));
         if (smali_)
             apply(smaliOps, color("#c4a3ff", "#6530a3"));
+        if (smali_) {
+            static const QRegularExpression labels(":[A-Za-z0-9_]+"), descriptors("L[\\w/$]+;"),
+                registers("\\b[vp][0-9]+\\b");
+            apply(labels, color("#e0af68", "#935400"));
+            apply(descriptors, color("#7dcfff", "#006b8f"));
+            apply(registers, color("#ff9e64", "#a44a16"));
+        }
+        if (document()->property("language") == "xml") {
+            static const QRegularExpression tags("</?[\\w:.-]+|/?>"), attrs("[\\w:.-]+(?=\\s*=)"),
+                values("\"[^\"]*\"|'[^']*'");
+            setFormat(0, text.size(), color("#dce5ee", "#243446"));
+            apply(tags, color("#c4a3ff", "#6530a3"));
+            apply(attrs, color("#7dcfff", "#006b8f"));
+            apply(values, color("#a4e4bd", "#267650"));
+            int a = previousBlockState() == 2 ? 0 : text.indexOf("<!--");
+            setCurrentBlockState(0);
+            while (a >= 0) {
+                int b = text.indexOf("-->", a);
+                setFormat(a, b < 0 ? text.size() - a : b + 3 - a, color("#758698", "#5c7483"));
+                if (b < 0) {
+                    setCurrentBlockState(2);
+                    break;
+                }
+                a = text.indexOf("<!--", b + 3);
+            }
+            return;
+        }
         setCurrentBlockState(0);
         int i = 0;
         if (!smali_ && previousBlockState() == 1) {
@@ -110,6 +147,7 @@ class Highlighter : public QSyntaxHighlighter {
 CodeEditor::CodeEditor(bool smali, QWidget *parent)
     : QPlainTextEdit(parent), gutter_(new Gutter(this)) {
     setReadOnly(true);
+    setAttribute(Qt::WA_InputMethodEnabled, false);
     setLineWrapMode(QPlainTextEdit::NoWrap);
     auto font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     font.setPointSize(13);

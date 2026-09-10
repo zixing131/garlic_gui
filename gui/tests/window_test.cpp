@@ -1,11 +1,55 @@
 #include "classview.h"
 #include "mainwindow.h"
+#include "referencesdialog.h"
 #include <QtTest>
 #include <QtWidgets>
 
 class WindowTest : public QObject {
     Q_OBJECT
   private slots:
+    void shortcutsAndFilterState() {
+        QCoreApplication::setOrganizationName("GarlicTests");
+        QCoreApplication::setApplicationName("WindowTest");
+        QSettings().clear();
+        QSettings().setValue("shortcuts/查找引用", "Ctrl+Shift+U");
+        QSettings().setValue("shortcuts/重命名", "F2");
+        MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
+        window.show();
+        window.activateWindow();
+        window.openPath(qEnvironmentVariable("GARLIC_TEST_FIXTURES") + "/demo.jar");
+        QTRY_VERIFY_WITH_TIMEOUT(!window.backend()->busy() && !window.backend()->project()->classes().isEmpty(), 15000);
+        window.openClass("demo/Main");
+        QTRY_VERIFY_WITH_TIMEOUT(window.editor() && window.editor()->toPlainText().contains("greet"), 15000);
+        window.navigateTo("Ldemo/Main;->greet(I)Ljava/lang/String;");
+        auto editor = window.editor();
+        editor->setFocus();
+        QTest::keyClick(editor, Qt::Key_X);
+        QTRY_VERIFY(window.findChild<ReferencesDialog *>());
+        window.findChild<ReferencesDialog *>()->close();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        window.activateWindow();
+        editor->setFocus();
+        bool renameOpened = false;
+        QTimer::singleShot(100, &window, [&] {
+            auto dialog = qobject_cast<QInputDialog *>(QApplication::activeModalWidget());
+            renameOpened = dialog != nullptr;
+            if (dialog) dialog->reject();
+        });
+        QTest::keyClick(editor, Qt::Key_N);
+        QTRY_VERIFY(renameOpened);
+        auto tree = window.findChild<QTreeView *>("classTree");
+        auto filter = window.findChild<QLineEdit *>("classFilter");
+        auto matches = tree->model()->match(tree->model()->index(0,0), Qt::UserRole + 1, "Ldemo/Main;", 1, Qt::MatchExactly | Qt::MatchRecursive);
+        QVERIFY(!matches.isEmpty());
+        auto idx = matches.first();
+        tree->expand(idx.parent()); tree->expand(idx);
+        tree->setCurrentIndex(idx);
+        filter->setText("no_matching_class_123");
+        filter->clear();
+        matches = tree->model()->match(tree->model()->index(0,0), Qt::UserRole + 1, "Ldemo/Main;", 1, Qt::MatchExactly | Qt::MatchRecursive);
+        QVERIFY(!matches.isEmpty());
+        QVERIFY(tree->isExpanded(matches.first()));
+    }
     void crlfSymbolPositions() {
         CodeEditor editor(false);
         const QString text = "// 中文\r\npublic class Example {\r\n    void greet() {}\r\n}\r\n";

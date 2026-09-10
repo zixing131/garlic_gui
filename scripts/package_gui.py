@@ -120,6 +120,8 @@ def main():
         # Detect missing runtime DLLs rather than accidentally resolving them from the SDK PATH.
         env['PATH'] = os.pathsep.join([str(folder), str(Path(os.environ['SystemRoot']) / 'System32'), os.environ['SystemRoot']])
     else:
+        shutil.copy2(root / 'gui/icons/app/garlic.png', folder / 'garlic.png')
+        (folder / 'Garlic.desktop').write_text('[Desktop Entry]\nType=Application\nName=Garlic\nExec=garlic-gui %F\nIcon=garlic\nCategories=Development;\n')
         (folder / 'bin').mkdir()
         gui, engine = folder / 'bin/garlic-gui', folder / 'bin/garlic'
         shutil.copy2(build / 'gui/garlic-gui', gui)

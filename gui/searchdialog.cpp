@@ -179,6 +179,19 @@ SearchDialog::SearchDialog(MainWindow *window) : QDialog(window), window_(window
     footer->addWidget(go);
     footer->addWidget(close);
     root->addLayout(footer);
+    const QList<QPair<QString, QCheckBox *>> options = {
+        {"classes", classes_}, {"methods", methods_},   {"fields", fields_},
+        {"code", code_},       {"comments", comments_}, {"regex", regex_},
+        {"case", sensitive_},  {"auto", automatic_},    {"keep", keep_}};
+    for (const auto &option : options) {
+        const QString key = "search/" + option.first;
+        option.second->setChecked(QSettings().value(key, option.second->isChecked()).toBool());
+        connect(option.second, &QCheckBox::toggled, this,
+                [key](bool v) { QSettings().setValue(key, v); });
+    }
+    package_->setText(QSettings().value("search/package").toString());
+    connect(package_, &QLineEdit::textChanged, this,
+            [](const QString &v) { QSettings().setValue("search/package", v); });
     debounce_ = new QTimer(this);
     debounce_->setSingleShot(true);
     debounce_->setInterval(350);

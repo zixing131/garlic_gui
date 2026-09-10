@@ -5,6 +5,13 @@
 class ProjectTest : public QObject {
     Q_OBJECT
   private slots:
+    void applicationInheritance() {
+        Project p;
+        p.addClass({{"name","demo/Base"}, {"flags",1025}, {"refs",QJsonArray{QJsonObject{{"kind","extends"},{"target","Landroid/app/Application;"}}}}});
+        p.addClass({{"name","demo/App"}, {"flags",1}, {"refs",QJsonArray{QJsonObject{{"kind","extends"},{"target","Ldemo/Base;"}}}}});
+        QCOMPARE(p.applicationCandidates(), QStringList{"demo/App"});
+    }
+
     void semanticAndEncoding_data() {
         QTest::addColumn<QString>("input");
         QTest::newRow("jar") << "demo.jar";

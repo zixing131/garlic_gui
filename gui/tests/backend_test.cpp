@@ -39,6 +39,30 @@ class BackendTest : public QObject {
             QTRY_COMPARE_WITH_TIMEOUT(source.count(), 2, 15000);
         }
     }
+    void memoryCache() {
+        Backend backend;
+        backend.setEngine(engine_);
+        auto settings = backend.settings();
+        settings.cacheMode = "memory";
+        backend.configure(settings);
+        QSignalSpy source(&backend, &Backend::sourceReady), errors(&backend, &Backend::failed);
+        backend.open(fixtures_ + "/demo.jar");
+        QTRY_VERIFY_WITH_TIMEOUT(!backend.busy(), 15000);
+        backend.request("demo/Main", false);
+        QTRY_COMPARE_WITH_TIMEOUT(source.count(), 1, 15000);
+        QVERIFY(errors.isEmpty());
+        auto path = source.first()[2].toString();
+        QVERIFY(path.startsWith("memory:"));
+        QVERIFY(backend.project()->document("demo/Main", false, path).text.contains("greet"));
+        QVERIFY(backend.cacheStats().value("source_bytes").toDouble() > 0);
+        QDirIterator files(backend.workspacePath(), {"*.java"}, QDir::Files, QDirIterator::Subdirectories);
+        QVERIFY(!files.hasNext());
+        backend.request("demo/Main", false);
+        QCOMPARE(source.count(), 2);
+        backend.clearCache();
+        QTRY_VERIFY_WITH_TIMEOUT(!backend.busy(), 5000);
+        QVERIFY(backend.cachedPath("demo/Main", false).isEmpty());
+    }
     void safeNames() {
         QVERIFY(Backend::safeClassName("demo/Main$Inner"));
         QVERIFY(Backend::safeClassName("测试/示例"));

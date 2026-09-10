@@ -22,13 +22,17 @@ QString Project::classOf(const QString &id) {
 void Project::reset(const QString &input) {
     input_ = input;
     inputs_ = {input};
+    documents_.clear();
+    referenceIndex_ = std::make_shared<ReferenceIndex>();
     classes_.clear();
     symbols_.clear();
     classNames_.clear();
+    parents_.clear();
     aliases_.clear();
     undo_.clear();
 }
 void Project::addClass(const QJsonObject &entry) {
+    referenceIndex_ = std::make_shared<ReferenceIndex>();
     const auto name = entry.value("name").toString();
     if (classes_.contains(name)) {
         const auto old = classes_.value(name);
@@ -37,6 +41,12 @@ void Project::addClass(const QJsonObject &entry) {
                 symbols_.remove(member.toObject().value("id").toString());
     }
     classes_.insert(name, entry);
+    parents_.remove(name);
+    for (const auto &v : entry.value("refs").toArray()) {
+        const auto ref = v.toObject();
+        if (ref.value("kind") == "extends" || ref.value("kind") == "implements")
+            parents_[name] << classOf(ref.value("target").toString());
+    }
     for (const auto &simple :
          QSet<QString>{name.section('/', -1), name.section('/', -1).section('$', -1)})
         if (!classNames_[simple].contains(classId(name)))
@@ -73,26 +83,41 @@ QJsonArray Project::members(const QString &name, bool methods) const {
     return info(name).value(methods ? "methods" : "fields").toArray();
 }
 QJsonArray Project::xrefs(const QString &id) const {
-    QJsonArray result;
-    for (auto it = classes_.cbegin(); it != classes_.cend(); ++it) {
-        QSet<QString> seen;
-        for (const auto &v : it.value().value("refs").toArray()) {
-            auto ref = v.toObject();
-            const auto target = canonicalId(ref.value("target").toString());
-            if (target != canonicalId(id) &&
-                !(id.endsWith(';') && !id.contains("->") && classOf(target) == classOf(id)))
-                continue;
-            const auto key = ref.value("from").toString() + ":" +
-                             QString::number(ref.value("offset").toInt()) + target;
-            if (seen.contains(key))
-                continue;
-            seen.insert(key);
-            ref["class"] = it.key();
-            result.append(ref);
+    std::lock_guard<std::mutex> guard(referenceIndex_->lock);
+    if (!referenceIndex_->ready) {
+        QHash<QString, QString> canonical;
+        for (auto it = classes_.cbegin(); it != classes_.cend(); ++it) {
+            QSet<QString> seen;
+            const auto references = it.value().value("refs").toArray();
+            for (int position = 0; position < references.size(); position++) {
+                auto ref = references[position].toObject();
+                auto raw = ref.value("target").toString();
+                if (!canonical.contains(raw))
+                    canonical[raw] = canonicalId(raw);
+                const auto target = canonical.value(raw);
+                const auto key = ref.value("from").toString() + ":" +
+                                 QString::number(ref.value("offset").toInt()) + target;
+                if (seen.contains(key))
+                    continue;
+                seen.insert(key);
+                referenceIndex_->targets[target].append({it.key(), position});
+                const auto clazz = classId(classOf(target));
+                if (clazz != target)
+                    referenceIndex_->targets[clazz].append({it.key(), position});
+            }
         }
+        referenceIndex_->ready = true;
+    }
+    QJsonArray result;
+    for (const auto &position : referenceIndex_->targets.value(canonicalId(id))) {
+        auto ref =
+            classes_.value(position.first).value("refs").toArray().at(position.second).toObject();
+        ref["class"] = position.first;
+        result.append(ref);
     }
     return result;
 }
+
 QJsonArray Project::symbols(const QString &query) const {
     QJsonArray out;
     for (auto it = symbols_.cbegin(); it != symbols_.cend(); ++it)
@@ -306,6 +331,11 @@ static QString codeMask(QString text, bool smali) {
 }
 SourceDocument Project::document(const QString &name, bool smali, const QString &path,
                                  bool applyAliases) const {
+    const QString key = normalize(name) + (smali ? ":smali" : ":java");
+    if (path.startsWith("memory:")) {
+        const auto doc = documents_.value(key);
+        return applyAliases ? this->applyAliases(doc, smali) : doc;
+    }
     QFile file(path);
     SourceDocument result;
     if (!file.open(QIODevice::ReadOnly))
@@ -480,11 +510,7 @@ QString Project::canonicalId(const QString &id) const {
         const auto candidate = classId(name) + suffix;
         if (symbols_.contains(candidate))
             return candidate;
-        for (const auto &v : classes_.value(name).value("refs").toArray()) {
-            const auto r = v.toObject();
-            if (r.value("kind") == "extends" || r.value("kind") == "implements")
-                work << classOf(r.value("target").toString());
-        }
+        work.append(parents_.value(name));
     }
     return id;
 }
@@ -514,11 +540,44 @@ std::shared_ptr<Project> Project::snapshot() const {
     return copy;
 }
 void Project::replaceData(const Project &other) {
+    documents_ = other.documents_;
+    referenceIndex_ = other.referenceIndex_;
     input_ = other.input_;
     inputs_ = other.inputs_;
     classes_ = other.classes_;
     symbols_ = other.symbols_;
     classNames_ = other.classNames_;
+    parents_ = other.parents_;
     aliases_ = other.aliases_;
     undo_ = other.undo_;
+}
+
+qint64 Project::documentBytes(const QString &key) const {
+    const auto d = documents_.value(key);
+    qint64 n = d.text.size() * 2 + d.spans.size() * sizeof(SourceSpan);
+    for (const auto &span : d.spans)
+        n += span.id.size() * 2;
+    return n;
+}
+QStringList Project::applicationCandidates() const {
+    QStringList result;
+    for (const auto &name : classes()) {
+        QSet<QString> seen;
+        QStringList todo{name};
+        bool match = false;
+        while (!todo.isEmpty() && seen.size() < 128) {
+            const auto n = todo.takeLast();
+            if (n == "android/app/Application") {
+                match = true;
+                break;
+            }
+            if (seen.contains(n))
+                continue;
+            seen.insert(n);
+            todo.append(parents_.value(n));
+        }
+        if (match && !(info(name).value("flags").toInt() & 0x600))
+            result << name;
+    }
+    return result;
 }

@@ -17,6 +17,7 @@ class Backend : public QObject {
     const Project *project() const { return &project_; }
     AppSettings settings() const { return settings_; }
     void configure(const AppSettings &settings);
+    QHash<QString, QString> cachedSources() const { return cache_; }
     QString cachedPath(const QString &name, bool smali) const;
     void prepareSources();
     bool preparing() const { return preparing_; }
@@ -28,6 +29,7 @@ class Backend : public QObject {
     QJsonObject cacheStats() const;
     void setEngine(const QString &path) { engine_ = path; }
     QString engine() const { return engine_; }
+    QList<qint64> workerPids() const { QList<qint64> result; for (const auto *p : {&process_, &background_}) if (p->processId()) result << p->processId(); return result; }
     QString input() const { return input_; }
     QStringList inputs() const { return inputs_; }
     QString classInput(const QString &name) const;

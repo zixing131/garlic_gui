@@ -3,6 +3,7 @@
 #include "nodeicons.h"
 #include <QtConcurrent>
 #include <QtWidgets>
+#include <algorithm>
 namespace {
 class SnippetDelegate : public QStyledItemDelegate {
   public:
@@ -86,11 +87,16 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
     delegate->token = window->backend()->project()->symbolName(id).section('$', -1);
     table->setItemDelegate(delegate);
     root->addWidget(table, 1);
-    auto count = new QLabel(tr("正在查询引用并加载代码…"));
+    auto count = new QLabel(tr("正在查询引用索引…"));
     root->addWidget(count);
     auto bottom = new QHBoxLayout;
     auto keep = new QCheckBox(tr("保持窗口"));
+    keep->setChecked(QSettings().value("references/keep", false).toBool());
+    connect(keep, &QCheckBox::toggled, this,
+            [](bool v) { QSettings().setValue("references/keep", v); });
     bottom->addWidget(keep);
+    auto preview = new QPushButton(tr("打开选中来源 / 加载源码"));
+    bottom->addWidget(preview);
     bottom->addStretch();
     auto copy = new QPushButton(tr("复制全部")), go = new QPushButton(tr("转到")),
          stop = new QPushButton(tr("停止")), close = new QPushButton(tr("关闭"));
@@ -117,6 +123,11 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
             this->close();
     };
     connect(go, &QPushButton::clicked, this, navigate);
+    connect(preview, &QPushButton::clicked, this, [window, table] {
+        auto i = table->currentIndex().siblingAtColumn(0);
+        if (i.isValid())
+            window->navigateTo(i.data(Qt::UserRole + 1).toString());
+    });
     connect(table, &QTableView::doubleClicked, this,
             [navigate](const QModelIndex &) { navigate(); });
     connect(copy, &QPushButton::clicked, this, [model] {
@@ -125,16 +136,51 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
             text += model->item(i, 0)->text() + "\t" + model->item(i, 1)->text() + "\n";
         QApplication::clipboard()->setText(text);
     });
+    connect(window->backend(), &Backend::sourceReady, this,
+            [this, window, model, id](const QString &name, bool smali, const QString &path) {
+                if (smali)
+                    return;
+                auto project = window->backend()->project()->snapshot();
+                auto task = new QFutureWatcher<SourceDocument>(this);
+                connect(task, &QFutureWatcher<SourceDocument>::finished, this,
+                        [task, model, project, name, id] {
+                            auto doc = task->result();
+                            task->deleteLater();
+                            for (int row = 0; row < model->rowCount(); row++) {
+                                const auto from =
+                                    model->item(row)->data(Qt::UserRole + 1).toString();
+                                if (project->owner(Project::classOf(from)) != project->owner(name))
+                                    continue;
+                                int start = -1, end = doc.text.size();
+                                for (const auto &span : doc.spans)
+                                    if (span.id == from && span.declaration)
+                                        start = span.start;
+                                if (start >= 0)
+                                    for (const auto &span : doc.spans)
+                                        if (span.declaration && span.id.contains("->") &&
+                                            span.start > start)
+                                            end = qMin(end, span.start);
+                                for (const auto &span : doc.spans)
+                                    if (!span.declaration && span.id == id &&
+                                        (start < 0 || (span.start >= start && span.start < end))) {
+                                        const int a = doc.text.lastIndexOf('\n', span.start) + 1,
+                                                  b = doc.text.indexOf('\n', span.start);
+                                        model->item(row, 1)->setText(
+                                            doc.text.mid(a, b < 0 ? 1200 : qMin(1200, b - a)));
+                                        model->item(row)->setData(
+                                            doc.text.left(span.start).count('\n') + 1,
+                                            Qt::UserRole + 2);
+                                        break;
+                                    }
+                            }
+                        });
+                task->setFuture(QtConcurrent::run(
+                    [project, name, path] { return project->document(name, false, path); }));
+            });
     auto project = window->backend()->project()->snapshot();
-    QHash<QString, QString> cached;
-    for (const auto &name : project->classes()) {
-        auto p = window->backend()->cachedPath(name, false);
-        if (!p.isEmpty())
-            cached[name] = p;
-    }
-    auto engine = window->backend()->engine();
+    auto cached = window->backend()->cachedSources();
+    const QString allSources = window->backend()->workspacePath() + "/all-java/";
     auto settings = window->backend()->settings();
-    auto temp = std::make_shared<QTemporaryDir>();
     auto task = new QFutureWatcher<QJsonArray>(this);
     connect(task, &QFutureWatcher<QJsonArray>::resultReadyAt, this,
             [task, model, count, project](int index) {
@@ -165,7 +211,7 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
                     node->setData(row.value("line").toInt(), Qt::UserRole + 2);
                     model->appendRow({node, new QStandardItem(row.value("text").toString())});
                 }
-                count->setText(QObject::tr("已找到 %1 处引用，正在加载…").arg(model->rowCount()));
+                count->setText(QObject::tr("已找到 %1 处引用…").arg(model->rowCount()));
             });
     connect(task, &QFutureWatcher<QJsonArray>::finished, this,
             [task, model, count, stop, canceled] {
@@ -175,116 +221,99 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
                 stop->setEnabled(false);
                 task->deleteLater();
             });
-    task->setFuture(QtConcurrent::run(
-        [project, id, cached, engine, settings, temp, canceled](QPromise<QJsonArray> &promise) {
-            QJsonArray rows;
-            auto refs = project->xrefs(id);
-            QHash<QString, SourceDocument> docs;
-            QSet<QString> seen;
-            for (const auto &v : refs) {
-                if (!rows.isEmpty()) {
-                    promise.addResult(rows);
-                    rows = {};
-                }
-                if (*canceled)
-                    break;
-                auto ref = v.toObject();
-                auto from = ref.value("from").toString(), name = Project::classOf(from),
-                     owner = project->owner(name);
-                if (!docs.contains(owner)) {
-                    docs.clear();
-                    QString path = cached.value(name);
-                    QString input = project->info(name).value("input").toString(project->input());
-                    if (path.isEmpty()) {
-                        QString dir = temp->path() + "/source";
-                        QDir(dir).removeRecursively();
-                        QDir().mkpath(dir);
-                        QProcess proc;
-                        auto env = QProcessEnvironment::systemEnvironment();
-                        env.insert("GARLIC_SOURCE_MAP_DIR", dir);
-                        proc.setProcessEnvironment(env);
-                        bool single = QFileInfo(input).suffix() == "class";
-                        path = dir + "/" + (single ? "source" : owner) + ".java";
-                        if (single)
-                            proc.setStandardOutputFile(path);
-                        proc.start(engine, {input, "-c", owner, "-o", dir, "-t", "1"});
-                        QElapsedTimer timeout;
-                        timeout.start();
-                        while (!proc.waitForFinished(50)) {
-                            proc.readAllStandardError();
-                            if (!single)
-                                proc.readAllStandardOutput();
-                            if (*canceled || timeout.elapsed() > 30000) {
-                                proc.kill();
-                                proc.waitForFinished(1000);
-                                break;
-                            }
-                        }
-                    }
-                    if (QFileInfo(path).size() <= qint64(settings.sourceMiB) * 1048576)
-                        docs[owner] = project->document(name, false, path);
-                    else
-                        docs[owner] = {};
-                }
-                const auto &doc = docs[owner];
-                int start = -1, end = doc.text.size();
-                for (const auto &span : doc.spans)
-                    if (span.id == from && span.declaration) {
-                        start = span.start;
-                        break;
-                    }
-                if (start >= 0 && from.contains("->"))
-                    for (const auto &span : doc.spans)
-                        if (span.declaration && span.id.contains("->") && span.start > start)
-                            end = qMin(end, span.start);
-                bool found = false;
-                for (const auto &span : doc.spans)
-                    if (span.id == id && !span.declaration &&
-                        (start < 0 || (span.start >= start && span.start < end))) {
-                        int line = doc.text.left(span.start).count('\n') + 1;
-                        QString key = name + ":" + QString::number(line);
-                        if (seen.contains(key)) {
-                            found = true;
-                            continue;
-                        }
-                        seen.insert(key);
-                        int a = doc.text.lastIndexOf('\n', span.start) + 1,
-                            b = doc.text.indexOf('\n', span.start);
-                        if (b < 0)
-                            b = doc.text.size();
-                        QString container = from;
-                        int closest = -1;
-                        for (const auto &decl : doc.spans)
-                            if (decl.declaration && decl.id.contains("->") &&
-                                decl.start < span.start && decl.start > closest) {
-                                closest = decl.start;
-                                container = decl.id;
-                            }
-                        rows.append(QJsonObject{{"from", container},
-                                                {"line", line},
-                                                {"text", doc.text.mid(a, qMin(1200, b - a))}});
-                        found = true;
-                    }
-                if (!found) {
-                    QString key = from + ":" + ref.value("kind").toString();
-                    if (seen.contains(key))
-                        continue;
-                    seen.insert(key);
-                    QString text;
-                    int line = 0;
-                    if (start >= 0) {
-                        line = doc.text.left(start).count('\n') + 1;
-                        int a = doc.text.lastIndexOf('\n', start) + 1,
-                            b = doc.text.indexOf('\n', start);
-                        text = doc.text.mid(a, b < 0 ? 1200 : qMin(1200, b - a));
-                    }
-                    if (text.isEmpty())
-                        text = ref.value("kind").toString() +
-                               QString(" · bytecode +%1 · ").arg(ref.value("offset").toInt()) + id;
-                    rows.append(QJsonObject{{"from", from}, {"line", line}, {"text", text}});
-                }
-            }
-            if (!rows.isEmpty())
+    task->setFuture(QtConcurrent::run([project, id, cached, allSources, settings,
+                                       canceled](QPromise<QJsonArray> &promise) {
+        QJsonArray rows;
+        auto refs = project->xrefs(id);
+        // Group by owner: one cached document read per class, without spawning processes.
+        QList<QJsonObject> ordered;
+        for (const auto &v : refs)
+            ordered << v.toObject();
+        std::stable_sort(ordered.begin(), ordered.end(), [project](const auto &a, const auto &b) {
+            return project->owner(Project::classOf(a.value("from").toString())) <
+                   project->owner(Project::classOf(b.value("from").toString()));
+        });
+        QHash<QString, SourceDocument> docs;
+        QSet<QString> seen;
+        for (const auto &v : ordered) {
+            if (rows.size() >= 64) {
                 promise.addResult(rows);
-        }));
+                rows = {};
+            }
+            if (*canceled)
+                break;
+            auto ref = v;
+            auto from = ref.value("from").toString(), name = Project::classOf(from),
+                 owner = project->owner(name);
+            if (!docs.contains(owner)) {
+                docs.clear();
+                QString path = cached.value(name + ":java", cached.value(owner + ":java"));
+                if (path.isEmpty() && QFileInfo::exists(allSources + owner + ".map.json"))
+                    path = allSources + owner + ".java";
+                if (QFileInfo(path).size() <= qint64(settings.sourceMiB) * 1048576)
+                    docs[owner] = project->document(name, false, path);
+                else
+                    docs[owner] = {};
+            }
+            const auto &doc = docs[owner];
+            int start = -1, end = doc.text.size();
+            for (const auto &span : doc.spans)
+                if (span.id == from && span.declaration) {
+                    start = span.start;
+                    break;
+                }
+            if (start >= 0 && from.contains("->"))
+                for (const auto &span : doc.spans)
+                    if (span.declaration && span.id.contains("->") && span.start > start)
+                        end = qMin(end, span.start);
+            bool found = false;
+            for (const auto &span : doc.spans)
+                if (span.id == id && !span.declaration &&
+                    (start < 0 || (span.start >= start && span.start < end))) {
+                    int line = doc.text.left(span.start).count('\n') + 1;
+                    QString key = name + ":" + QString::number(line);
+                    if (seen.contains(key)) {
+                        found = true;
+                        continue;
+                    }
+                    seen.insert(key);
+                    int a = doc.text.lastIndexOf('\n', span.start) + 1,
+                        b = doc.text.indexOf('\n', span.start);
+                    if (b < 0)
+                        b = doc.text.size();
+                    QString container = from;
+                    int closest = -1;
+                    for (const auto &decl : doc.spans)
+                        if (decl.declaration && decl.id.contains("->") && decl.start < span.start &&
+                            decl.start > closest) {
+                            closest = decl.start;
+                            container = decl.id;
+                        }
+                    rows.append(QJsonObject{{"from", container},
+                                            {"line", line},
+                                            {"text", doc.text.mid(a, qMin(1200, b - a))}});
+                    found = true;
+                }
+            if (!found) {
+                QString key = from + ":" + ref.value("kind").toString();
+                if (seen.contains(key))
+                    continue;
+                seen.insert(key);
+                QString text;
+                int line = 0;
+                if (start >= 0) {
+                    line = doc.text.left(start).count('\n') + 1;
+                    int a = doc.text.lastIndexOf('\n', start) + 1,
+                        b = doc.text.indexOf('\n', start);
+                    text = doc.text.mid(a, b < 0 ? 1200 : qMin(1200, b - a));
+                }
+                if (text.isEmpty())
+                    text = ref.value("kind").toString() +
+                           QString(" · bytecode +%1 · ").arg(ref.value("offset").toInt()) + id;
+                rows.append(QJsonObject{{"from", from}, {"line", line}, {"text", text}});
+            }
+        }
+        if (!rows.isEmpty())
+            promise.addResult(rows);
+    }));
 }

@@ -1,5 +1,6 @@
 #include "mainwindow.h"
 #include "mcpserver.h"
+#include "memoryusage.h"
 #include "nodeicons.h"
 #include "referencesdialog.h"
 #include "resources.h"
@@ -16,9 +17,6 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     setAcceptDrops(true);
     QSettings prefs;
     restoreGeometry(prefs.value("geometry").toByteArray());
-    const auto saved = prefs.value("engine").toString();
-    if (QFileInfo(saved).isExecutable())
-        backend_.setEngine(saved);
     if (!engine.isEmpty())
         backend_.setEngine(QFileInfo(engine).absoluteFilePath());
     auto file = menuBar()->addMenu(tr("文件"));
@@ -37,13 +35,6 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     file->addAction(tr("保存项目…"), QKeySequence::Save, this, &MainWindow::saveProject);
     exportAction_ = file->addAction(tr("导出源码…"), QKeySequence("Ctrl+Shift+E"), this,
                                     &MainWindow::exportAll);
-    engineAction_ = file->addAction(tr("选择引擎…"), this, [this] {
-        auto path = QFileDialog::getOpenFileName(this, tr("选择 garlic 引擎"));
-        if (!path.isEmpty()) {
-            backend_.setEngine(path);
-            QSettings().setValue("engine", path);
-        }
-    });
     settingsAction_ =
         file->addAction(tr("设置…"), QKeySequence::Preferences, this, &MainWindow::settingsDialog);
     file->addSeparator();
@@ -109,10 +100,6 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     });
     auto toolbar = addToolBar("Main");
     toolbar->setMovable(false);
-    auto brand = new QLabel("  GARLIC  ");
-    brand->setObjectName("brand");
-    toolbar->addWidget(brand);
-    toolbar->addSeparator();
     toolbar->addAction(openAction_);
     toolbar->addAction(exportAction_);
     toolbar->addAction(tr("项目搜索"), this, &MainWindow::searchDialog);
@@ -128,7 +115,7 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     toolbar->addAction(applicationAction);
     toolbar->addAction(manifestAction);
     toolbar->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    toolbar->setIconSize(QSize(22, 22));
+    toolbar->setIconSize(QSize(20, 20));
     const QStringList toolIcons{"toolopenDisk", "toolexport",      "toolfind",
                                 "toolleft",     "toolright",       "toolclose",
                                 "toolsettings", "toolapplication", "toolandroidManifest"};
@@ -144,7 +131,7 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     auto fileRow = new QHBoxLayout;
     fileLabel_ = new QLabel(tr("打开 APK / DEX / JAR / CLASS"));
     fileLabel_->setTextFormat(Qt::PlainText);
-    fileLabel_->setContentsMargins(12, 6, 0, 6);
+    fileLabel_->setContentsMargins(8, 0, 0, 0);
     countLabel_ = new QLabel;
     countLabel_->setObjectName("muted");
     fileRow->addWidget(fileLabel_, 1);
@@ -176,11 +163,19 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     proxy_->setFilterCaseSensitivity(Qt::CaseInsensitive);
     proxy_->setFilterRole(Qt::UserRole + 2);
     tree_->setModel(proxy_);
+    connect(tree_, &QTreeView::expanded, this, [this](const QModelIndex &i) {
+        if (!filtering_)
+            expandedNodes_.insert(proxy_->mapToSource(i));
+    });
+    connect(tree_, &QTreeView::collapsed, this, [this](const QModelIndex &i) {
+        if (!filtering_)
+            expandedNodes_.remove(proxy_->mapToSource(i));
+    });
     leftLayout->addWidget(tree_, 1);
     splitter->addWidget(left);
     auto right = new QWidget;
     auto rightLayout = new QVBoxLayout(right);
-    rightLayout->setContentsMargins(0, 6, 6, 0);
+    rightLayout->setContentsMargins(8, 4, 6, 0);
     auto search = new QHBoxLayout;
     find_ = new QLineEdit;
     find_->setObjectName("codeFind");
@@ -203,7 +198,7 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     title->setAlignment(Qt::AlignCenter);
     welcomeLayout->addWidget(title);
     auto desc = new QLabel(tr("Java / Smali 底部切换 · F12 / 双击跳转 · X 引用 · N 重命名"));
-    desc->setObjectName("muted");
+    desc->setObjectName("shortcutHint");
     desc->setAlignment(Qt::AlignCenter);
     welcomeLayout->addWidget(desc);
     auto open = new QPushButton(tr("打开文件"));
@@ -255,7 +250,7 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
             recordHistory();
         }
     });
-    connect(filter_, &QLineEdit::textChanged, proxy_, &QSortFilterProxyModel::setFilterFixedString);
+    connect(filter_, &QLineEdit::textChanged, this, &MainWindow::filterTree);
     auto activate = [this](const QModelIndex &index) {
         const auto kind = index.data(Qt::UserRole + 4).toString(),
                    path = index.data(Qt::UserRole + 5).toString();
@@ -310,6 +305,23 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
         if (item)
             navigateTo(item->data(Qt::UserRole).toString(), item->data(Qt::UserRole + 1).toInt());
     });
+    memoryLabel_ = new QLabel;
+    memoryLabel_->setObjectName("memoryUsage");
+    statusBar()->addPermanentWidget(memoryLabel_);
+    auto memoryTimer = new QTimer(this);
+    connect(memoryTimer, &QTimer::timeout, this, [this] {
+        if (!backend_.settings().showMemory)
+            return;
+        auto s = MemoryUsage::read(backend_.workerPids());
+        peakMemory_ = qMax(peakMemory_, s.peak);
+        memoryLabel_->setText(tr("内存 %1 MiB · 系统可用 %2 GiB · 峰值 %3 MiB")
+                                  .arg(s.current / 1048576., 0, 'f', 0)
+                                  .arg(s.available / 1073741824., 0, 'f', 1)
+                                  .arg(peakMemory_ / 1048576., 0, 'f', 0));
+        memoryLabel_->setToolTip(
+            tr("当前占用含 GUI 与正在运行的 garlic 引擎；峰值为进程峰值与定时采样峰值的最大值。"));
+    });
+    memoryTimer->start(1000);
     status_ = new QLabel(tr("就绪"));
     statusBar()->addWidget(status_, 1);
     progress_ = new QProgressBar;
@@ -317,6 +329,11 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     progress_->setMaximumHeight(12);
     progress_->setTextVisible(false);
     statusBar()->addPermanentWidget(progress_);
+    for (auto action : findChildren<QAction *>()) {
+        if (!action->shortcut().isEmpty())
+            action->setProperty("defaultShortcut", action->shortcut().toString());
+    }
+    qApp->installEventFilter(this);
     mcp_ = new McpServer(this, this);
     connect(&backend_, &Backend::indexed, this, [this](const QStringList &classes) {
         populate(classes);
@@ -371,6 +388,7 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
         QMessageBox::information(this, tr("导出完成"), path);
     });
     applySettings(backend_.settings());
+    restoreState(QSettings().value("windowState").toByteArray());
     updateBusy();
 }
 
@@ -413,6 +431,7 @@ void MainWindow::openPaths(const QStringList &paths) {
         searchDialog_ = nullptr;
     }
     ++treeGeneration_;
+    expandedNodes_.clear();
     model_->clear();
     filter_->clear();
     results_->setRowCount(0);
@@ -443,6 +462,7 @@ void MainWindow::openPaths(const QStringList &paths) {
 }
 void MainWindow::populate(const QStringList &classes) {
     const int generation = ++treeGeneration_;
+    expandedNodes_.clear();
     model_->clear();
     projectNodes();
     struct State {
@@ -652,7 +672,6 @@ void MainWindow::find(bool backwards) {
 void MainWindow::updateBusy() {
     const bool busy = backend_.busy();
     openAction_->setEnabled(!busy);
-    engineAction_->setEnabled(!busy && !backend_.preparing());
     settingsAction_->setEnabled(!busy && !backend_.preparing());
     exportAction_->setEnabled(!busy && !backend_.input().isEmpty());
     stopAction_->setEnabled(busy || backend_.preparing());
@@ -783,6 +802,7 @@ void MainWindow::dropEvent(QDropEvent *event) {
 }
 void MainWindow::closeEvent(QCloseEvent *event) {
     QSettings().setValue("geometry", saveGeometry());
+    QSettings().setValue("windowState", saveState());
     backend_.cancel();
     event->accept();
 }
@@ -825,4 +845,47 @@ SourceDocument MainWindow::present(const SourceDocument &raw, bool smali) const 
         }
     }
     return doc;
+}
+
+bool MainWindow::eventFilter(QObject *object, QEvent *event) {
+    auto focused = QApplication::focusWidget();
+    const bool codeFocus = qobject_cast<CodeEditor *>(focused) != nullptr;
+    if ((focused == tree_ || codeFocus) && event->type() == QEvent::KeyPress) {
+        auto key = static_cast<QKeyEvent *>(event);
+        for (auto action : findChildren<QAction *>()) {
+            if (action->text() != tr("查找引用") && action->text() != tr("重命名"))
+                continue;
+            if (action->shortcut() == QKeySequence(key->keyCombination())) {
+                action->trigger();
+                return true;
+            }
+        }
+    }
+    return QMainWindow::eventFilter(object, event);
+}
+void MainWindow::filterTree(const QString &text) {
+    auto current = QPersistentModelIndex(proxy_->mapToSource(tree_->currentIndex()));
+    QList<QPersistentModelIndex> previous;
+    for (auto at = tree_->currentIndex(); at.isValid(); at = tree_->indexAbove(at))
+        previous.append(proxy_->mapToSource(at));
+    filtering_ = true;
+    proxy_->setFilterFixedString(text);
+    for (const auto &source : expandedNodes_)
+        if (source.isValid()) {
+            auto mapped = proxy_->mapFromSource(source);
+            if (mapped.isValid())
+                tree_->expand(mapped);
+        }
+    auto selected = proxy_->mapFromSource(current);
+    if (!selected.isValid()) {
+        for (const auto &source : previous) {
+            selected = proxy_->mapFromSource(source);
+            if (selected.isValid())
+                break;
+        }
+    }
+    if (!selected.isValid())
+        selected = proxy_->index(0, 0);
+    tree_->setCurrentIndex(selected);
+    filtering_ = false;
 }

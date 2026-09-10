@@ -9,6 +9,7 @@ class McpServer : public QObject {
     Q_OBJECT
   public:
     McpServer(MainWindow *window, QObject *parent = nullptr);
+    ~McpServer() override { stop(); }
     bool start(QString *error = nullptr);
     void stop();
     QString endpoint() const { return endpoint_; }
@@ -20,7 +21,7 @@ class McpServer : public QObject {
     void dispatch(QLocalSocket *socket, const QJsonObject &request);
     MainWindow *window_;
     QLocalServer server_;
-    QString endpoint_, httpToken_;
+    QString endpoint_;
     QTcpServer http_;
     void acceptHttp();
 };
