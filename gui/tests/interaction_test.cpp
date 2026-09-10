@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "hookcode.h"
 #include "referencesdialog.h"
 #include "resources.h"
 #include "searchdialog.h"
@@ -7,6 +8,19 @@
 class InteractionTest : public QObject {
     Q_OBJECT
   private slots:
+    void hookTemplates() {
+        const QString id = "Ldemo/Outer$Inner;->call(I[Ljava/lang/String;[[I)Ljava/lang/Object;";
+        const auto frida = HookCode::generate(id, false);
+        QVERIFY(frida.contains("Java.use(\"demo.Outer$Inner\")"));
+        QVERIFY(frida.contains(".overload(\"int\", \"[Ljava.lang.String;\", \"[[I\")"));
+        QVERIFY(frida.contains("method.call(this, arg0, arg1, arg2)"));
+        const auto xposed = HookCode::generate(id, true);
+        QVERIFY(xposed.contains("findAndHookMethod(\"demo.Outer$Inner\", classLoader, \"call\", int.class"));
+        QVERIFY(HookCode::generate("Ldemo/Test;-><init>()V", false).contains("[\"$init\"].overload()"));
+        QVERIFY(HookCode::generate("Ldemo/Test;-><init>()V", true).contains("classLoader, new XC_MethodHook"));
+        QVERIFY(HookCode::generate("Ldemo/Test;-><clinit>()V", true).isEmpty());
+        QVERIFY(HookCode::generate("Ldemo/Test;->bad([)V", false).isEmpty());
+    }
     void initTestCase() {
         QCoreApplication::setOrganizationName("GarlicTests");
         QCoreApplication::setApplicationName("InteractionTest");

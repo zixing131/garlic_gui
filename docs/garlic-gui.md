@@ -109,6 +109,20 @@ APK 和生成的源码，不会修改、重打包或签名原 APK。
 存在其他显式入边、异常处理或不能证明状态值的路径保持原样。它不处理 native OLLVM、
 JVM 调度器、加密状态或多指令状态计算，也不会修改原始 APK。设置持久保存，修改后源码缓存失效。
 CLI 可用 `GARLIC_UNFLATTEN=1` 启用，默认关闭。
+
+“反混淆”同时启用静态常量处理（CLI：`GARLIC_DEOBFUSCATE=1`）。参考
+[D810 的表达式化简思路](https://www.eshard.com/blog/d810-deobfuscation-ida-pro)，独立实现
+32 位整数加减乘除、取余、位运算和移位折叠，以及仅针对局部整数读取的 `x ^ x` / `x - x` 化简。
+遵循 Java 溢出与移位规则，除零保持原样；不执行目标方法、不加载目标类，不做浮点或未知调用推测。
+静态字符串支持 ASCII 字符数组构造、substring、concat、replace 的嵌套组合。
+还原结果以 `/* decoded: "…" */` 显示，保留原表达式和对象身份，避免影响 `==` 或异常行为。
+未知自定义加密算法、运行时密钥、非 ASCII 索引语义及解密循环尚不支持；不能保证自动还原任意混淆字符串。
+分析有递归深度、节点/字节预算和 64 KiB 字符串上限。
+
+方法的代码区和类树右键菜单提供“复制为 Frida Hook”与“复制为 Xposed Hook”。模板按
+原始 JVM/DEX 签名生成，支持重载、构造函数、内部类和数组；不会使用显示别名。
+Frida 调用保存的 overload，Xposed 模板放入模块的 `handleLoadPackage` 并使用其 classLoader。
+静态初始化器不生成模板。此功能只复制文本，不注入或执行 Hook。
 测试用 `fixtures/Flattened.smali` 及其已组装的 `flattened.dex`（smali 3.0.9）覆盖循环、
 负数稀疏键、默认分支和未知状态；CI 重新编译输出 Java 并执行返回值断言。
 

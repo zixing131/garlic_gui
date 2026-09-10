@@ -424,6 +424,7 @@ typedef enum {
 } jd_expression_state;
 
 struct jd_exp {
+    string              folded_string; // Proven static content; keep original object identity.
     u4                  idx;
     jd_ins              *ins;
     jd_expression_type  type;
@@ -645,6 +646,7 @@ typedef struct {
     jd_exp_list *list;
 
     string          class_name;
+    jd_ins          *constructor;
 } jd_exp_initialize;
 
 typedef struct {

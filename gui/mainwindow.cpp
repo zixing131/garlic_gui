@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "hookcode.h"
 #include "callgraphdialog.h"
 #include "mcpserver.h"
 #include "memoryusage.h"
@@ -399,6 +400,12 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
                                         tr("查看函数调用图  G"), this,
                                         [this, id] { showCallGraph(id); });
             graph->setShortcutVisibleInContextMenu(false);
+            for (bool xposed : {false, true}) {
+                const auto snippet = HookCode::generate(id, xposed);
+                auto action = menu.addAction(xposed ? tr("复制为 Xposed Hook") : tr("复制为 Frida Hook"),
+                                            this, [snippet] { QApplication::clipboard()->setText(snippet); });
+                action->setEnabled(!snippet.isEmpty());
+            }
         }
         menu.addAction(tr("重命名…"), this, [this, id] { renameSymbol(id); });
         menu.exec(tree_->viewport()->mapToGlobal(pos));

@@ -52,6 +52,7 @@ static bool identify_initialize_of_assignment(jd_method *m, jd_exp *exp, int i)
         initialize->list = make_obj(jd_exp_list);
         initialize->list->len = invoke->list->len - 1;
         initialize->class_name = left_var->cname;
+        initialize->constructor = invoke_ins;
         if (initialize->list->len > 0) {
             size_t size = sizeof(jd_exp) * initialize->list->len;
             initialize->list->args = x_alloc(size);
@@ -118,6 +119,7 @@ static bool identify_initialize_of_store(jd_method *m, jd_exp *exp, int i)
         initialize->list->len = invoke->list->len - 1;
 //        string _name = class_simple_name(left_val->data->cname);
         initialize->class_name = left_val->data->cname;
+        initialize->constructor = invoke_ins;
 //        initialize->desc = left_val->data->desc;
         if (initialize->list->len > 0) {
             size_t size = sizeof(jd_exp) * initialize->list->len;

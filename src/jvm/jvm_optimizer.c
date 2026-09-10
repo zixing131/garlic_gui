@@ -1,4 +1,5 @@
 #include "decompiler/method.h"
+#include "decompiler/constant_fold.h"
 #include "common/str_tools.h"
 #include "jvm/jvm_ins.h"
 #include "decompiler/expression.h"
@@ -87,6 +88,7 @@ void optimize_jvm_method(jd_method *m)
     inline_variables_round2(m);
 
     identify_assignment(m);
+    fold_method_constants(m);
 
     identify_loop(m);
 
@@ -112,5 +114,4 @@ void optimize_jvm_method(jd_method *m)
 
     optimize_exception_block(m);
 }
-
 

@@ -149,8 +149,9 @@ void MainWindow::settingsDialog() {
     excluded->setMaximumHeight(100);
     decompile->addRow(tr("排除的包"), excluded);
     auto background = check(decompile, tr("打开文件后自动后台生成项目源码"), settings.background);
-    auto deobfuscate = check(decompile, tr("反混淆（为短名称或非法名称的类、字段生成可读别名）"), settings.deobfuscate);
+    auto deobfuscate = check(decompile, tr("反混淆（名称、整数常量和静态字符串）"), settings.deobfuscate);
     deobfuscate->setObjectName("deobfuscate");
+    deobfuscate->setToolTip(tr("静态计算确定的 32 位整数表达式；ASCII 字符数组及 substring、concat、replace 的还原结果以 decoded 注释显示。不会执行目标解密函数。"));
     auto controlFlow = check(decompile, tr("控制流整理（DEX 跳转链和共享代码块）"), settings.simplifyControlFlow);
     controlFlow->setObjectName("simplifyControlFlow");
     auto unflatten = check(decompile, tr("反控制流平坦化（DEX 常量状态 switch 调度器）"), settings.unflatten);

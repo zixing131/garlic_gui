@@ -1,4 +1,7 @@
 #include "codeeditor.h"
+#include "hookcode.h"
+#include <QApplication>
+#include <QClipboard>
 #include "nodeicons.h"
 #include <QContextMenuEvent>
 #include <QFontDatabase>
@@ -287,6 +290,12 @@ void CodeEditor::contextMenuEvent(QContextMenuEvent *event) {
     go->setEnabled(known);
     refs->setEnabled(known);
     graph->setEnabled(method);
+    for (bool xposed : {false, true}) {
+        const auto snippet = HookCode::generate(symbol, xposed);
+        auto action = menu->addAction(xposed ? tr("复制为 Xposed Hook") : tr("复制为 Frida Hook"),
+                                     this, [snippet] { QApplication::clipboard()->setText(snippet); });
+        action->setEnabled(!snippet.isEmpty());
+    }
     rename->setEnabled(known);
     menu->exec(event->globalPos());
     delete menu;

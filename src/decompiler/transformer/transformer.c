@@ -287,6 +287,15 @@ static void expression_to_stream_impl(FILE *stream, jd_node *node, jd_exp *expre
 }
 void expression_to_stream(FILE *stream, jd_node *node, jd_exp *expression)
 {
+    if (expression->folded_string) {
+        fputs("/* decoded: \"", stream);
+        for (const unsigned char *s = (const unsigned char *)expression->folded_string; *s; ++s) {
+            if (*s < 32 || *s > 126 || *s == '*' || *s == '\\' || *s == '"')
+                fprintf(stream, "\\x%02x", *s);
+            else fputc(*s, stream);
+        }
+        fputs("\" */ ", stream);
+    }
     long start=getenv("GARLIC_SOURCE_MAP_DIR")?ftell(stream):-1;
     expression_to_stream_impl(stream,node,expression);
     source_map_expression(stream,start,expression);

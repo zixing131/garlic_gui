@@ -1,5 +1,12 @@
 .class public Ldemo/Flattened;
 .super Ljava/lang/Object;
+.method public static literal()I
+    .registers 2
+    const v0, 2147483647
+    add-int/lit8 v1, v0, 2
+    xor-int/lit8 v0, v1, 77
+    return v0
+.end method
 
 .method public static run()I
     .registers 2
