@@ -9,6 +9,7 @@ struct AppSettings {
     int mcpPort = 8650;
     QString mcpTransport = "stdio", mcpHost = "127.0.0.1", cacheMode = "disk";
     bool showMemory = false;
+    bool deobfuscate = false, simplifyControlFlow = false;
     QStringList excluded;
     QString theme = "dark";
     QJsonObject toJson() const;

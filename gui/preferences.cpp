@@ -149,6 +149,13 @@ void MainWindow::settingsDialog() {
     excluded->setMaximumHeight(100);
     decompile->addRow(tr("排除的包"), excluded);
     auto background = check(decompile, tr("打开文件后自动后台生成项目源码"), settings.background);
+    auto deobfuscate = check(decompile, tr("反混淆（为短名称或非法名称的类、字段生成可读别名）"), settings.deobfuscate);
+    deobfuscate->setObjectName("deobfuscate");
+    auto controlFlow = check(decompile, tr("控制流整理（DEX 跳转链和共享代码块）"), settings.simplifyControlFlow);
+    controlFlow->setObjectName("simplifyControlFlow");
+    auto unflatten = check(decompile, tr("反平坦化（当前引擎尚不支持状态机恢复）"), false);
+    unflatten->setEnabled(false);
+    decompile->addRow(new QLabel(tr("反混淆选项在重新打开文件后生效；生成别名不会恢复原始名称。")));
     auto unicode =
         check(decompile, tr("Unicode 字符转义（保留正常中文可不勾选）"), settings.escapeUnicode);
     auto metadata = check(decompile, tr("显示 Kotlin Metadata 注解"), settings.showMetadata);
@@ -329,6 +336,8 @@ void MainWindow::settingsDialog() {
                 font->setValue(defaults.fontSize);
                 excluded->clear();
                 background->setChecked(false);
+                deobfuscate->setChecked(false);
+                controlFlow->setChecked(false);
                 unicode->setChecked(false);
                 metadata->setChecked(true);
                 notice->setChecked(true);
@@ -353,6 +362,8 @@ void MainWindow::settingsDialog() {
     settings.fontSize = font->value();
     settings.excluded = excluded->toPlainText().split('\n', Qt::SkipEmptyParts);
     settings.background = background->isChecked();
+    settings.deobfuscate = deobfuscate->isChecked();
+    settings.simplifyControlFlow = controlFlow->isChecked();
     settings.escapeUnicode = unicode->isChecked();
     settings.showMetadata = metadata->isChecked();
     settings.showNotice = notice->isChecked();
@@ -368,5 +379,6 @@ void MainWindow::settingsDialog() {
     }
     settings.save();
     applySettings(settings);
-    refreshAliases();
+    if (!backend_.input().isEmpty())
+        refreshAliases();
 }

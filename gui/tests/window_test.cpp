@@ -8,6 +8,34 @@
 class WindowTest : public QObject {
     Q_OBJECT
   private slots:
+    void savePreferencesWithoutInput() {
+        MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
+        auto tree = window.findChild<QTreeView *>("classTree");
+        QCOMPARE(tree->model()->rowCount(), 0);
+        bool saved = false;
+        QTimer::singleShot(50, &window, [&] {
+            auto dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+            if (!dialog) return;
+            saved = true;
+            dialog->accept();
+        });
+        window.findChild<QAction *>("settings")->trigger();
+        QVERIFY(saved);
+        QCOMPARE(tree->model()->rowCount(), 0);
+    }
+    void deobfuscationSettingsAndAliases() {
+        AppSettings settings;
+        settings.deobfuscate = settings.simplifyControlFlow = true;
+        const auto restored = AppSettings::fromJson(settings.toJson());
+        QVERIFY(restored.deobfuscate && restored.simplifyControlFlow);
+        Project project;
+        project.addClass(QJsonObject{{"name", "demo/a"}, {"kind", "class"}});
+        project.deobfuscateNames();
+        QVERIFY(project.alias("Ldemo/a;").startsWith("Class_"));
+        const auto aliases = project.aliases();
+        project.deobfuscateNames();
+        QCOMPARE(project.aliases(), aliases);
+    }
     void toolbarIconsMatchActions() {
         MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
         const QHash<QString, QString> expected{

@@ -37,6 +37,7 @@ class Project : public QObject {
     QString symbolName(const QString &id) const;
     QString alias(const QString &id) const { return aliases_.value(id); }
     QString rename(const QString &id, const QString &newName);
+    void deobfuscateNames();
     void undoRename();
     bool canUndo() const { return !undo_.isEmpty(); }
     QJsonObject aliases() const;

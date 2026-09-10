@@ -496,12 +496,14 @@ void Backend::applyEnvironment(QProcess &process, const QString &directory) {
     auto env = QProcessEnvironment::systemEnvironment();
     env.insert("GARLIC_SOURCE_MAP_DIR", directory);
     env.insert("GARLIC_ESCAPE_UNICODE", settings_.escapeUnicode ? "1" : "0");
+    env.insert("GARLIC_SIMPLIFY_CONTROL_FLOW", settings_.simplifyControlFlow ? "1" : "0");
     env.insert("GARLIC_EXCLUDED_PACKAGES", settings_.excluded.join(';').replace('.', '/'));
     process.setProcessEnvironment(env);
 }
 void Backend::configure(const AppSettings &settings) {
     const bool engineChange = settings_.escapeUnicode != settings.escapeUnicode ||
                               settings_.excluded != settings.excluded ||
+                              settings_.simplifyControlFlow != settings.simplifyControlFlow ||
                               settings_.cacheMode != settings.cacheMode;
     settings_ = settings;
     if (engineChange && !busy() && !preparing_)
@@ -783,7 +785,8 @@ void Backend::readIndex() {
     auto project = project_.snapshot();
     indexCanceled_ = std::make_shared<std::atomic_bool>(false);
     const auto canceled = indexCanceled_;
-    watcher->setFuture(QtConcurrent::run([workspace, input, project, canceled, producer] {
+    const bool deobfuscate = settings_.deobfuscate;
+    watcher->setFuture(QtConcurrent::run([workspace, input, project, canceled, producer, deobfuscate] {
         QFile file(workspace->path() + "/classes.jsonl");
         while (!file.open(QIODevice::ReadOnly)) {
             if (canceled->load() || producer->load() != 0)
@@ -831,6 +834,8 @@ void Backend::readIndex() {
         }
         if (project->classes().isEmpty())
             return IndexResult{{}, QStringLiteral("无类被加载，没有什么可以反编译。")};
+        if (deobfuscate)
+            project->deobfuscateNames();
         return IndexResult{project, {}};
     }));
 }

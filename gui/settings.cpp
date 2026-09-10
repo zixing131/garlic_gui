@@ -18,6 +18,8 @@ QJsonObject AppSettings::toJson() const {
             {"mcpHost", mcpHost},
             {"cacheMode", cacheMode},
             {"showMemory", showMemory},
+            {"deobfuscate", deobfuscate},
+            {"simplifyControlFlow", simplifyControlFlow},
             {"excluded", QJsonArray::fromStringList(excluded)},
             {"theme", theme}};
 }
@@ -38,6 +40,8 @@ AppSettings AppSettings::fromJson(const QJsonObject &j) {
     s.mcpHost = j.value("mcpHost").toString("127.0.0.1").trimmed();
     s.cacheMode = j.value("cacheMode").toString() == "memory" ? "memory" : "disk";
     s.showMemory = j.value("showMemory").toBool(false);
+    s.deobfuscate = j.value("deobfuscate").toBool(false);
+    s.simplifyControlFlow = j.value("simplifyControlFlow").toBool(false);
     s.mcpEnabled = j.value("mcpEnabled").toBool(s.mcpEnabled);
     for (const auto &v : j.value("excluded").toArray()) {
         const auto p = v.toString().trimmed();
