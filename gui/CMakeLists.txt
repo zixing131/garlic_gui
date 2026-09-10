@@ -58,6 +58,10 @@ if(GARLIC_GUI_TESTS)
     target_link_libraries(garlic-gui-mcp-tests PRIVATE garlic-gui-core Qt6::Test)
     add_test(NAME garlic-gui-mcp COMMAND garlic-gui-mcp-tests)
     set_tests_properties(garlic-gui-mcp PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;GARLIC_TEST_ENGINE=$<TARGET_FILE:garlic>;GARLIC_TEST_FIXTURES=${CMAKE_BINARY_DIR}/fixtures;GARLIC_TEST_GUI=$<TARGET_FILE:garlic-gui>")
+    # Preserve QtTest stdout/stderr on Windows so CTest reports failing assertions.
+    set_target_properties(garlic-gui-tests garlic-gui-window-tests garlic-gui-project-tests
+        garlic-gui-interaction-tests garlic-gui-mcp-tests garlic-gui-fake-engine
+        PROPERTIES WIN32_EXECUTABLE FALSE)
     add_test(NAME garlic-gui-window COMMAND garlic-gui-window-tests)
     set_tests_properties(garlic-gui-window PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;GARLIC_TEST_ENGINE=$<TARGET_FILE:garlic>;GARLIC_TEST_FIXTURES=${CMAKE_BINARY_DIR}/fixtures")
     add_test(NAME garlic-gui-backend COMMAND garlic-gui-tests)

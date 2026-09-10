@@ -34,6 +34,10 @@ class InteractionTest : public QObject {
         QCOMPARE(tree->model()->index(2, 0, root).data().toString(), QString("资源文件"));
         auto info = Resources::inspect(qEnvironmentVariable("GARLIC_TEST_FIXTURES") + "/demo.jar");
         QVERIFY(!info.value("entries").toArray().isEmpty());
+        QTemporaryDir unicodeArchive;
+        const auto unicodePath = unicodeArchive.path()+"/中文 resources.jar";
+        QVERIFY(QFile::copy(qEnvironmentVariable("GARLIC_TEST_FIXTURES")+"/demo.jar", unicodePath));
+        QVERIFY(!Resources::inspect(unicodePath).value("entries").toArray().isEmpty());
         QString error;
         auto bytes = Resources::read(qEnvironmentVariable("GARLIC_TEST_FIXTURES") + "/demo.jar",
                                      "demo/Main.class", 1, &error);

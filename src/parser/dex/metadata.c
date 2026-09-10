@@ -870,7 +870,8 @@ static void parse_dex_class_defs(jd_meta_dex *dex)
 
 static jd_meta_dex* init_dex_content(mem_pool *pool, string path)
 {
-    FILE *file = fopen(path, "r");
+    FILE *file = fopen(path, "rb");
+    if (!file) { perror(path); exit(EXIT_FAILURE); }
     fseek(file, 0, SEEK_END);
     size_t file_size = ftell(file);
     fseek(file, 0, SEEK_SET);
@@ -880,7 +881,11 @@ static jd_meta_dex* init_dex_content(mem_pool *pool, string path)
     dex->bin->buffer_size = file_size;
     dex->bin->buffer = x_alloc_in(pool, file_size);
     dex->bin->cur_off = 0;
-    fread(dex->bin->buffer, 1, file_size, file);
+    if (fread(dex->bin->buffer, 1, file_size, file) != file_size) {
+        fprintf(stderr, "[garlic] Failed to read binary input: %s\n", path);
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
 //    dalvik->buffer_size = file_size;
 //    dalvik->buffer = x_alloc_in(pool, file_size);
 //    fread(dalvik->buffer, 1, file_size, file);

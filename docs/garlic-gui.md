@@ -250,3 +250,5 @@ GARLIC_TEST_REAL_APK=/path/to/app.apk ctest --test-dir build -R interaction --ou
 合成 Lambda Java 反编译及事件循环响应测试。发布矩阵包含 macOS、Windows、Linux 各自的 arm64 / x64。
 Windows 显式链接 winpthread；Windows ARM64 使用 Temurin 21；Qt 6.8 Linux x64 使用 linux_gcc_64；
 Linux 打包仅对 ELF 文件运行 ldd。`gui-v*` 标签在六个平台都成功后发布 ZIP 和 SHA256SUMS。
+
+独立 CLASS / DEX / PE 以 `rb` 读取并检查短读，避免 Windows 文本模式的 CRLF / Ctrl-Z 转换破坏输入。

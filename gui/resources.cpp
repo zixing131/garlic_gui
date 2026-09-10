@@ -95,7 +95,7 @@ QString value(quint8 type, quint32 n, const QStringList &strings) {
 struct Archive {
     zip_t *z = nullptr;
     explicit Archive(const QString &path)
-        : z(zip_open(QFile::encodeName(path).constData(), 0, 'r')) {}
+        : z(zip_open(path.toUtf8().constData(), 0, 'r')) {}
     ~Archive() {
         if (z)
             zip_close(z);

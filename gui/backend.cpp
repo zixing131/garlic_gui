@@ -346,7 +346,7 @@ void Backend::finish(int code, QProcess::ExitStatus status) {
             total -= QFileInfo(old).size();
             QFile::remove(old);
             QString map = old;
-            map.chop(5);
+            map.chop(key.endsWith(":smali") ? 6 : 5);
             QFile::remove(map + ".map.json");
         }
         emit sourceReady(currentName_, smali_, path);

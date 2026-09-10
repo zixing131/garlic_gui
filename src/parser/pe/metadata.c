@@ -10,7 +10,8 @@
 
 static pe_dos_header* init_pe_content(mem_pool *pool, string path)
 {
-    FILE *file = fopen(path, "r");
+    FILE *file = fopen(path, "rb");
+    if (!file) { perror(path); exit(EXIT_FAILURE); }
     fseek(file, 0, SEEK_END);
     size_t file_size = ftell(file);
     fseek(file, 0, SEEK_SET);
@@ -21,7 +22,11 @@ static pe_dos_header* init_pe_content(mem_pool *pool, string path)
     pe->bin->buffer_size = file_size;
     pe->bin->buffer = x_alloc_in(pool, file_size);
     pe->bin->cur_off = 0;
-    fread(pe->bin->buffer, 1, file_size, file);
+    if (fread(pe->bin->buffer, 1, file_size, file) != file_size) {
+        fprintf(stderr, "[garlic] Failed to read binary input: %s\n", path);
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
     fclose(file);
     return pe;
 }

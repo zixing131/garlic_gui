@@ -27,7 +27,8 @@ jsource_file* init_java_source_file(jclass_file *jc)
 
 void init_java_class_content(jclass_file *jc, const char *path)
 {
-    FILE *file = fopen(path, "r");
+    FILE *file = fopen(path, "rb");
+    if (!file) { perror(path); exit(EXIT_FAILURE); }
     fseek(file, 0, SEEK_END);
     size_t file_size = ftell(file);
     fseek(file, 0, SEEK_SET);
@@ -35,7 +36,11 @@ void init_java_class_content(jclass_file *jc, const char *path)
     bin->buffer_size = file_size;
     bin->buffer = x_alloc(file_size);
     bin->cur_off = 0;
-    fread(bin->buffer, 1, file_size, file);
+    if (fread(bin->buffer, 1, file_size, file) != file_size) {
+        fprintf(stderr, "[garlic] Failed to read binary input: %s\n", path);
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
     jc->bin = bin;
     fclose(file);
 }
