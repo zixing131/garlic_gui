@@ -76,6 +76,18 @@ class McpTest : public QObject {
         auto json = QJsonDocument::fromJson(reply->readAll()).object();
         QVERIFY(json.value("result").toObject().contains("serverInfo"));
         reply->deleteLater();
+        auto futureBody = body;
+        futureBody.replace("2025-03-26", "9999-01-01");
+        auto negotiated = manager.post(request, futureBody);
+        QTRY_VERIFY_WITH_TIMEOUT(negotiated->isFinished(), 5000);
+        QCOMPARE(QJsonDocument::fromJson(negotiated->readAll()).object().value("result").toObject().value("protocolVersion").toString(), QString("2025-06-18"));
+        negotiated->deleteLater();
+        request.setRawHeader("MCP-Protocol-Version", "2025-06-18");
+        auto tools = manager.post(request, R"({"jsonrpc":"2.0","id":2,"method":"tools/list"})");
+        QTRY_VERIFY_WITH_TIMEOUT(tools->isFinished(), 5000);
+        QCOMPARE(tools->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(), 200);
+        QVERIFY(!QJsonDocument::fromJson(tools->readAll()).object().value("result").toObject().value("tools").toArray().isEmpty());
+        tools->deleteLater();
         request.setRawHeader("Origin", "https://untrusted.example");
         auto origin = manager.post(request, body);
         QTRY_VERIFY_WITH_TIMEOUT(origin->isFinished(), 5000);

@@ -251,7 +251,7 @@ void McpServer::dispatch(QLocalSocket *socket, const QJsonObject &request) {
             QJsonObject{{"protocolVersion",
                          QStringList{"2024-11-05", "2025-03-26", "2025-06-18"}.contains(version)
                              ? version
-                             : "2024-11-05"},
+                             : "2025-06-18"},
                         {"capabilities", QJsonObject{{"tools", QJsonObject{}}}},
                         {"serverInfo", QJsonObject{{"name", "garlic-gui"}, {"version", "0.4.0"}}}});
         return;
