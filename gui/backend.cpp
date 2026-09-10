@@ -59,6 +59,7 @@ Backend::Backend(QObject *parent)
 }
 
 Backend::~Backend() {
+    if (indexCanceled_) indexCanceled_->store(true);
     if (exportControl_)
         exportControl_->canceled = true;
     cancelSearch();
@@ -233,6 +234,7 @@ void Backend::exportSources(const QString &directory, bool smali) {
 }
 
 void Backend::cancel() {
+    if (indexCanceled_) indexCanceled_->store(true);
     if (exportControl_)
         exportControl_->canceled = true;
     if (postprocessing_) {
@@ -307,8 +309,7 @@ void Backend::finish(int code, QProcess::ExitStatus status) {
                 emit failed(result.second);
                 return;
             }
-            for (const auto &name : result.first->classes())
-                project_.addClass(result.first->info(name));
+            project_.replaceData(*result.first);
             if (!indexQueue_.isEmpty()) {
                 nextIndex();
                 return;
@@ -321,14 +322,25 @@ void Backend::finish(int code, QProcess::ExitStatus status) {
             if (settings_.background)
                 QTimer::singleShot(0, this, &Backend::prepareSources);
         });
-        watcher->setFuture(QtConcurrent::run([workspace, input] {
-            auto project = std::make_shared<Project>();
-            project->reset(input);
+        auto project = project_.snapshot();
+        indexCanceled_ = std::make_shared<std::atomic_bool>(false);
+        const auto canceled = indexCanceled_;
+        watcher->setFuture(QtConcurrent::run([workspace, input, project, canceled] {
             QFile file(workspace->path() + "/classes.jsonl");
-            if (!file.open(QIODevice::ReadOnly) || file.size() > 256 * 1024 * 1024)
-                return IndexResult{{}, QStringLiteral("无法读取类索引（最大 256 MiB）。")};
+            if (!file.open(QIODevice::ReadOnly))
+                return IndexResult{{}, QObject::tr("无法打开类索引：%1").arg(file.errorString())};
+            qint64 lineNumber = 0;
             while (!file.atEnd()) {
-                auto object = QJsonDocument::fromJson(file.readLine()).object();
+                if (canceled->load()) return IndexResult{{}, QObject::tr("索引读取已取消。")};
+                const auto line = file.readLine();
+                ++lineNumber;
+                if (file.error() != QFileDevice::NoError)
+                    return IndexResult{{}, QObject::tr("类索引读取失败（第 %1 行）：%2").arg(lineNumber).arg(file.errorString())};
+                QJsonParseError error;
+                const auto document = QJsonDocument::fromJson(line, &error);
+                if (error.error != QJsonParseError::NoError || !document.isObject())
+                    return IndexResult{{}, QObject::tr("类索引格式错误（第 %1 行）：%2").arg(lineNumber).arg(error.errorString())};
+                auto object = document.object();
                 if (!Backend::safeClassName(object.value("name").toString()))
                     return IndexResult{{}, QStringLiteral("引擎返回了无效的类索引。")};
                 object["input"] = input;

@@ -277,7 +277,7 @@ void McpServer::dispatch(QLocalSocket *socket, const QJsonObject &request) {
                              ? version
                              : "2025-06-18"},
                         {"capabilities", QJsonObject{{"tools", QJsonObject{}}}},
-                        {"serverInfo", QJsonObject{{"name", "garlic-gui"}, {"version", "0.5.0"}}}});
+                        {"serverInfo", QJsonObject{{"name", "garlic-gui"}, {"version", "0.5.1"}}}});
         return;
     }
     if (method == "ping") {

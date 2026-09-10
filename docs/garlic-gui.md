@@ -1,4 +1,4 @@
-# Garlic GUI 0.5（C++ / Qt 6）
+# Garlic GUI 0.5.1（C++ / Qt 6）
 
 原生桌面浏览器，使用本项目的 garlic C 引擎。Qt 界面通过 `QProcess` 调用引擎，
 先建立类型、成员和引用索引，点击类时生成 Java / Smali。索引读取 CLASS / DEX
@@ -272,3 +272,11 @@ Linux 打包仅对 ELF 文件运行 ldd。`gui-v*` 标签在六个平台都成�
 - 总览增加输入、代码来源、原生库 ABI、指令单位、缓存 / 生成进度和已观察到的错误警告。
   签名页增加 v1 证书、版本、序列号、有效期、RSA 模数和指数、算法 OID、三种指纹以及未被 v1 清单覆盖的文件。
   签名页仍是解析结果，未进行完整的 APK 密码学签名验证，不宣称“验证成功”。
+
+## 0.5.1 大索引与 Windows 路径修复
+
+- 取消整份类索引的 256 MiB 限制，后台按 JSONL 记录读取及合并，支持取消。文件读取错误与 JSON 格式错误分别报告，格式错误附行号。
+- 本机 `base.apk` 的 660.5 MiB 索引、52,791 个类验证成功，索引生成与加载合计约 10.4 秒；内存使用仍随类和引用数量增长。
+- Windows 引擎内嵌 UTF-8 活动代码页 manifest，统一 CRT 参数、文件路径、环境变量与 miniz 路径编码；不要求修改系统语言。适用于 Windows 10 1903+ / Windows 11。
+  实现依据 [Microsoft UTF-8 活动代码页文档](https://learn.microsoft.com/en-us/windows/apps/design/globalizing/use-utf8-code-page)。
+- 创建目录不再截断为 256 字节，保留中文路径完整 UTF-8 字节。所有平台的 CLI 测试覆盖中文输入、索引、输出、映射目录和超过 256 字节的完整路径；同时验证 257 MiB 索引与损坏索引拒绝。

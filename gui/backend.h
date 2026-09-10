@@ -81,6 +81,7 @@ class Backend : public QObject {
     QString engine_, input_, currentName_, jobDir_, exportDir_;
     QString errorTail_;
     std::shared_ptr<QTemporaryDir> workspace_;
+    std::shared_ptr<std::atomic_bool> indexCanceled_;
     bool indexing_ = false, postprocessing_ = false, clearing_ = false;
     std::shared_ptr<SearchControl> exportControl_;
     int projectGeneration_ = 0;

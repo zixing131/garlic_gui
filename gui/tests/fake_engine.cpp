@@ -12,7 +12,16 @@ int main(int argc, char **argv) {
     if (index > 0) {
         QFile file(args.value(index + 1));
         if (!file.open(QIODevice::WriteOnly)) return 2;
-        file.write("{\"name\":\"../outside\"}\n");
+        if (args.value(1).contains("large-index")) {
+            const QByteArray padding(1024 * 1024, ' ');
+            for (int i = 0; i < 257; ++i) {
+                file.write("{\"name\":\"demo/Class" + QByteArray::number(i) + "\"}");
+                file.write(padding);
+                file.write("\n");
+            }
+        } else if (args.value(1).contains("truncated-index")) {
+            file.write("{\"name\":\"demo/Valid\"}\n{\"name\":");
+        } else file.write("{\"name\":\"../outside\"}\n");
     }
     return 0;
 }

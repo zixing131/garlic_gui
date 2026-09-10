@@ -2,6 +2,7 @@
 """Integration contract for the GUI's CLI index and single-class requests."""
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -12,15 +13,24 @@ files = [fixtures / 'demo.jar', fixtures / 'Main.class']
 files += [p for p in (fixtures / 'classes.dex', fixtures / '示例 app.apk') if p.exists()]
 with tempfile.TemporaryDirectory(prefix='garlic-cli-test-') as temp:
     root = Path(temp)
+    # Use non-ASCII input, output, index and environment paths on every runner,
+    # including Windows ARM64 where an ANSI argv previously disagreed with miniz.
+    unicode_root = root / ('中文路径 测试' * 10)
+    unicode_root.mkdir()
+    originals = list(files)
+    for source in originals:
+        destination = unicode_root / ('输入 文件' + source.suffix)
+        shutil.copyfile(source, destination)
+        files.append(destination)
     for number, source in enumerate(files):
         for threads in (1, 2):
-            target = root / f'{number}-{threads}'
+            target = unicode_root / f'输出-{number}-{threads}'
             target.mkdir()
-            index = target / 'index.jsonl'
-            out = target / 'output'
+            index = target / '索引.jsonl'
+            out = target / '源码'
             args = [str(engine), str(source), '-o', str(out), '-t', str(threads)]
             subprocess.run([*args, '-I', str(index)], check=True, capture_output=True, timeout=20)
-            names = [json.loads(line)['name'] for line in index.read_text().splitlines()]
+            names = [json.loads(line)['name'] for line in index.read_text(encoding='utf-8').splitlines()]
             assert 'demo/Main' in names, names
             if source.suffix != '.class':
                 assert 'demo/Main$Details' in names
@@ -38,7 +48,7 @@ with tempfile.TemporaryDirectory(prefix='garlic-cli-test-') as temp:
     assert bad.returncode != 0, 'Incomplete index flag must fail, never batch decompile'
     # Exercise concurrent worker startup and full export, beyond the single-class path.
     for attempt in range(12):
-        target = root / f'parallel-{attempt}'
+        target = unicode_root / f'并行-{attempt}'
         env = os.environ.copy()
         env['GARLIC_SOURCE_MAP_DIR'] = str(target)
         result = subprocess.run([str(engine), str(files[0]), '-o', str(target), '-t', '8'],
@@ -46,5 +56,5 @@ with tempfile.TemporaryDirectory(prefix='garlic-cli-test-') as temp:
         assert result.returncode == 0, result.stdout + result.stderr
         for name in ('Main', 'Extra', 'Use'):
             assert (target / f'demo/{name}.java').is_file()
-            assert json.loads((target / f'demo/{name}.map.json').read_text())
+            assert json.loads((target / f'demo/{name}.map.json').read_text(encoding='utf-8'))
 print('Index / single-class / no-match contract passed for', len(files), 'formats at 1 and 2 threads')

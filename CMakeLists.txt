@@ -189,11 +189,22 @@ endif()
 
 # -------------------------------------------------------------------------
 
+# Modern Windows runners use UCRT; keep CRT paths, argv and miniz's UTF-8
+# paths in the same encoding, independent of the user's system language.
+if(WIN32)
+    enable_language(RC)
+    configure_file(cmake/windows-utf8.rc.in ${CMAKE_BINARY_DIR}/windows-utf8.rc @ONLY)
+endif()
+
 add_executable(garlic
         ${JAVA_DEC}
         src/garlic.c
         src/rosemary/rosemary_embed.c
 )
+
+if(WIN32)
+    target_sources(garlic PRIVATE ${CMAKE_BINARY_DIR}/windows-utf8.rc)
+endif()
 
 if(ROSEMARYLIB_FILE AND EXISTS "${ROSEMARYLIB_FILE}")
     target_sources(garlic PRIVATE ${CMAKE_BINARY_DIR}/rosemarylib_data.c)
@@ -221,6 +232,9 @@ if (RELEASE)
             src/rosemary/rosemary_embed.c
     )
 
+    if(WIN32)
+        target_sources(garlic-${PLATFORM_NAME} PRIVATE ${CMAKE_BINARY_DIR}/windows-utf8.rc)
+    endif()
     if(ROSEMARYLIB_FILE AND EXISTS "${ROSEMARYLIB_FILE}")
         target_sources(garlic-${PLATFORM_NAME} PRIVATE ${CMAKE_BINARY_DIR}/rosemarylib_data.c)
     endif()

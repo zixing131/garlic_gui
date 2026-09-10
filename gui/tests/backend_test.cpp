@@ -154,6 +154,44 @@ class BackendTest : public QObject {
         backend.open(fixtures_ + "/demo.jar");
         QTRY_COMPARE_WITH_TIMEOUT(indexed.count(), 1, 15000);
     }
+    void largeAndTruncatedIndex() {
+        Backend backend;
+        backend.setEngine(qEnvironmentVariable("GARLIC_TEST_FAKE_ENGINE"));
+        QTemporaryDir files;
+        for (const auto &name : {"large-index.jar", "truncated-index.jar"}) {
+            QFile file(files.filePath(name));
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            file.write("test");
+        }
+        QSignalSpy indexed(&backend, &Backend::indexed), errors(&backend, &Backend::failed);
+        backend.open(files.filePath("large-index.jar"));
+        QTRY_VERIFY_WITH_TIMEOUT(!backend.busy(), 30000);
+        QVERIFY2(errors.isEmpty(), errors.isEmpty() ? "" : qPrintable(errors.last()[0].toString()));
+        QCOMPARE(indexed.size(), 1);
+        QCOMPARE(backend.project()->classes().size(), 257);
+        QVERIFY(QFileInfo(backend.workspacePath() + "/classes.jsonl").size() > 256LL * 1048576);
+        backend.open(files.filePath("truncated-index.jar"));
+        QTRY_COMPARE_WITH_TIMEOUT(errors.size(), 1, 5000);
+        QVERIFY(errors.last()[0].toString().contains("2"));
+        QCOMPARE(indexed.size(), 1);
+    }
+    void realLargeApk() {
+        const auto path = qEnvironmentVariable("GARLIC_TEST_LARGE_APK");
+        if (path.isEmpty()) QSKIP("Set GARLIC_TEST_LARGE_APK to validate a large real index");
+        Backend backend;
+        backend.setEngine(engine_);
+        QSignalSpy indexed(&backend, &Backend::indexed), errors(&backend, &Backend::failed);
+        QElapsedTimer elapsed;
+        elapsed.start();
+        backend.open(path);
+        QTRY_VERIFY_WITH_TIMEOUT(!backend.busy(), 120000);
+        QVERIFY2(errors.isEmpty(), errors.isEmpty() ? "" : qPrintable(errors.last()[0].toString()));
+        QCOMPARE(indexed.size(), 1);
+        QVERIFY(!backend.project()->classes().isEmpty());
+        qInfo() << "Large APK classes:" << backend.project()->classes().size()
+                << "index MiB:" << QFileInfo(backend.workspacePath() + "/classes.jsonl").size()/1048576
+                << "load ms:" << elapsed.elapsed();
+    }
     void cancelCrashAndBadIndex() {
         Backend backend;
         backend.setEngine(qEnvironmentVariable("GARLIC_TEST_FAKE_ENGINE"));
