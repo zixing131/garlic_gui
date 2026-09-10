@@ -1,5 +1,6 @@
 #include "classview.h"
 #include "mainwindow.h"
+#include "nodeicons.h"
 #include "referencesdialog.h"
 #include <QtTest>
 #include <QtWidgets>
@@ -7,6 +8,23 @@
 class WindowTest : public QObject {
     Q_OBJECT
   private slots:
+    void toolbarIconsMatchActions() {
+        MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
+        const QHash<QString, QString> expected{
+            {"openFile", "toolopenDisk"},       {"exportSources", "toolexport"},
+            {"projectSearch", "toolfind"},      {"callGraph", "methodReference"},
+            {"syncEditor", "toolsync"},         {"flatPackages", "toolpackages"},
+            {"navigateBack", "toolleft"},       {"navigateForward", "toolright"},
+            {"stopTask", "toolclose"},          {"settings", "toolsettings"},
+            {"mainActivity", "toolmainActivity"}, {"goApplication", "toolapplication"},
+            {"goManifest", "toolandroidManifest"}};
+        for (auto it = expected.cbegin(); it != expected.cend(); ++it) {
+            auto action = window.findChild<QAction *>(it.key());
+            QVERIFY2(action, qPrintable(it.key()));
+            QCOMPARE(action->icon().cacheKey(), NodeIcons::icon(it.value()).cacheKey());
+            QCOMPARE(action->toolTip(), action->text());
+        }
+    }
     void shortcutsAndFilterState() {
         QCoreApplication::setOrganizationName("GarlicTests");
         QCoreApplication::setApplicationName("WindowTest");

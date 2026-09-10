@@ -127,7 +127,8 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     toolbar->setMovable(false);
     toolbar->addAction(openAction_);
     toolbar->addAction(exportAction_);
-    toolbar->addAction(tr("项目搜索"), this, &MainWindow::searchDialog);
+    auto projectSearchAction =
+        toolbar->addAction(tr("项目搜索"), this, &MainWindow::searchDialog);
     toolbar->addAction(callGraphAction);
     toolbar->addAction(back);
     toolbar->addAction(forward);
@@ -142,28 +143,38 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     toolbar->addAction(manifestAction);
     toolbar->setToolButtonStyle(Qt::ToolButtonIconOnly);
     toolbar->setIconSize(QSize(20, 20));
-    const QStringList toolIcons{"toolopenDisk", "toolexport",      "toolfind",
-                                "toolleft",     "toolright",       "toolclose",
-                                "toolsettings", "toolapplication", "toolandroidManifest"};
-    int ti = 0;
-    for (auto action : toolbar->actions())
-        if (!action->isSeparator() && !qobject_cast<QWidgetAction *>(action)) {
-            action->setIcon(NodeIcons::icon(toolIcons.value(ti++)));
-            action->setToolTip(action->text());
-        }
     auto mainActivity = edit->addAction(tr("前往主 Activity"), this, &MainWindow::goMainActivity);
     mainActivity->setObjectName("mainActivity");
-    mainActivity->setIcon(NodeIcons::icon("toolmainActivity"));
-    mainActivity->setToolTip(mainActivity->text());
     toolbar->insertAction(applicationAction, mainActivity);
-    syncAction->setIcon(NodeIcons::icon("toolsync"));
-    flatAction->setIcon(NodeIcons::icon("toolpackages"));
-    syncAction->setToolTip(syncAction->text());
-    flatAction->setToolTip(flatAction->text());
     toolbar->insertAction(back, syncAction);
     toolbar->insertAction(back, flatAction);
+    openAction_->setObjectName("openFile");
+    exportAction_->setObjectName("exportSources");
+    projectSearchAction->setObjectName("projectSearch");
+    callGraphAction->setObjectName("callGraph");
     back->setObjectName("navigateBack");
     forward->setObjectName("navigateForward");
+    stopAction_->setObjectName("stopTask");
+    settingsAction_->setObjectName("settings");
+    applicationAction->setObjectName("goApplication");
+    manifestAction->setObjectName("goManifest");
+    const auto bindToolIcon = [](QAction *action, const QString &iconName) {
+        action->setIcon(NodeIcons::icon(iconName));
+        action->setToolTip(action->text());
+    };
+    bindToolIcon(openAction_, "toolopenDisk");
+    bindToolIcon(exportAction_, "toolexport");
+    bindToolIcon(projectSearchAction, "toolfind");
+    bindToolIcon(callGraphAction, "methodReference");
+    bindToolIcon(syncAction, "toolsync");
+    bindToolIcon(flatAction, "toolpackages");
+    bindToolIcon(back, "toolleft");
+    bindToolIcon(forward, "toolright");
+    bindToolIcon(stopAction_, "toolclose");
+    bindToolIcon(settingsAction_, "toolsettings");
+    bindToolIcon(mainActivity, "toolmainActivity");
+    bindToolIcon(applicationAction, "toolapplication");
+    bindToolIcon(manifestAction, "toolandroidManifest");
     auto central = new QWidget;
     auto layout = new QVBoxLayout(central);
     layout->setContentsMargins(0, 0, 0, 0);
