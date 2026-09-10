@@ -10,7 +10,7 @@ import tempfile
 
 engine, fixtures = Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve()
 files = [fixtures / 'demo.jar', fixtures / 'Main.class', fixtures / 'unknown.jar']
-files += [p for p in (fixtures / 'classes.dex', fixtures / '示例 app.apk') if p.exists()]
+files += [p for p in (fixtures / 'classes.dex', fixtures / '示例 app.apk', fixtures / 'nested.apks') if p.exists()]
 with tempfile.TemporaryDirectory(prefix='garlic-cli-test-') as temp:
     root = Path(temp)
     # Use non-ASCII input, output, index and environment paths on every runner,

@@ -351,62 +351,95 @@ QString decodeXml(const QByteArray &bytes) {
         return QString("XML 解析失败：%1\n").arg(e);
     }
 }
+// ResTable_config payload, excluding its uint32 size field. Keep Android qualifier order.
+QString configurationName(const QByteArray &config) {
+    auto byte = [&](int i) { return i < config.size() ? quint8(config[i]) : quint8(0); };
+    auto word = [&](int i) { return int(byte(i)) | (int(byte(i + 1)) << 8); };
+    auto locale = [&](int i, char base) {
+        auto a = byte(i), b = byte(i + 1);
+        if (!a)
+            return QString();
+        if (a & 128)
+            return QString(QChar(base + (b & 31))) +
+                   QChar(base + ((b & 224) >> 5) + ((a & 3) << 3)) + QChar(base + ((a & 124) >> 2));
+        return QString::fromLatin1(config.mid(i, 2)).remove(QChar(0));
+    };
+    auto chars = [&](int i, int count) {
+        return QString::fromLatin1(config.mid(i, count)).section(QChar(0), 0, 0);
+    };
+    QStringList q;
+    auto select = [&](int value, const QStringList &names) {
+        if (value > 0 && value < names.size() && !names[value].isEmpty())
+            q << names[value];
+    };
+    if (word(0))
+        q << QString("mcc%1").arg(word(0), 3, 10, QChar('0'));
+    if (word(2))
+        q << (word(2) == 65535 ? "mnc00" : "mnc" + QString::number(word(2)));
+    const auto language = locale(4, 'a'), region = locale(6, '0'), script = chars(32, 4),
+               variant = chars(36, 8);
+    if (!language.isEmpty() || !region.isEmpty()) {
+        if (script.isEmpty() && variant.isEmpty() && region.size() != 3) {
+            q << language;
+            if (!region.isEmpty())
+                q << "r" + region;
+        } else {
+            QString tag = "b+" + language;
+            for (const auto &part : {script, region, variant.toUpper()})
+                if (!part.isEmpty())
+                    tag += '+' + part;
+            q << tag;
+        }
+    }
+    select(byte(15) & 3, {"", "neuter", "feminine", "masculine"});
+    select((byte(24) >> 6) & 3, {"", "ldltr", "ldrtl"});
+    if (word(26))
+        q << QString("sw%1dp").arg(word(26));
+    if (word(28))
+        q << QString("w%1dp").arg(word(28));
+    if (word(30))
+        q << QString("h%1dp").arg(word(30));
+    select(byte(24) & 15, {"", "small", "normal", "large", "xlarge"});
+    select((byte(24) >> 4) & 3, {"", "notlong", "long"});
+    select(byte(44) & 3, {"", "notround", "round"});
+    select((byte(45) >> 2) & 3, {"", "lowdr", "highdr"});
+    select(byte(45) & 3, {"", "nowidecg", "widecg"});
+    select(byte(8), {"", "port", "land", "square"});
+    select(byte(25) & 15, {"", "", "desk", "car", "television", "appliance", "watch", "vrheadset"});
+    select((byte(25) >> 4) & 3, {"", "notnight", "night"});
+    const QMap<int, QString> densities{{120, "ldpi"},    {160, "mdpi"},     {213, "tvdpi"},
+                                       {240, "hdpi"},    {320, "xhdpi"},    {480, "xxhdpi"},
+                                       {640, "xxxhdpi"}, {65534, "anydpi"}, {65535, "nodpi"}};
+    if (word(10))
+        q << densities.value(word(10), QString::number(word(10)) + "dpi");
+    select(byte(9), {"", "notouch", "stylus", "finger"});
+    select(byte(14) & 3, {"", "keysexposed", "keyshidden", "keyssoft"});
+    select(byte(12), {"", "nokeys", "qwerty", "12key"});
+    select((byte(14) >> 2) & 3, {"", "navexposed", "navhidden"});
+    select(byte(13), {"", "nonav", "dpad", "trackball", "wheel"});
+    if (word(16) && word(18))
+        q << QString("%1x%2").arg(qMax(word(16), word(18))).arg(qMin(word(16), word(18)));
+    int natural = 0;
+    if ((byte(25) & 15) == 7 || (byte(45) & 15))
+        natural = 26;
+    else if (byte(44) & 3)
+        natural = 23;
+    else if (word(10) == 65534)
+        natural = 21;
+    else if (word(26) || word(28) || word(30))
+        natural = 13;
+    else if (byte(25) & 63)
+        natural = 8;
+    else if ((byte(24) & 63) || word(10))
+        natural = 4;
+    if (word(20) > 0 && word(20) >= natural)
+        q << "v" + QString::number(word(20));
+    return q.isEmpty() ? QString() : "-" + q.join('-');
+}
 // Android ResTable layout: frameworks/base/libs/androidfw/include/androidfw/ResourceTypes.h.
 QString describeTable(const QByteArray &bytes, QMap<QString, QString> *files) {
     QMap<QString, QString> generated;
     QHash<QString, QString> names;
-    auto qualifier = [](const QByteArray &config) {
-        auto byte = [&](int i) { return i < config.size() ? quint8(config[i]) : quint8(0); };
-        auto word = [&](int i) { return int(byte(i)) | (int(byte(i + 1)) << 8); };
-        QStringList q;
-        if (word(0))
-            q << QString("mcc%1").arg(word(0));
-        if (word(2))
-            q << QString("mnc%1").arg(word(2));
-        if (byte(4) && !(byte(4) & 128)) {
-            q << QString::fromLatin1(config.mid(4, 2));
-            if (byte(6))
-                q << "r" + QString::fromLatin1(config.mid(6, 2));
-        }
-        if (byte(8) == 1)
-            q << "port";
-        if (byte(8) == 2)
-            q << "land";
-        if ((byte(25) & 0x30) == 0x20)
-            q << "night";
-        if ((byte(25) & 0x30) == 0x10)
-            q << "notnight";
-        const QMap<int, QString> densities{{120, "ldpi"},    {160, "mdpi"},     {213, "tvdpi"},
-                                           {240, "hdpi"},    {320, "xhdpi"},    {480, "xxhdpi"},
-                                           {640, "xxxhdpi"}, {65534, "anydpi"}, {65535, "nodpi"}};
-        if (word(10))
-            q << densities.value(word(10), QString::number(word(10)) + "dpi");
-        if (word(26))
-            q << QString("sw%1dp").arg(word(26));
-        if (word(28))
-            q << QString("w%1dp").arg(word(28));
-        if (word(30))
-            q << QString("h%1dp").arg(word(30));
-        if (word(20))
-            q << QString("v%1").arg(word(20));
-        // Preserve configurations not represented by the common Android qualifiers.
-        QByteArray remainder = config;
-        for (int i : {0, 1, 2, 3, 8, 10, 11, 20, 21, 26, 27, 28, 29, 30, 31})
-            if (i < remainder.size())
-                remainder[i] = 0;
-        if (!(byte(4) & 128) && !(byte(6) & 128))
-            for (int i = 4; i < 8 && i < remainder.size(); i++)
-                remainder[i] = 0;
-        if (remainder.size() > 25)
-            remainder[25] = char(byte(25) & ~0x30);
-        bool extra = false;
-        for (char c : remainder)
-            if (c)
-                extra = true;
-        if (extra)
-            q << "config-" + QString::fromLatin1(remainder.toHex());
-        return q.isEmpty() ? QString() : "-" + q.join('-');
-    };
     try {
         Data d{bytes};
         if (d.u16(0) != 2)
@@ -468,10 +501,9 @@ QString describeTable(const QByteArray &bytes, QMap<QString, QString> *files) {
                             (defaults ? QString("default") : QString::fromLatin1(config.toHex())) +
                             "]\n";
                         const QString resourceType = types.value(typeId - 1);
-                        QString packagePath = package;
-                        packagePath.replace(QRegularExpression("[^A-Za-z0-9_.-]"), "_");
-                        const auto directory =
-                            packagePath + "/res/values" + qualifier(config) + "/";
+                        const auto directory = "res/values" + configurationName(config) + "/";
+                        const auto packageSuffix =
+                            d.u32(8) > 1 ? "_" + QString::number(packageId, 16) : QString();
                         for (quint32 i = 0; i < count; ++i) {
                             quint32 index = i, offset;
                             if (flags & 1) {
@@ -574,9 +606,9 @@ QString describeTable(const QByteArray &bytes, QMap<QString, QString> *files) {
                                 QString filename = resourceType;
                                 if (!filename.endsWith('s'))
                                     filename += 's';
-                                generated[directory + filename + ".xml"] += xml;
+                                generated[directory + filename + packageSuffix + ".xml"] += xml;
                                 if (defaults)
-                                    generated[packagePath + "/res/values/public.xml"] +=
+                                    generated["res/values/public" + packageSuffix + ".xml"] +=
                                         "    <public type=\"" + resourceType.toHtmlEscaped() +
                                         "\" name=\"" + nameXml + "\" id=\"0x" + identity +
                                         "\" />\n";

@@ -12,6 +12,50 @@ class InteractionTest : public QObject {
         QCoreApplication::setApplicationName("InteractionTest");
         QSettings().clear();
     }
+    void resourceQualifiers() {
+        QByteArray config(60, 0);
+        QCOMPARE(Resources::configurationName(config), QString());
+        config[24] = char(0x80);
+        QCOMPARE(Resources::configurationName(config), QString("-ldrtl"));
+        config.fill(0);
+        config.replace(4, 2, "sr");
+        config.replace(32, 4, "Latn");
+        QCOMPARE(Resources::configurationName(config), QString("-b+sr+Latn"));
+        config.fill(0);
+        config.replace(4, 2, "en");
+        config.replace(6, 2, "AU");
+        QCOMPARE(Resources::configurationName(config), QString("-en-rAU"));
+        config.fill(0);
+        config[8] = 2;
+        config[26] = char(0x58);
+        config[27] = 2;
+        config[25] = 0x20;
+        QCOMPARE(Resources::configurationName(config), QString("-sw600dp-land-night"));
+        config.fill(0);
+        config[4] = char(0xad);
+        config[5] = char(0x05); // packed fil
+        QCOMPARE(Resources::configurationName(config), QString("-fil"));
+        config.fill(0);
+        config[44] = 2;
+        config[45] = 0x0a;
+        QCOMPARE(Resources::configurationName(config), QString("-round-highdr-widecg"));
+    }
+    void largeResourceTable() {
+        const auto path = qEnvironmentVariable("GARLIC_TEST_LARGE_APK");
+        if (path.isEmpty() || !path.endsWith(".apk"))
+            QSKIP("Set a real APK for resource directory validation");
+        QString error;
+        QMap<QString, QString> files;
+        auto data = Resources::read(path, "resources.arsc", 128LL * 1024 * 1024, &error);
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        Resources::describeTable(data, &files);
+        QVERIFY(!files.isEmpty());
+        for (auto it = files.begin(); it != files.end(); ++it) {
+            QVERIFY(it.key().startsWith("res/values"));
+            QVERIFY(!it.key().contains("config-"));
+        }
+        qInfo() << "Resource files:" << files.size() << "directories:" << files.keys().mid(0, 8);
+    }
     void launcherAliases() {
         const QString manifest =
             "<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\" "
@@ -293,6 +337,8 @@ class InteractionTest : public QObject {
             QXmlStreamReader decoded(it.value());
             while (!decoded.atEnd())
                 decoded.readNext();
+            QVERIFY(it.key().startsWith("res/"));
+            QVERIFY(!it.key().contains("config-"));
             QVERIFY2(!decoded.hasError(), qPrintable(it.key() + ": " + decoded.errorString()));
         }
         qInfo() << "Decoded resource files:" << files.size();
@@ -338,9 +384,15 @@ class InteractionTest : public QObject {
         qInfo() << "Warm reference lookup (ms):" << refsTimer.elapsed();
         refsDialog->close();
         window.findChild<QAction *>("mainActivity")->trigger();
-        QTRY_VERIFY_WITH_TIMEOUT(window.editor() && window.editor()->toPlainText().contains("class MainActivity"),15000);
+        QTRY_VERIFY_WITH_TIMEOUT(window.editor() &&
+                                     window.editor()->toPlainText().contains("class MainActivity"),
+                                 15000);
         window.findChild<QAction *>("syncEditor")->trigger();
-        QCOMPARE(window.findChild<QTreeView *>("classTree")->currentIndex().data(Qt::UserRole+1).toString(),QString("Lcom/nobi/mmsd/offline/MainActivity;"));
+        QCOMPARE(window.findChild<QTreeView *>("classTree")
+                     ->currentIndex()
+                     .data(Qt::UserRole + 1)
+                     .toString(),
+                 QString("Lcom/nobi/mmsd/offline/MainActivity;"));
         window.openClass("androidx/activity/ComponentActivity$$ExternalSyntheticLambda0");
         QTRY_VERIFY_WITH_TIMEOUT(window.editor() &&
                                      window.editor()->toPlainText().contains("implements Runnable"),

@@ -133,6 +133,26 @@ class WindowTest : public QObject {
         QTest::mouseClick(window.editor()->viewport(), Qt::ForwardButton);
         QTRY_VERIFY(window.editor()->toPlainText().contains("greet"));
     }
+    void largeProjectOpenTime() {
+        const auto path = qEnvironmentVariable("GARLIC_TEST_LARGE_APK");
+        if (path.isEmpty())
+            QSKIP("Set GARLIC_TEST_LARGE_APK to measure full tree readiness");
+        MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
+        window.show();
+        QElapsedTimer elapsed;
+        elapsed.start();
+        window.openPath(path);
+        QTRY_VERIFY_WITH_TIMEOUT(
+            !window.backend()->busy() && !window.backend()->project()->classes().isEmpty(), 120000);
+        const auto indexedMs = elapsed.elapsed();
+        const auto count = QString::number(window.backend()->project()->classes().size());
+        QTRY_VERIFY_WITH_TIMEOUT(window.findChild<QLabel *>("muted")->text().contains(count),
+                                 30000);
+        qInfo() << "Index ready ms:" << indexedMs << "Full directory ready ms:" << elapsed.elapsed()
+                << "classes:" << count;
+        if (!qEnvironmentVariable("GARLIC_SCREENSHOTS").isEmpty())
+            window.grab().save(qEnvironmentVariable("GARLIC_SCREENSHOTS") + "/large-project.png");
+    }
     void crlfSymbolPositions() {
         CodeEditor editor(false);
         const QString text = "// 中文\r\npublic class Example {\r\n    void greet() {}\r\n}\r\n";

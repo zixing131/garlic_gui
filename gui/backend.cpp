@@ -50,6 +50,8 @@ Backend::Backend(QObject *parent)
             &Backend::finish);
     connect(&process_, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
         if (error == QProcess::FailedToStart && busy()) {
+            if (indexProducer_)
+                indexProducer_->store(-1);
             job_ = Job::None;
             emit busyChanged(false);
             emit failed(tr("无法启动 garlic：%1\n请检查安装包内的 garlic 引擎是否完整。")
@@ -59,7 +61,8 @@ Backend::Backend(QObject *parent)
 }
 
 Backend::~Backend() {
-    if (indexCanceled_) indexCanceled_->store(true);
+    if (indexCanceled_)
+        indexCanceled_->store(true);
     if (exportControl_)
         exportControl_->canceled = true;
     cancelSearch();
@@ -100,12 +103,22 @@ void Backend::start(Job job, const QStringList &arguments) {
     errorTail_.clear();
     process_.setWorkingDirectory(workspace_->path());
     applyEnvironment(process_, jobDir_);
+    if (job == Job::Index) {
+        auto environment = process_.processEnvironment();
+        environment.insert("GARLIC_COMPACT_INDEX", "1");
+        process_.setProcessEnvironment(environment);
+    }
     process_.setStandardOutputFile(
         QFileInfo(arguments.value(0)).suffix().compare("class", Qt::CaseInsensitive) == 0 &&
                 job != Job::Index
             ? jobDir_ + "/source.java"
             : QString());
     emit busyChanged(true);
+    if (job == Job::Index) {
+        QFile::remove(workspace_->path() + "/classes.jsonl");
+        indexProducer_ = std::make_shared<std::atomic_int>(0);
+        readIndex();
+    }
     process_.start(engine_, arguments);
 }
 
@@ -235,7 +248,8 @@ void Backend::exportSources(const QString &directory, bool smali) {
 }
 
 void Backend::cancel() {
-    if (indexCanceled_) indexCanceled_->store(true);
+    if (indexCanceled_)
+        indexCanceled_->store(true);
     if (exportControl_)
         exportControl_->canceled = true;
     if (postprocessing_) {
@@ -276,7 +290,10 @@ void Backend::finish(int code, QProcess::ExitStatus status) {
     readOutput();
     const auto completed = job_;
     job_ = Job::None;
-    emit busyChanged(false);
+    if (completed == Job::Index && indexProducer_)
+        indexProducer_->store(code == 0 && status == QProcess::NormalExit && !canceled_ ? 1 : -1);
+    if (completed != Job::Index || !indexing_)
+        emit busyChanged(false);
     if (canceled_) {
         emit log(completed == Job::Export ? tr("导出已取消；目标目录保留已完成的部分文件。")
                                           : tr("任务已取消，可重新选择类重试。"));
@@ -291,69 +308,9 @@ void Backend::finish(int code, QProcess::ExitStatus status) {
                 .arg(completed == Job::Export ? tr("\n导出目录可能包含部分结果。") : QString()));
         return;
     }
-    if (completed == Job::Index) {
-        indexing_ = true;
-        emit busyChanged(true);
-        const int generation = projectGeneration_;
-        const auto workspace = workspace_;
-        const auto input = activeInput_;
-        using IndexResult = QPair<std::shared_ptr<Project>, QString>;
-        auto watcher = new QFutureWatcher<IndexResult>(this);
-        connect(watcher, &QFutureWatcher<IndexResult>::finished, this, [this, watcher, generation] {
-            auto result = watcher->result();
-            watcher->deleteLater();
-            if (generation != projectGeneration_)
-                return;
-            indexing_ = false;
-            if (!result.second.isEmpty()) {
-                emit busyChanged(false);
-                emit failed(result.second);
-                return;
-            }
-            project_.replaceData(*result.first);
-            if (!indexQueue_.isEmpty()) {
-                nextIndex();
-                return;
-            }
-            const auto referenceSnapshot = project_.snapshot();
-            QThreadPool::globalInstance()->start(
-                [referenceSnapshot] { referenceSnapshot->xrefs(QString()); });
-            emit indexed(project_.classes());
-            emit busyChanged(false);
-            if (settings_.background)
-                QTimer::singleShot(0, this, &Backend::prepareSources);
-        });
-        auto project = project_.snapshot();
-        indexCanceled_ = std::make_shared<std::atomic_bool>(false);
-        const auto canceled = indexCanceled_;
-        watcher->setFuture(QtConcurrent::run([workspace, input, project, canceled] {
-            QFile file(workspace->path() + "/classes.jsonl");
-            if (!file.open(QIODevice::ReadOnly))
-                return IndexResult{{}, QObject::tr("无法打开类索引：%1").arg(file.errorString())};
-            qint64 lineNumber = 0;
-            while (!file.atEnd()) {
-                if (canceled->load()) return IndexResult{{}, QObject::tr("索引读取已取消。")};
-                const auto line = file.readLine();
-                ++lineNumber;
-                if (file.error() != QFileDevice::NoError)
-                    return IndexResult{{}, QObject::tr("类索引读取失败（第 %1 行）：%2").arg(lineNumber).arg(file.errorString())};
-                QJsonParseError error;
-                const auto document = QJsonDocument::fromJson(line, &error);
-                if (error.error != QJsonParseError::NoError || !document.isObject())
-                    return IndexResult{{}, QObject::tr("类索引格式错误（第 %1 行）：%2").arg(lineNumber).arg(error.errorString())};
-                auto object = document.object();
-                if (!Backend::safeClassName(object.value("name").toString()))
-                    return IndexResult{{}, QStringLiteral("引擎返回了无效的类索引。")};
-                object["input"] = input;
-                if (!object.contains("origin"))
-                    object["origin"] = QFileInfo(input).fileName();
-                project->addClass(object);
-            }
-            if (project->classes().isEmpty())
-                return IndexResult{{}, QStringLiteral("文件中没有可浏览的类。")};
-            return IndexResult{project, {}};
-        }));
-    } else if (completed == Job::Source) {
+    if (completed == Job::Index)
+        return;
+    if (completed == Job::Source) {
         QString path = jobDir_ + "/" + argumentClass_ + (smali_ ? ".smali" : ".java");
         if (QFileInfo(classInput(currentName_)).suffix().compare("class", Qt::CaseInsensitive) == 0)
             path = jobDir_ + "/source.java";
@@ -367,7 +324,8 @@ void Backend::finish(int code, QProcess::ExitStatus status) {
                 emit failed(tr("源码超过单文件大小限制，请在设置中提高限制后重试。"));
                 const QString directory = jobDir_;
                 auto workspace = workspace_;
-                QThreadPool::globalInstance()->start([directory, workspace] { QDir(directory).removeRecursively(); });
+                QThreadPool::globalInstance()->start(
+                    [directory, workspace] { QDir(directory).removeRecursively(); });
                 return;
             }
             const QString name = currentName_, key = name + (smali_ ? ":smali" : ":java");
@@ -572,7 +530,8 @@ void Backend::clearCache() {
     cacheOrder_.clear();
     fullReady_ = false;
     emit cacheCleared();
-    if (!workspace_) return;
+    if (!workspace_)
+        return;
     clearing_ = true;
     emit busyChanged(true);
     auto workspace = workspace_;
@@ -582,8 +541,10 @@ void Backend::clearCache() {
         task->deleteLater();
         clearing_ = false;
         emit busyChanged(false);
-        if (failures.isEmpty()) emit log(tr("源码缓存已清理；类索引保留，已打开标签重新选择时按需加载。"));
-        else emit failed(tr("部分缓存删除失败（可能被占用）：\n%1").arg(failures.join('\n')));
+        if (failures.isEmpty())
+            emit log(tr("源码缓存已清理；类索引保留，已打开标签重新选择时按需加载。"));
+        else
+            emit failed(tr("部分缓存删除失败（可能被占用）：\n%1").arg(failures.join('\n')));
     });
     task->setFuture(QtConcurrent::run([workspace] {
         QStringList failures;
@@ -723,4 +684,98 @@ int Backend::search(const SearchOptions &options) {
                                  generating, control, events, request, index);
         }));
     return request;
+}
+
+void Backend::readIndex() {
+
+    indexing_ = true;
+    emit busyChanged(true);
+    const int generation = projectGeneration_;
+    const auto workspace = workspace_;
+    const auto input = activeInput_;
+    const auto producer = indexProducer_;
+    using IndexResult = QPair<std::shared_ptr<Project>, QString>;
+    auto watcher = new QFutureWatcher<IndexResult>(this);
+    connect(watcher, &QFutureWatcher<IndexResult>::finished, this,
+            [this, watcher, generation, producer] {
+                auto result = watcher->result();
+                watcher->deleteLater();
+                if (generation != projectGeneration_)
+                    return;
+                indexing_ = false;
+                if (producer->load() < 0) {
+                    emit busyChanged(false);
+                    return;
+                }
+                if (!result.second.isEmpty()) {
+                    emit busyChanged(false);
+                    emit failed(result.second);
+                    return;
+                }
+                project_.replaceData(*result.first);
+                if (!indexQueue_.isEmpty()) {
+                    nextIndex();
+                    return;
+                }
+                const auto referenceSnapshot = project_.snapshot();
+                QThreadPool::globalInstance()->start(
+                    [referenceSnapshot] { referenceSnapshot->xrefs(QString()); });
+                emit indexed(project_.classes());
+                emit busyChanged(false);
+                if (settings_.background)
+                    QTimer::singleShot(0, this, &Backend::prepareSources);
+            });
+    auto project = project_.snapshot();
+    indexCanceled_ = std::make_shared<std::atomic_bool>(false);
+    const auto canceled = indexCanceled_;
+    watcher->setFuture(QtConcurrent::run([workspace, input, project, canceled, producer] {
+        QFile file(workspace->path() + "/classes.jsonl");
+        while (!file.open(QIODevice::ReadOnly)) {
+            if (canceled->load() || producer->load() != 0)
+                return IndexResult{{}, QObject::tr("无法打开类索引：%1").arg(file.errorString())};
+            QThread::msleep(5);
+        }
+        qint64 lineNumber = 0;
+        QByteArray pending;
+        while (true) {
+            if (canceled->load())
+                return IndexResult{{}, QObject::tr("索引读取已取消。")};
+            if (file.atEnd()) {
+                if (producer->load() == 0) {
+                    QThread::msleep(5);
+                    continue;
+                }
+                if (pending.isEmpty())
+                    break;
+            } else
+                pending += file.readLine();
+            if (!pending.endsWith('\n') && producer->load() == 0)
+                continue;
+            auto line = std::move(pending);
+            pending.clear();
+            ++lineNumber;
+            if (file.error() != QFileDevice::NoError)
+                return IndexResult{{},
+                                   QObject::tr("类索引读取失败（第 %1 行）：%2")
+                                       .arg(lineNumber)
+                                       .arg(file.errorString())};
+            QJsonParseError error;
+            const auto document = QJsonDocument::fromJson(line, &error);
+            if (error.error != QJsonParseError::NoError || !document.isObject())
+                return IndexResult{{},
+                                   QObject::tr("类索引格式错误（第 %1 行）：%2")
+                                       .arg(lineNumber)
+                                       .arg(error.errorString())};
+            auto object = document.object();
+            if (!Backend::safeClassName(object.value("name").toString()))
+                return IndexResult{{}, QStringLiteral("引擎返回了无效的类索引。")};
+            object["input"] = input;
+            if (!object.contains("origin"))
+                object["origin"] = QFileInfo(input).fileName();
+            project->addClass(object);
+        }
+        if (project->classes().isEmpty())
+            return IndexResult{{}, QStringLiteral("文件中没有可浏览的类。")};
+        return IndexResult{project, {}};
+    }));
 }

@@ -75,4 +75,6 @@ if args.d8:
     subprocess.run([args.d8, "--output", str(out), str(out / "demo.jar")], check=True)
     with zipfile.ZipFile(out / "示例 app.apk", "w") as apk:
         apk.write(out / "classes.dex", "classes.dex")
+    with zipfile.ZipFile(out / "nested.apks", "w") as archive:
+        archive.write(out / "示例 app.apk", "splits/base-master.apk")
 print(out)

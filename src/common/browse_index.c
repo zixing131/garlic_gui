@@ -21,7 +21,7 @@ static cJSON *class_json(const char *name, unsigned flags, int inner) {
     cJSON_AddBoolToObject(entry, "inner", inner);
     cJSON_AddItemToObject(entry, "methods", cJSON_CreateArray());
     cJSON_AddItemToObject(entry, "fields", cJSON_CreateArray());
-    cJSON_AddItemToObject(entry, "refs", cJSON_CreateArray());
+    cJSON_AddItemToObject(entry, "refs", getenv("GARLIC_COMPACT_INDEX") ? cJSON_CreateObject() : cJSON_CreateArray());
     return entry;
 }
 static void member(cJSON *array, const char *owner, const char *name, const char *desc,
@@ -36,6 +36,16 @@ static void member(cJSON *array, const char *owner, const char *name, const char
 }
 static void reference(cJSON *array, const char *from, const char *target, int offset,
                       const char *kind) {
+    if (cJSON_IsObject(array)) {
+        cJSON *group = cJSON_GetObjectItemCaseSensitive(array, from);
+        if (!group) { group = cJSON_CreateArray(); cJSON_AddItemToObject(array, from, group); }
+        cJSON *row = cJSON_CreateArray();
+        cJSON_AddItemToArray(row, cJSON_CreateString(target));
+        cJSON_AddItemToArray(row, cJSON_CreateNumber(offset));
+        if (strcmp(kind, "bytecode")) cJSON_AddItemToArray(row, cJSON_CreateString(kind));
+        cJSON_AddItemToArray(group, row);
+        return;
+    }
     cJSON *r = cJSON_CreateObject();
     cJSON_AddStringToObject(r, "from", from);
     cJSON_AddStringToObject(r, "target", target);

@@ -87,11 +87,6 @@ static void apk_process_dex_from_zip(jd_apk *apk, struct zip_t *zip)
         zip_entry_openbyindex(zip, i);
         string path_in_zip = (string)zip_entry_name(zip);
 
-        if (strchr(path_in_zip, '/') != NULL) {
-            zip_entry_close(zip);
-            continue;
-        }
-
         if (str_end_with(path_in_zip, ".apk")) {
             size_t buf_size = zip_entry_size(zip);
             char *buf = malloc(buf_size);
@@ -108,7 +103,7 @@ static void apk_process_dex_from_zip(jd_apk *apk, struct zip_t *zip)
             continue;
         }
 
-        if (!str_end_with(path_in_zip, ".dex")) {
+        if (strchr(path_in_zip, '/') != NULL || !str_end_with(path_in_zip, ".dex")) {
             zip_entry_close(zip);
             continue;
         }

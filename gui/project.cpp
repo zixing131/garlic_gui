@@ -42,11 +42,19 @@ void Project::addClass(const QJsonObject &entry) {
     }
     classes_.insert(name, entry);
     parents_.remove(name);
-    for (const auto &v : entry.value("refs").toArray()) {
-        const auto ref = v.toObject();
-        if (ref.value("kind") == "extends" || ref.value("kind") == "implements")
-            parents_[name] << classOf(ref.value("target").toString());
-    }
+    const auto refs = entry.value("refs");
+    if (refs.isObject()) {
+        for (const auto &v : refs.toObject().value(classId(name)).toArray()) {
+            const auto row = v.toArray();
+            if (row[2] == "extends" || row[2] == "implements")
+                parents_[name] << classOf(row[0].toString());
+        }
+    } else
+        for (const auto &v : refs.toArray()) {
+            const auto ref = v.toObject();
+            if (ref.value("kind") == "extends" || ref.value("kind") == "implements")
+                parents_[name] << classOf(ref.value("target").toString());
+        }
     for (const auto &simple :
          QSet<QString>{name.section('/', -1), name.section('/', -1).section('$', -1)})
         if (!classNames_[simple].contains(classId(name)))
@@ -88,31 +96,56 @@ QJsonArray Project::xrefs(const QString &id) const {
         QHash<QString, QString> canonical;
         for (auto it = classes_.cbegin(); it != classes_.cend(); ++it) {
             QSet<QString> seen;
-            const auto references = it.value().value("refs").toArray();
-            for (int position = 0; position < references.size(); position++) {
-                auto ref = references[position].toObject();
-                auto raw = ref.value("target").toString();
+            auto add = [&](const QString &from, const QString &raw, int offset,
+                           const ReferencePosition &position) {
                 if (!canonical.contains(raw))
                     canonical[raw] = canonicalId(raw);
                 const auto target = canonical.value(raw);
-                const auto key = ref.value("from").toString() + ":" +
-                                 QString::number(ref.value("offset").toInt()) + target;
+                const auto key = from + ":" + QString::number(offset) + target;
                 if (seen.contains(key))
-                    continue;
+                    return;
                 seen.insert(key);
-                referenceIndex_->targets[target].append({it.key(), position});
+                referenceIndex_->targets[target].append(position);
                 const auto clazz = classId(classOf(target));
                 if (clazz != target)
-                    referenceIndex_->targets[clazz].append({it.key(), position});
+                    referenceIndex_->targets[clazz].append(position);
+            };
+            const auto refs = it.value().value("refs");
+            if (refs.isObject()) {
+                const auto groups = refs.toObject();
+                for (auto group = groups.begin(); group != groups.end(); ++group) {
+                    const auto rows = group.value().toArray();
+                    for (int i = 0; i < rows.size(); i++) {
+                        const auto row = rows[i].toArray();
+                        add(group.key(), row[0].toString(), row[1].toInt(),
+                            {it.key(), group.key(), i});
+                    }
+                }
+            } else {
+                const auto rows = refs.toArray();
+                for (int i = 0; i < rows.size(); i++) {
+                    const auto ref = rows[i].toObject();
+                    add(ref.value("from").toString(), ref.value("target").toString(),
+                        ref.value("offset").toInt(), {it.key(), {}, i});
+                }
             }
         }
         referenceIndex_->ready = true;
     }
     QJsonArray result;
     for (const auto &position : referenceIndex_->targets.value(canonicalId(id))) {
-        auto ref =
-            classes_.value(position.first).value("refs").toArray().at(position.second).toObject();
-        ref["class"] = position.first;
+        const auto refs = classes_.value(position.owner).value("refs");
+        QJsonObject ref;
+        if (refs.isObject()) {
+            const auto row =
+                refs.toObject().value(position.from).toArray().at(position.index).toArray();
+            ref = {{"from", position.from},
+                   {"target", row[0]},
+                   {"offset", row[1]},
+                   {"kind", row.size() > 2 ? row[2] : QJsonValue("bytecode")}};
+        } else
+            ref = refs.toArray().at(position.index).toObject();
+        ref["class"] = position.owner;
         result.append(ref);
     }
     return result;

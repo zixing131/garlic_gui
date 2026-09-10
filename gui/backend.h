@@ -61,6 +61,8 @@ class Backend : public QObject {
     enum class Job { None, Index, Source, Export };
     void start(Job job, const QStringList &arguments);
     void finish(int code, QProcess::ExitStatus status);
+    void readIndex();
+    std::shared_ptr<std::atomic_int> indexProducer_;
     void readOutput();
     void prepareFinished(int code, QProcess::ExitStatus status);
     std::shared_ptr<SearchControl> searchControl_;

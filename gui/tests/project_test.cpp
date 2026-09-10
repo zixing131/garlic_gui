@@ -5,10 +5,34 @@
 class ProjectTest : public QObject {
     Q_OBJECT
   private slots:
+    void compactReferenceIndex() {
+        const QString from = "Ldemo/Main;->call()V", target = "Ldemo/Base;->run()V";
+        const QJsonObject inherited{{"from", "Ldemo/Main;"},
+                                    {"target", "Ldemo/Base;"},
+                                    {"offset", -1},
+                                    {"kind", "extends"}};
+        const QJsonObject called{
+            {"from", from}, {"target", target}, {"offset", 3}, {"kind", "bytecode"}};
+        QJsonObject entry{{"name", "demo/Main"}, {"refs", QJsonArray{inherited, called}}};
+        Project legacy, compact;
+        legacy.addClass(entry);
+        entry["refs"] =
+            QJsonObject{{"Ldemo/Main;", QJsonArray{QJsonArray{"Ldemo/Base;", -1, "extends"}}},
+                        {from, QJsonArray{QJsonArray{target, 3}}}};
+        compact.addClass(entry);
+        QCOMPARE(compact.xrefs(target), legacy.xrefs(target));
+        QCOMPARE(compact.xrefs("Ldemo/Base;").size(), legacy.xrefs("Ldemo/Base;").size());
+    }
     void applicationInheritance() {
         Project p;
-        p.addClass({{"name","demo/Base"}, {"flags",1025}, {"refs",QJsonArray{QJsonObject{{"kind","extends"},{"target","Landroid/app/Application;"}}}}});
-        p.addClass({{"name","demo/App"}, {"flags",1}, {"refs",QJsonArray{QJsonObject{{"kind","extends"},{"target","Ldemo/Base;"}}}}});
+        p.addClass({{"name", "demo/Base"},
+                    {"flags", 1025},
+                    {"refs", QJsonArray{QJsonObject{{"kind", "extends"},
+                                                    {"target", "Landroid/app/Application;"}}}}});
+        p.addClass(
+            {{"name", "demo/App"},
+             {"flags", 1},
+             {"refs", QJsonArray{QJsonObject{{"kind", "extends"}, {"target", "Ldemo/Base;"}}}}});
         QCOMPARE(p.applicationCandidates(), QStringList{"demo/App"});
     }
 

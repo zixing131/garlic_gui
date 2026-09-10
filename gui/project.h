@@ -67,7 +67,8 @@ class Project : public QObject {
     QHash<QString, QStringList> classNames_, parents_;
     QVector<QHash<QString, QString>> undo_;
     QHash<QString, SourceDocument> documents_;
-    struct ReferenceIndex { std::mutex lock; bool ready = false; QHash<QString, QList<QPair<QString, int>>> targets; };
+    struct ReferencePosition { QString owner, from; int index; };
+    struct ReferenceIndex { std::mutex lock; bool ready = false; QHash<QString, QList<ReferencePosition>> targets; };
     std::shared_ptr<ReferenceIndex> referenceIndex_ = std::make_shared<ReferenceIndex>();
     QString input_;
     QStringList inputs_;
