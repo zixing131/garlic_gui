@@ -8,6 +8,7 @@
 #include <QFutureWatcher>
 #include <QtConcurrent>
 #include <QtWidgets>
+#include <algorithm>
 
 MainWindow::MainWindow(const QString &engine, QWidget *parent)
     : QMainWindow(parent), backend_(this) {
@@ -28,7 +29,7 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     file->addAction(tr("添加文件…"), this, [this] {
         auto paths = QFileDialog::getOpenFileNames(
             this, tr("添加输入文件"), {},
-            tr("字节码 (*.apk *.dex *.jar *.war *.class *.xapk *.apks)"));
+            tr("字节码 (*.apk *.dex *.jar *.war *.zip *.class *.xapk *.apks)"));
         if (!paths.isEmpty())
             openPaths(backend_.inputs() + paths);
     });
@@ -77,10 +78,9 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
         restoringHistory_ = false;
     });
     auto viewMenu = menuBar()->addMenu(tr("视图"));
-    viewMenu->addAction(tr("查找当前代码"), QKeySequence::Find, this, [this] {
-        find_->setFocus();
-        find_->selectAll();
-    });
+    auto showFindAction = viewMenu->addAction(tr("查找当前代码"), QKeySequence::Find, this,
+                                               &MainWindow::showFindBar);
+    showFindAction->setObjectName("showCodeFind");
     viewMenu->addAction(tr("项目搜索…"), QKeySequence("Ctrl+Shift+F"), this,
                         &MainWindow::searchDialog);
     viewMenu->addAction(tr("过滤类"), QKeySequence("Ctrl+L"), this, [this] {
@@ -208,19 +208,65 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     right->setMinimumWidth(300);
     auto rightLayout = new QVBoxLayout(right);
     rightLayout->setContentsMargins(8, 4, 6, 0);
-    auto search = new QHBoxLayout;
+    findBar_ = new QWidget;
+    findBar_->setObjectName("codeFindBar");
+    auto search = new QHBoxLayout(findBar_);
+    search->setContentsMargins(8, 2, 0, 2);
+    search->setSpacing(5);
     find_ = new QLineEdit;
     find_->setObjectName("codeFind");
     find_->setPlaceholderText(tr("查找当前代码…"));
     find_->setClearButtonEnabled(true);
     search->addWidget(find_, 1);
-    auto previous = new QPushButton(tr("上一个")), next = new QPushButton(tr("下一个"));
-    search->addWidget(previous);
-    search->addWidget(next);
-    rightLayout->addLayout(search);
-    connect(previous, &QPushButton::clicked, this, [this] { find(true); });
-    connect(next, &QPushButton::clicked, this, [this] { find(false); });
+    findCount_ = new QLabel(tr("0 个结果"));
+    findCount_->setObjectName("codeFindCount");
+    findCount_->setMinimumWidth(64);
+    findCount_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    search->addWidget(findCount_);
+    auto findButton = [search](const QString &text, const QString &tip, const QString &name,
+                               bool checkable = false) {
+        auto button = new QToolButton;
+        button->setText(text);
+        button->setToolTip(tip);
+        button->setObjectName(name);
+        button->setCheckable(checkable);
+        search->addWidget(button);
+        return button;
+    };
+    findCase_ = findButton("Cc", tr("区分大小写"), "findCase", true);
+    findWord_ = findButton("W", tr("全字匹配"), "findWord", true);
+    findRegex_ = findButton(".*", tr("正则表达式"), "findRegex", true);
+    auto previous = findButton("↑", tr("上一个匹配"), "findPrevious");
+    auto next = findButton("↓", tr("下一个匹配"), "findNext");
+    auto closeFind = findButton("×", tr("关闭查找栏（Esc）"), "closeCodeFind");
+    findCase_->setChecked(prefs.value("find/caseSensitive", false).toBool());
+    findWord_->setChecked(prefs.value("find/wholeWords", false).toBool());
+    findRegex_->setChecked(prefs.value("find/regex", false).toBool());
+    find_->setText(prefs.value("find/query").toString());
+    findBar_->setVisible(prefs.value("view/findVisible", false).toBool());
+    rightLayout->addWidget(findBar_);
+    auto findTimer = new QTimer(findBar_);
+    findTimer->setSingleShot(true);
+    findTimer->setInterval(100);
+    connect(findTimer, &QTimer::timeout, this, &MainWindow::refreshFindHighlights);
+    connect(find_, &QLineEdit::textChanged, this, [findTimer](const QString &text) {
+        QSettings().setValue("find/query", text);
+        findTimer->start();
+    });
+    for (const auto &option : {findCase_, findWord_, findRegex_})
+        connect(option, &QToolButton::toggled, this, [this, option] {
+            const QString key = option == findCase_   ? "caseSensitive"
+                                : option == findWord_ ? "wholeWords"
+                                                      : "regex";
+            QSettings().setValue("find/" + key, option->isChecked());
+            refreshFindHighlights();
+        });
+    connect(previous, &QToolButton::clicked, this, [this] { find(true); });
+    connect(next, &QToolButton::clicked, this, [this] { find(false); });
+    connect(closeFind, &QToolButton::clicked, this, &MainWindow::hideFindBar);
     connect(find_, &QLineEdit::returnPressed, this, [this] { find(false); });
+    auto closeFindShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), findBar_);
+    connect(closeFindShortcut, &QShortcut::activated, this, &MainWindow::hideFindBar);
     pages_ = new QStackedWidget;
     auto welcome = new QWidget;
     auto welcomeLayout = new QVBoxLayout(welcome);
@@ -283,6 +329,7 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
             recordHistory();
             QTimer::singleShot(0, this, &MainWindow::loadCurrent);
         }
+        refreshFindHighlights();
     });
     auto filterTimer = new QTimer(this);
     filterTimer->setSingleShot(true);
@@ -415,7 +462,7 @@ void MainWindow::chooseFile() {
         return;
     const auto paths = QFileDialog::getOpenFileNames(
         this, tr("打开字节码"), QSettings().value("lastDirectory").toString(),
-        tr("字节码 (*.apk *.xapk *.apks *.dex *.jar *.war *.class)"));
+        tr("字节码 (*.apk *.xapk *.apks *.dex *.jar *.war *.zip *.class)"));
     if (!paths.isEmpty())
         openPaths(paths);
 }
@@ -696,6 +743,8 @@ void MainWindow::showSource(const QString &name, bool smali, const QString &path
                     if (target == view())
                         status_->setText(
                             tr("%1 · %2 行").arg(name).arg(target->editor(smali)->blockCount()));
+                    if (target == view())
+                        refreshFindHighlights();
                     loadCurrent();
                 });
         watcher->setFuture(QtConcurrent::run([snapshot, name, smali, path] {
@@ -710,15 +759,40 @@ void MainWindow::find(bool backwards) {
     auto code = editor();
     if (!code || find_->text().isEmpty())
         return;
-    const auto original = code->textCursor();
-    auto flags = backwards ? QTextDocument::FindBackward : QTextDocument::FindFlags();
-    if (!code->find(find_->text(), flags)) {
-        code->moveCursor(backwards ? QTextCursor::End : QTextCursor::Start);
-        if (!code->find(find_->text(), flags)) {
-            code->setTextCursor(original);
-            status_->setText(tr("未找到：%1").arg(find_->text()));
-        }
-    }
+    if (!code->findText(find_->text(), findCase_->isChecked(), findWord_->isChecked(),
+                        findRegex_->isChecked(), backwards))
+        status_->setText(tr("未找到：%1").arg(find_->text()));
+}
+void MainWindow::showFindBar() {
+    if (!findBar_)
+        return;
+    findBar_->show();
+    QSettings().setValue("view/findVisible", true);
+    if (find_->text().isEmpty() && editor() && editor()->textCursor().hasSelection())
+        find_->setText(editor()->textCursor().selectedText());
+    find_->setFocus();
+    find_->selectAll();
+    refreshFindHighlights();
+}
+void MainWindow::hideFindBar() {
+    if (!findBar_)
+        return;
+    findBar_->hide();
+    QSettings().setValue("view/findVisible", false);
+    if (editor())
+        editor()->clearFindHighlights();
+}
+void MainWindow::refreshFindHighlights() {
+    auto code = editor();
+    if (!code || !findBar_ || !findBar_->isVisible())
+        return;
+    const int matches =
+        code->setFindHighlights(find_->text(), findCase_->isChecked(), findWord_->isChecked(),
+                                findRegex_->isChecked());
+    findCount_->setText(matches < 0 ? tr("表达式无效")
+                                    : tr("%1 个结果%2")
+                                          .arg(matches)
+                                          .arg(matches >= 10000 ? "+" : QString()));
 }
 void MainWindow::updateBusy() {
     const bool busy = backend_.busy();
@@ -862,6 +936,39 @@ SourceDocument MainWindow::present(const SourceDocument &raw, bool smali) const 
     auto doc = backend_.project()->applyAliases(raw, smali);
     if (smali)
         return doc;
+    // garlic keeps source text close to bytecode and may omit Java's presentation-only
+    // @Override annotation. Restore it when the indexed parent/interface declares the same method.
+    struct OverrideNote {
+        int position;
+        QString text;
+    };
+    QVector<OverrideNote> notes;
+    for (const auto &span : doc.spans) {
+        if (!span.declaration || !span.id.contains("->"))
+            continue;
+        const auto parent = backend_.project()->overrideOf(span.id);
+        if (parent.isEmpty())
+            continue;
+        const int lineStart = doc.text.lastIndexOf('\n', span.start) + 1;
+        const int previousStart = doc.text.lastIndexOf('\n', qMax(0, lineStart - 2)) + 1;
+        if (doc.text.mid(previousStart, lineStart - previousStart).contains("@Override"))
+            continue;
+        const auto indentation =
+            QRegularExpression("^\\s*").match(doc.text.mid(lineStart)).captured();
+        const auto label = Project::classOf(parent).replace('/', '.') + "." +
+                           backend_.project()->symbolName(parent);
+        notes << OverrideNote{lineStart, indentation + "@Override // " + label + '\n'};
+    }
+    std::sort(notes.begin(), notes.end(),
+              [](const OverrideNote &a, const OverrideNote &b) { return a.position > b.position; });
+    for (const auto &note : notes) {
+        doc.text.insert(note.position, note.text);
+        for (auto &span : doc.spans)
+            if (span.start >= note.position) {
+                span.start += note.text.size();
+                span.end += note.text.size();
+            }
+    }
     // Blank presentation-only annotations/notices without moving source spans.
     int offset = 0;
     for (const auto &line : doc.text.split('\n')) {

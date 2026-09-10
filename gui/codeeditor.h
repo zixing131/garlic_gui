@@ -1,6 +1,7 @@
 #pragma once
 #include "project.h"
 #include <QPlainTextEdit>
+#include <QRegularExpression>
 
 class CodeEditor : public QPlainTextEdit {
     Q_OBJECT
@@ -12,6 +13,11 @@ class CodeEditor : public QPlainTextEdit {
     QVector<SourceSpan> spans() const { return spans_; }
     bool goToSymbol(const QString &id);
     void goToLine(int line);
+    // Returns -1 when the supplied regular expression is invalid.
+    int setFindHighlights(const QString &query, bool caseSensitive, bool wholeWords, bool regex);
+    bool findText(const QString &query, bool caseSensitive, bool wholeWords, bool regex,
+                  bool backwards);
+    void clearFindHighlights();
     int gutterWidth() const;
     void paintGutter(QPaintEvent *event);
   signals:
@@ -27,8 +33,15 @@ class CodeEditor : public QPlainTextEdit {
 
   private:
     void highlightCurrentLine();
+    void updateHighlights();
+    QRegularExpression findExpression(const QString &query, bool caseSensitive, bool wholeWords,
+                                      bool regex) const;
+    QString selectedIdentifier() const;
+    bool goToLocalDeclaration();
     bool light_ = false;
     class QSyntaxHighlighter *highlighter_;
     QVector<SourceSpan> spans_;
     QWidget *gutter_;
+    QString findQuery_;
+    bool findCaseSensitive_ = false, findWholeWords_ = false, findRegex_ = false;
 };

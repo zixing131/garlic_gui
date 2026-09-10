@@ -328,6 +328,7 @@ void jar_file_analyse(string path, string save_path, int thread_cnt) {
         for (int i=0;i<jar->class_entries->size;i++) {
             jd_jar_entry *entry=lget_obj(jar->class_entries,i);
             mem_init_pool();
+            class_selection_origin(entry->path);
             browse_index_jvm(parse_class_content(entry->path,entry->buf,entry->buf_size), entry->is_inner||entry->is_anoymous);
             mem_free_pool();
         }

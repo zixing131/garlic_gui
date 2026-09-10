@@ -46,6 +46,8 @@ class Project : public QObject {
     SourceDocument applyAliases(SourceDocument document, bool smali) const;
     QString canonicalId(const QString &id) const;
     QString methodSource(const SourceDocument &document, const QString &id) const;
+    // Returns the declared parent/interface method implemented by id, if indexed.
+    QString overrideOf(const QString &id) const;
     QString resolve(const QString &token, const QString &context) const;
     static QString normalize(QString name);
     static QString classId(const QString &name) { return "L" + normalize(name) + ";"; }

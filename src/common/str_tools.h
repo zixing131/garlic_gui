@@ -94,6 +94,7 @@ static inline int str_end_with_lower(const char *s, const char *suff)
 #define APK_EXTENSION       ".apk"
 #define SPLIT_APK_XAPK      ".xapk"
 #define SPLIT_APK_APKS      ".apks"
+#define ZIP_EXTENSION       ".zip"
 
 /* Case-insensitive check: does path end in an APK / split-APK container extension? */
 static inline int str_is_apk_path(const char *path)
@@ -101,6 +102,11 @@ static inline int str_is_apk_path(const char *path)
     return str_end_with_lower(path, APK_EXTENSION)  ||
            str_end_with_lower(path, SPLIT_APK_XAPK) ||
            str_end_with_lower(path, SPLIT_APK_APKS);
+}
+
+static inline int str_is_zip_path(const char *path)
+{
+    return str_end_with_lower(path, ZIP_EXTENSION);
 }
 
 static inline int str_start_with(const string s, const string suff)

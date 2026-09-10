@@ -82,7 +82,10 @@ QString Backend::classInput(const QString &name) const {
 }
 bool Backend::supportsSmali(const QString &name) const {
     const auto ext = QFileInfo(name.isEmpty() ? input_ : classInput(name)).suffix().toLower();
-    return ext == "apk" || ext == "dex" || ext == "xapk" || ext == "apks";
+    if (ext == "apk" || ext == "dex" || ext == "xapk" || ext == "apks")
+        return true;
+    return ext == "zip" && project_.info(name).value("origin").toString().endsWith(".dex",
+                                                                                Qt::CaseInsensitive);
 }
 
 bool Backend::safeClassName(const QString &name) {
@@ -129,7 +132,7 @@ void Backend::openPaths(const QStringList &paths) {
     const auto path = paths.first();
     for (const auto &p : paths)
         if (!QFileInfo(p).isFile() ||
-            !QStringList{"apk", "dex", "jar", "war", "class", "xapk", "apks"}.contains(
+            !QStringList{"apk", "dex", "jar", "war", "zip", "class", "xapk", "apks"}.contains(
                 QFileInfo(p).suffix().toLower())) {
             emit failed(tr("不支持或不存在的文件：%1").arg(p));
             return;
@@ -141,8 +144,8 @@ void Backend::openPaths(const QStringList &paths) {
         return;
     }
     const QString ext = QFileInfo(path).suffix().toLower();
-    if (!QStringList{"apk", "dex", "jar", "war", "class", "xapk", "apks"}.contains(ext)) {
-        emit failed(tr("请选择 APK、DEX、JAR、WAR 或 CLASS 文件。"));
+    if (!QStringList{"apk", "dex", "jar", "war", "zip", "class", "xapk", "apks"}.contains(ext)) {
+        emit failed(tr("请选择 APK、DEX、JAR、WAR、ZIP 或 CLASS 文件。"));
         return;
     }
     auto workspace = std::shared_ptr<QTemporaryDir>(
@@ -292,6 +295,11 @@ void Backend::finish(int code, QProcess::ExitStatus status) {
     job_ = Job::None;
     if (completed == Job::Index && indexProducer_)
         indexProducer_->store(code == 0 && status == QProcess::NormalExit && !canceled_ ? 1 : -1);
+    // Do not leave the window busy while the streaming index reader notices a failed producer.
+    // The reader still owns parsing cleanup and ignores the failed partial index.
+    if (completed == Job::Index &&
+        (canceled_ || code != 0 || status != QProcess::NormalExit))
+        indexing_ = false;
     if (completed != Job::Index || !indexing_)
         emit busyChanged(false);
     if (canceled_) {
@@ -775,7 +783,7 @@ void Backend::readIndex() {
             project->addClass(object);
         }
         if (project->classes().isEmpty())
-            return IndexResult{{}, QStringLiteral("文件中没有可浏览的类。")};
+            return IndexResult{{}, QStringLiteral("无类被加载，没有什么可以反编译。")};
         return IndexResult{project, {}};
     }));
 }

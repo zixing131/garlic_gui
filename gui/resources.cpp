@@ -684,7 +684,7 @@ QJsonObject inspect(const QString &path) {
         }
     }
     QString error;
-    if (QFileInfo(path).suffix().compare("apk", Qt::CaseInsensitive) == 0)
+    if (QStringList{"apk", "zip"}.contains(QFileInfo(path).suffix().toLower()))
         manifest = decodeXml(read(path, "AndroidManifest.xml", 16 * 1024 * 1024, &error));
     QXmlStreamReader xml(manifest);
     QString package, application, version;

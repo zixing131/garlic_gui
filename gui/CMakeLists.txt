@@ -33,8 +33,8 @@ target_link_libraries(garlic-gui PRIVATE garlic-gui-core)
 set_target_properties(garlic-gui PROPERTIES
     MACOSX_BUNDLE_BUNDLE_NAME "Garlic"
     MACOSX_BUNDLE_GUI_IDENTIFIER "org.garlic.gui"
-    MACOSX_BUNDLE_BUNDLE_VERSION "0.5.4"
-    MACOSX_BUNDLE_SHORT_VERSION_STRING "0.5.4")
+    MACOSX_BUNDLE_BUNDLE_VERSION "0.5.5"
+    MACOSX_BUNDLE_SHORT_VERSION_STRING "0.5.5")
 # Refresh the adjacent engine even when only C sources have changed.
 add_custom_target(garlic-gui-engine
     COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:garlic-gui>

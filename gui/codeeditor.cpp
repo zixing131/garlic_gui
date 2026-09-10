@@ -166,6 +166,7 @@ CodeEditor::CodeEditor(bool smali, QWidget *parent)
             setViewportMargins(gutterWidth(), 0, 0, 0);
     });
     connect(this, &QPlainTextEdit::cursorPositionChanged, this, &CodeEditor::highlightCurrentLine);
+    connect(this, &QPlainTextEdit::selectionChanged, this, &CodeEditor::highlightCurrentLine);
     setViewportMargins(gutterWidth(), 0, 0, 0);
 }
 
@@ -226,6 +227,7 @@ void CodeEditor::setSource(const SourceDocument &source) {
     auto cursor = textCursor();
     cursor.setPosition(qMin(position, int(document.text.size())));
     setTextCursor(cursor);
+    updateHighlights();
 }
 QString CodeEditor::symbolAtCursor() const {
     int position = textCursor().selectionStart();
@@ -255,8 +257,12 @@ void CodeEditor::goToLine(int line) {
 }
 void CodeEditor::mouseDoubleClickEvent(QMouseEvent *event) {
     QPlainTextEdit::mouseDoubleClickEvent(event);
-    if (event->button() == Qt::LeftButton && !symbolAtCursor().isEmpty())
+    if (event->button() != Qt::LeftButton)
+        return;
+    if (!symbolAtCursor().isEmpty())
         emit navigateRequested();
+    else
+        goToLocalDeclaration();
 }
 void CodeEditor::mousePressEvent(QMouseEvent *event) {
     QPlainTextEdit::mousePressEvent(event);
@@ -281,12 +287,136 @@ void CodeEditor::contextMenuEvent(QContextMenuEvent *event) {
 }
 
 void CodeEditor::highlightCurrentLine() {
+    updateHighlights();
+}
+
+QString CodeEditor::selectedIdentifier() const {
+    const auto value = textCursor().selectedText();
+    static const QRegularExpression identifier(
+        "^[\\p{L}_$][\\p{L}\\p{N}_$]*$", QRegularExpression::UseUnicodePropertiesOption);
+    return identifier.match(value).hasMatch() ? value : QString();
+}
+
+bool CodeEditor::goToLocalDeclaration() {
+    const auto name = selectedIdentifier();
+    const int before = textCursor().selectionStart();
+    if (name.isEmpty() || before <= 0)
+        return false;
+    // Local slots do not have a cross-class bytecode identity. Within this editor we can still
+    // provide the useful IDE behavior: select the latest typed declaration before the use.
+    const auto escaped = QRegularExpression::escape(name);
+    const QRegularExpression declaration(
+        "(?:^|[;{}(,])\\s*(?:(?:final|volatile|transient)\\s+)*(?:[\\p{L}_$][\\p{L}\\p{N}_$]*"
+        "(?:\\s*<[^{;}()]*>)?(?:\\s*\\[\\])?\\s+)+(" +
+            escaped + ")(?![\\p{L}\\p{N}_$])",
+        QRegularExpression::UseUnicodePropertiesOption);
+    auto matches = declaration.globalMatch(toPlainText().left(before));
+    int start = -1, end = -1;
+    while (matches.hasNext()) {
+        const auto match = matches.next();
+        start = match.capturedStart(1);
+        end = match.capturedEnd(1);
+    }
+    if (start < 0 || end <= start)
+        return false;
+    auto cursor = textCursor();
+    cursor.setPosition(start);
+    cursor.setPosition(end, QTextCursor::KeepAnchor);
+    setTextCursor(cursor);
+    centerCursor();
+    return true;
+}
+
+QRegularExpression CodeEditor::findExpression(const QString &query, bool caseSensitive,
+                                               bool wholeWords, bool regex) const {
+    if (query.isEmpty())
+        return {};
+    QString pattern = regex ? query : QRegularExpression::escape(query);
+    if (wholeWords)
+        pattern = "(?<![\\p{L}\\p{N}_$])(?:" + pattern + ")(?![\\p{L}\\p{N}_$])";
+    QRegularExpression::PatternOptions options = QRegularExpression::UseUnicodePropertiesOption;
+    if (!caseSensitive)
+        options |= QRegularExpression::CaseInsensitiveOption;
+    return QRegularExpression(pattern, options);
+}
+
+void CodeEditor::updateHighlights() {
+    QList<QTextEdit::ExtraSelection> selections;
     QTextEdit::ExtraSelection line;
     line.format.setBackground(QColor(light_ ? "#eaf0f7" : "#202d3b"));
     line.format.setProperty(QTextFormat::FullWidthSelection, true);
     line.cursor = textCursor();
     line.cursor.clearSelection();
-    setExtraSelections({line});
+    selections << line;
+    auto addMatches = [this, &selections](const QRegularExpression &expression, const QColor &color,
+                                          int limit) {
+        if (!expression.isValid() || expression.pattern().isEmpty())
+            return;
+        auto matches = expression.globalMatch(toPlainText());
+        int count = 0;
+        while (matches.hasNext() && count++ < limit) {
+            const auto match = matches.next();
+            QTextEdit::ExtraSelection selection;
+            selection.format.setBackground(color);
+            selection.cursor = textCursor();
+            selection.cursor.setPosition(match.capturedStart());
+            selection.cursor.setPosition(match.capturedEnd(), QTextCursor::KeepAnchor);
+            selections << selection;
+        }
+    };
+    const auto selected = selectedIdentifier();
+    if (!selected.isEmpty())
+        addMatches(findExpression(selected, true, true, false),
+                   QColor(light_ ? "#ffe082" : "#725f1d"), 3000);
+    if (!findQuery_.isEmpty())
+        addMatches(findExpression(findQuery_, findCaseSensitive_, findWholeWords_, findRegex_),
+                   QColor(light_ ? "#b9d9f5" : "#315a75"), 3000);
+    setExtraSelections(selections);
+}
+
+int CodeEditor::setFindHighlights(const QString &query, bool caseSensitive, bool wholeWords,
+                                  bool regex) {
+    findQuery_ = query;
+    findCaseSensitive_ = caseSensitive;
+    findWholeWords_ = wholeWords;
+    findRegex_ = regex;
+    const auto expression = findExpression(query, caseSensitive, wholeWords, regex);
+    if (!expression.isValid()) {
+        updateHighlights();
+        return -1;
+    }
+    int count = 0;
+    auto matches = expression.globalMatch(toPlainText());
+    while (matches.hasNext() && count < 10000) {
+        matches.next();
+        ++count;
+    }
+    updateHighlights();
+    return count;
+}
+
+bool CodeEditor::findText(const QString &query, bool caseSensitive, bool wholeWords, bool regex,
+                          bool backwards) {
+    const auto expression = findExpression(query, caseSensitive, wholeWords, regex);
+    if (!expression.isValid() || expression.pattern().isEmpty())
+        return false;
+    auto flags = backwards ? QTextDocument::FindBackward : QTextDocument::FindFlags();
+    auto cursor = document()->find(expression, textCursor(), flags);
+    if (cursor.isNull()) {
+        cursor = textCursor();
+        cursor.movePosition(backwards ? QTextCursor::End : QTextCursor::Start);
+        cursor = document()->find(expression, cursor, flags);
+    }
+    if (cursor.isNull())
+        return false;
+    setTextCursor(cursor);
+    centerCursor();
+    return true;
+}
+
+void CodeEditor::clearFindHighlights() {
+    findQuery_.clear();
+    updateHighlights();
 }
 void CodeEditor::setTheme(bool light) {
     light_ = light;

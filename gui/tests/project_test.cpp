@@ -2,6 +2,7 @@
 #include <QFile>
 #include <QJsonDocument>
 #include <QtTest>
+#include <algorithm>
 class ProjectTest : public QObject {
     Q_OBJECT
   private slots:
@@ -63,6 +64,7 @@ class ProjectTest : public QObject {
         QCOMPARE(project->owner("demo/Main$Details"), QString("demo/Main"));
         const QString id = "Ldemo/Main;->greet(I)Ljava/lang/String;";
         QVERIFY(!project->xrefs(id).isEmpty());
+        QCOMPARE(project->overrideOf(id), QString("Ldemo/Contract;->greet(I)Ljava/lang/String;"));
         b.request("demo/Main", false);
         QTRY_COMPARE_WITH_TIMEOUT(sources.count(), 1, 15000);
         auto doc = project->document("demo/Main", false, b.cachedPath("demo/Main", false));
@@ -74,6 +76,11 @@ class ProjectTest : public QObject {
         QVERIFY(!doc.text.contains("\\0A"));
         QVERIFY2(project->methodSource(doc, id).contains("greet(int"),
                  qPrintable(QJsonDocument(project->members("demo/Main", true)).toJson()));
+        const QString field = "Ldemo/Main;->name:Ljava/lang/String;";
+        QVERIFY(!project->xrefs(field).isEmpty());
+        QVERIFY(std::any_of(doc.spans.cbegin(), doc.spans.cend(), [&field](const SourceSpan &span) {
+            return span.id == field && !span.declaration;
+        }));
         QVERIFY(project->rename(id, "welcome").isEmpty());
         doc = project->document("demo/Main", false, b.cachedPath("demo/Main", false));
         QVERIFY(doc.text.contains("welcome(int"));
@@ -84,7 +91,6 @@ class ProjectTest : public QObject {
         auto use = project->document("demo/Use", false, b.cachedPath("demo/Use", false));
         QVERIFY2(use.text.contains(".welcome(2)"), qPrintable(use.text));
         QVERIFY(use.text.contains(".greet(\"literal greet should not change\")"));
-        const QString field = "Ldemo/Main;->name:Ljava/lang/String;";
         QVERIFY(project->rename(field, "personName").isEmpty());
         doc = project->document("demo/Main", false, b.cachedPath("demo/Main", false));
         QVERIFY(doc.text.contains("personName;"));

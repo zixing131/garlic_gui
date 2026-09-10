@@ -103,7 +103,8 @@ static void apk_process_dex_from_zip(jd_apk *apk, struct zip_t *zip)
             continue;
         }
 
-        if (strchr(path_in_zip, '/') != NULL || !str_end_with(path_in_zip, ".dex")) {
+        if ((!apk->allow_nested_dex && strchr(path_in_zip, '/') != NULL) ||
+            !str_end_with(path_in_zip, ".dex")) {
             zip_entry_close(zip);
             continue;
         }
@@ -209,10 +210,11 @@ static void apk_release(jd_apk *apk)
     mem_free_pool();
 }
 
-void apk_decompile_analyse(string path,
-                           string save_dir,
-                           int thread_num,
-                           jd_dex_task_type type)
+static void archive_decompile_analyse_inner(string path,
+                                            string save_dir,
+                                            int thread_num,
+                                            jd_dex_task_type type,
+                                            int allow_nested_dex)
 {
     mem_init_pool();
 
@@ -223,6 +225,7 @@ void apk_decompile_analyse(string path,
     apk->save_dir = save_dir;
     apk->thread_num = thread_num;
     apk->type = type;
+    apk->allow_nested_dex = allow_nested_dex;
 
     if (thread_num > 1) {
         apk->threadpool = threadpool_create_in(apk->pool, thread_num, 0);
@@ -233,4 +236,20 @@ void apk_decompile_analyse(string path,
     apk_decompile_task_start(apk);
 
     apk_release(apk);
+}
+
+void apk_decompile_analyse(string path,
+                           string save_dir,
+                           int thread_num,
+                           jd_dex_task_type type)
+{
+    archive_decompile_analyse_inner(path, save_dir, thread_num, type, 0);
+}
+
+void archive_decompile_analyse(string path,
+                               string save_dir,
+                               int thread_num,
+                               jd_dex_task_type type)
+{
+    archive_decompile_analyse_inner(path, save_dir, thread_num, type, 1);
 }

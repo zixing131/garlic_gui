@@ -74,6 +74,7 @@ class BackendTest : public QObject {
         QTest::addColumn<QString>("file");
         QTest::addColumn<bool>("smali");
         QTest::newRow("jar") << "demo.jar" << false;
+        QTest::newRow("zip") << "demo.zip" << false;
         QTest::newRow("class") << "Main.class" << false;
         if (QFileInfo::exists(fixtures_ + "/classes.dex")) {
             QTest::newRow("dex") << "classes.dex" << true;
@@ -153,6 +154,16 @@ class BackendTest : public QObject {
         QSignalSpy indexed(&backend, &Backend::indexed);
         backend.open(fixtures_ + "/demo.jar");
         QTRY_COMPARE_WITH_TIMEOUT(indexed.count(), 1, 15000);
+    }
+    void zipWithoutClasses() {
+        Backend backend;
+        backend.setEngine(engine_);
+        QSignalSpy errors(&backend, &Backend::failed), indexed(&backend, &Backend::indexed);
+        backend.open(fixtures_ + "/empty.zip");
+        QTRY_VERIFY_WITH_TIMEOUT(!backend.busy(), 5000);
+        QCOMPARE(indexed.count(), 0);
+        QCOMPARE(errors.count(), 1);
+        QCOMPARE(errors.first().first().toString(), QString("无类被加载，没有什么可以反编译。"));
     }
     void largeAndTruncatedIndex() {
         Backend backend;

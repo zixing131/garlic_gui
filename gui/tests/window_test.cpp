@@ -22,6 +22,7 @@ class WindowTest : public QObject {
         window.openClass("demo/Main");
         QTRY_VERIFY_WITH_TIMEOUT(
             window.editor() && window.editor()->toPlainText().contains("greet"), 15000);
+        QVERIFY(window.editor()->toPlainText().contains("@Override"));
         window.navigateTo("Ldemo/Main;->greet(I)Ljava/lang/String;");
         auto editor = window.editor();
         editor->setFocus();
@@ -164,6 +165,20 @@ class WindowTest : public QObject {
         QCOMPARE(editor.symbolAtCursor(), id);
         QVERIFY(!editor.toPlainText().contains('\r'));
     }
+    void localVariableDoubleClick() {
+        CodeEditor editor(false);
+        const QString text = "void sample() { int answer = 7; return answer + 1; }";
+        editor.setSource({text, {}});
+        editor.resize(640, 160);
+        editor.show();
+        const int use = text.lastIndexOf("answer");
+        auto cursor = editor.textCursor();
+        cursor.setPosition(use);
+        editor.setTextCursor(cursor);
+        QTest::mouseDClick(editor.viewport(), Qt::LeftButton, {}, editor.cursorRect(cursor).center());
+        QCOMPARE(editor.textCursor().selectedText(), QString("answer"));
+        QCOMPARE(editor.textCursor().selectionStart(), text.indexOf("answer"));
+    }
     void browseSwitchFindRenameAndReopen() {
         QCoreApplication::setOrganizationName("GarlicTests");
         QCoreApplication::setApplicationName("WindowTest");
@@ -177,7 +192,10 @@ class WindowTest : public QObject {
         auto filter = window.findChild<QLineEdit *>("classFilter");
         auto tabs = window.findChild<QTabWidget *>("sourceTabs");
         auto find = window.findChild<QLineEdit *>("codeFind");
-        QVERIFY(tree && filter && tabs && find);
+        auto findBar = window.findChild<QWidget *>("codeFindBar");
+        auto showFind = window.findChild<QAction *>("showCodeFind");
+        QVERIFY(tree && filter && tabs && find && findBar && showFind);
+        QVERIFY(!findBar->isVisible());
         QTRY_VERIFY_WITH_TIMEOUT(
             !window.backend()->busy() && !window.backend()->project()->classes().isEmpty(), 15000);
         filter->setText("Main");
@@ -187,12 +205,17 @@ class WindowTest : public QObject {
             window.editor() && window.editor()->toPlainText().contains("greet"), 15000);
         QCOMPARE(tabs->count(), 1);
         auto code = window.editor();
+        showFind->trigger();
+        QVERIFY(findBar->isVisible());
         find->setText("greet");
         QTest::keyClick(find, Qt::Key_Return);
         QCOMPARE(code->textCursor().selectedText(), QString("greet"));
+        QTRY_VERIFY(code->extraSelections().size() > 1);
         find->setText("not_present_123");
         QTest::keyClick(find, Qt::Key_Return);
         QCOMPARE(code->textCursor().selectedText(), QString("greet"));
+        QTest::keyClick(find, Qt::Key_Escape);
+        QVERIFY(!findBar->isVisible());
         if (dex) {
             auto modes = tabs->currentWidget()->findChild<QTabWidget *>("codeModes");
             QVERIFY(modes);

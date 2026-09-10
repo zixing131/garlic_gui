@@ -193,6 +193,10 @@ void browse_index_jvm(jclass_file *jc, int inner) {
     if (jc->super_class)
         reference(cJSON_GetObjectItem(entry, "refs"), str_create("L%s;", name),
                   str_create("L%s;", get_class_name(jc, pool_item(jc, jc->super_class))), -1, "extends");
+    for (unsigned i = 0; i < be16toh(jc->interfaces_count); i++)
+        reference(cJSON_GetObjectItem(entry, "refs"), str_create("L%s;", name),
+                  str_create("L%s;", get_class_name(jc, pool_item(jc, jc->interfaces[i]))), -1,
+                  "implements");
     for (unsigned i = 0; i < be16toh(jc->methods_count); i++) {
         jmethod *m = &jc->methods[i];
         if (m->code_attribute) {

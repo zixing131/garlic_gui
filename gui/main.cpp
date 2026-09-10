@@ -14,7 +14,7 @@ int main(int argc, char **argv) {
             return runMcpBridge(argc, argv);
         if (std::strcmp(argv[i], "--version") == 0) {
             // QCommandLineParser shows a blocking message box for Windows GUI applications.
-            std::puts("Garlic GUI 0.5.4");
+            std::puts("Garlic GUI 0.5.5");
             return 0;
         }
     }
@@ -29,7 +29,7 @@ int main(int argc, char **argv) {
         }
     app.setApplicationName("Garlic GUI");
     app.setOrganizationName("Garlic");
-    app.setApplicationVersion("0.5.4");
+    app.setApplicationVersion("0.5.5");
     app.setStyle(QStyleFactory::create("Fusion"));
     QPalette palette;
     palette.setColor(QPalette::Window, QColor("#17212d"));
@@ -53,7 +53,7 @@ int main(int argc, char **argv) {
     parser.addHelpOption();
     parser.addVersionOption();
     parser.addOption({"engine", "Path to the garlic engine executable", "path"});
-    parser.addPositionalArgument("file", "APK, DEX, JAR, WAR or CLASS file", "[file]");
+    parser.addPositionalArgument("file", "APK, DEX, JAR, WAR, ZIP or CLASS file", "[file]");
     parser.process(app);
     MainWindow window(parser.value("engine"));
     window.show();

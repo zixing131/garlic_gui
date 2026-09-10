@@ -440,6 +440,37 @@ SourceDocument Project::document(const QString &name, bool smali, const QString 
                 }
             }
         }
+        // Source maps describe most member references. Fill the remaining common field form so
+        // a double-click on `this.field` is still a semantic navigation target when a decompiler
+        // omitted that individual map record.
+        QHash<QString, QString> fields;
+        QString current = normalize(name);
+        QSet<QString> owners;
+        QStringList todo{current};
+        while (!todo.isEmpty() && owners.size() < 128) {
+            const auto owner = todo.takeFirst();
+            if (owners.contains(owner))
+                continue;
+            owners.insert(owner);
+            for (const auto &field : members(owner, false)) {
+                const auto object = field.toObject();
+                const auto fieldName = object.value("name").toString();
+                if (!fieldName.isEmpty() && !fields.contains(fieldName))
+                    fields.insert(fieldName, canonicalId(object.value("id").toString()));
+            }
+            todo.append(parents_.value(owner));
+        }
+        for (auto field = fields.cbegin(); field != fields.cend(); ++field) {
+            const QRegularExpression memberAccess(
+                "\\b(?:this|super)\\s*\\.\\s*(" + QRegularExpression::escape(field.key()) +
+                    ")(?![\\p{L}\\p{N}_$])",
+                QRegularExpression::UseUnicodePropertiesOption);
+            auto matches = memberAccess.globalMatch(mask);
+            while (matches.hasNext()) {
+                const auto match = matches.next();
+                add(match.capturedStart(1), match.capturedEnd(1), field.value(), false);
+            }
+        }
         QHash<QString, QString> imports;
         const QRegularExpression importRe("\\bimport\\s+([\\w.$]+)\\s*;");
         auto importsIt = importRe.globalMatch(mask);
@@ -546,6 +577,29 @@ QString Project::canonicalId(const QString &id) const {
         work.append(parents_.value(name));
     }
     return id;
+}
+QString Project::overrideOf(const QString &id) const {
+    if (!id.contains("->") || id.contains("-><") || !symbols_.contains(id))
+        return {};
+    const auto symbol = symbols_.value(id);
+    if (symbol.value("kind") != "method" || (symbol.value("flags").toInt() & 0x0a))
+        return {};
+    const QString suffix = id.mid(id.indexOf("->"));
+    QStringList todo = parents_.value(classOf(id));
+    QSet<QString> seen;
+    while (!todo.isEmpty() && seen.size() < 128) {
+        const auto parent = todo.takeFirst();
+        if (seen.contains(parent))
+            continue;
+        seen.insert(parent);
+        const auto candidate = classId(parent) + suffix;
+        const auto parentMethod = symbols_.value(candidate);
+        if (!parentMethod.isEmpty() && parentMethod.value("kind") == "method" &&
+            !(parentMethod.value("flags").toInt() & 0x0a))
+            return candidate;
+        todo.append(parents_.value(parent));
+    }
+    return {};
 }
 QString Project::methodSource(const SourceDocument &document, const QString &id) const {
     const auto mask = codeMask(document.text, false);

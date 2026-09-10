@@ -34,6 +34,12 @@ with zipfile.ZipFile(out / "demo.jar", "w") as jar:
     jar.writestr("layout/main.xml", '<layout><text>中文 resource preview</text></layout>')
     for path in classes.rglob("*.class"):
         jar.write(path, path.relative_to(classes).as_posix())
+with zipfile.ZipFile(out / "demo.zip", "w") as archive:
+    archive.writestr("assets/readme.txt", "ZIP resource preview")
+    for path in classes.rglob("*.class"):
+        archive.write(path, path.relative_to(classes).as_posix())
+with zipfile.ZipFile(out / "empty.zip", "w") as archive:
+    archive.writestr("assets/readme.txt", "No bytecode here")
 # Unknown class attributes are legal JVM extensions. Put one before SourceFile
 # so ignoring it without advancing the memory cursor corrupts the next header.
 def with_unknown_attribute(data):

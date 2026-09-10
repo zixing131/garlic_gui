@@ -147,6 +147,12 @@ class InteractionTest : public QObject {
         QCOMPARE(tree->model()->index(2, 0, root).data().toString(), QString("资源文件"));
         auto info = Resources::inspect(qEnvironmentVariable("GARLIC_TEST_FIXTURES") + "/demo.jar");
         QVERIFY(!info.value("entries").toArray().isEmpty());
+        const auto zipPath = qEnvironmentVariable("GARLIC_TEST_FIXTURES") + "/demo.zip";
+        QVERIFY(!Resources::inspect(zipPath).value("entries").toArray().isEmpty());
+        QString zipError;
+        QCOMPARE(Resources::read(zipPath, "assets/readme.txt", 1024, &zipError),
+                 QByteArray("ZIP resource preview"));
+        QVERIFY(zipError.isEmpty());
         QTemporaryDir unicodeArchive;
         const auto unicodePath = unicodeArchive.path() + "/中文 resources.jar";
         QVERIFY(

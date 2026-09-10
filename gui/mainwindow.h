@@ -17,6 +17,8 @@ class QPlainTextEdit;
 class QStackedWidget;
 class QTableWidget;
 class QDockWidget;
+class QToolButton;
+class QWidget;
 class McpServer;
 class SearchDialog;
 class MainWindow : public QMainWindow {
@@ -68,6 +70,9 @@ class MainWindow : public QMainWindow {
     void showSource(const QString &name, bool smali, const QString &path);
     void loadCurrent();
     void find(bool backwards);
+    void showFindBar();
+    void hideFindBar();
+    void refreshFindHighlights();
     void updateBusy();
     void exportAll();
     void settingsDialog();
@@ -86,6 +91,9 @@ class MainWindow : public QMainWindow {
     QSortFilterProxyModel *proxy_;
     QTabWidget *tabs_;
     QLineEdit *filter_, *find_;
+    QWidget *findBar_ = nullptr;
+    QLabel *findCount_ = nullptr;
+    QToolButton *findCase_ = nullptr, *findWord_ = nullptr, *findRegex_ = nullptr;
     QLabel *memoryLabel_;
     quint64 peakMemory_ = 0;
     QLabel *fileLabel_, *countLabel_, *status_;
