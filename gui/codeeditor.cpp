@@ -1,4 +1,5 @@
 #include "codeeditor.h"
+#include "nodeicons.h"
 #include <QContextMenuEvent>
 #include <QFontDatabase>
 #include <QMenu>
@@ -277,10 +278,15 @@ void CodeEditor::contextMenuEvent(QContextMenuEvent *event) {
     menu->addSeparator();
     auto go = menu->addAction(tr("跳转到声明  F12"), this, &CodeEditor::navigateRequested);
     auto refs = menu->addAction(tr("查找引用  X"), this, &CodeEditor::referencesRequested);
+    auto graph = menu->addAction(NodeIcons::icon("methodReference"), tr("查看函数调用图  G"),
+                                 this, &CodeEditor::callGraphRequested);
     auto rename = menu->addAction(tr("重命名  N"), this, &CodeEditor::renameRequested);
-    const bool known = !symbolAtCursor().isEmpty();
+    const auto symbol = symbolAtCursor();
+    const bool known = !symbol.isEmpty();
+    const bool method = symbol.contains("->") && symbol.contains('(');
     go->setEnabled(known);
     refs->setEnabled(known);
+    graph->setEnabled(method);
     rename->setEnabled(known);
     menu->exec(event->globalPos());
     delete menu;

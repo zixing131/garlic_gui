@@ -64,11 +64,23 @@ class WindowTest : public QObject {
         auto graph = window.findChild<QGraphicsView *>("callGraphView");
         QTRY_VERIFY_WITH_TIMEOUT(!graph->scene()->items().isEmpty(), 5000);
         const auto beforeZoom = graph->transform().m11();
-        QWheelEvent zoom(graph->viewport()->rect().center(), graph->mapToGlobal(graph->viewport()->rect().center()),
-                         QPoint(), QPoint(0, 120), Qt::NoButton, Qt::NoModifier,
-                         Qt::ScrollUpdate, false);
-        QCoreApplication::sendEvent(graph->viewport(), &zoom);
+        for (int i = 0; i < 8; ++i) {
+            QWheelEvent zoom(graph->viewport()->rect().center(),
+                             graph->mapToGlobal(graph->viewport()->rect().center()), QPoint(),
+                             QPoint(0, 120), Qt::NoButton, Qt::NoModifier, Qt::ScrollUpdate,
+                             false);
+            QCoreApplication::sendEvent(graph->viewport(), &zoom);
+        }
         QVERIFY(graph->transform().m11() > beforeZoom);
+        auto horizontal = graph->horizontalScrollBar();
+        QVERIFY(horizontal->maximum() > horizontal->minimum());
+        horizontal->setValue((horizontal->minimum() + horizontal->maximum()) / 2);
+        const int beforePan = horizontal->value();
+        const QPoint center = graph->viewport()->rect().center();
+        QTest::mousePress(graph->viewport(), Qt::LeftButton, {}, center);
+        QTest::mouseMove(graph->viewport(), center - QPoint(80, 0), 20);
+        QTest::mouseRelease(graph->viewport(), Qt::LeftButton, {}, center - QPoint(80, 0));
+        QVERIFY(horizontal->value() > beforePan);
         window.findChild<QGraphicsView *>("callGraphView")->window()->close();
         auto tree = window.findChild<QTreeView *>("classTree");
         auto filter = window.findChild<QLineEdit *>("classFilter");
@@ -210,6 +222,37 @@ class WindowTest : public QObject {
         QTest::mouseDClick(editor.viewport(), Qt::LeftButton, {}, editor.cursorRect(cursor).center());
         QCOMPARE(editor.textCursor().selectedText(), QString("answer"));
         QCOMPARE(editor.textCursor().selectionStart(), text.indexOf("answer"));
+    }
+    void codeEditorCallGraphContextMenu() {
+        CodeEditor editor(false);
+        const QString text = "class Example { void run() {} }";
+        const int start = text.indexOf("run");
+        editor.setSource({text, {{start, start + 3, "LExample;->run()V", true}}});
+        editor.resize(640, 180);
+        editor.show();
+        auto cursor = editor.textCursor();
+        cursor.setPosition(start + 1);
+        editor.setTextCursor(cursor);
+        QSignalSpy requested(&editor, &CodeEditor::callGraphRequested);
+        bool found = false;
+        QTimer::singleShot(50, &editor, [&] {
+            auto menu = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+            if (!menu)
+                return;
+            for (auto action : menu->actions())
+                if (action->text().contains("查看函数调用图") && action->text().contains('G')) {
+                    found = action->isEnabled();
+                    action->trigger();
+                    break;
+                }
+            menu->close();
+        });
+        const QPoint position = editor.cursorRect(cursor).center();
+        QContextMenuEvent event(QContextMenuEvent::Mouse, position,
+                                editor.viewport()->mapToGlobal(position));
+        QCoreApplication::sendEvent(editor.viewport(), &event);
+        QVERIFY(found);
+        QCOMPARE(requested.count(), 1);
     }
     void browseSwitchFindRenameAndReopen() {
         QCoreApplication::setOrganizationName("GarlicTests");

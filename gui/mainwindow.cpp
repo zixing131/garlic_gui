@@ -396,10 +396,9 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
         menu.addAction(tr("查找引用"), this, [this, id] { showReferences(id); });
         if (id.contains("->") && id.contains('(')) {
             auto graph = menu.addAction(NodeIcons::icon("methodReference"),
-                                        tr("查看函数调用图"), this,
+                                        tr("查看函数调用图  G"), this,
                                         [this, id] { showCallGraph(id); });
-            graph->setShortcut(QKeySequence("G"));
-            graph->setShortcutVisibleInContextMenu(true);
+            graph->setShortcutVisibleInContextMenu(false);
         }
         menu.addAction(tr("重命名…"), this, [this, id] { renameSymbol(id); });
         menu.exec(tree_->viewport()->mapToGlobal(pos));
@@ -736,6 +735,8 @@ void MainWindow::openClass(const QString &name, bool smali) {
                 [this, code] { navigateTo(code->symbolAtCursor()); });
         connect(code, &CodeEditor::referencesRequested, this,
                 [this, code] { showReferences(code->symbolAtCursor()); });
+        connect(code, &CodeEditor::callGraphRequested, this,
+                [this, code] { showCallGraph(code->symbolAtCursor()); });
         connect(code, &CodeEditor::renameRequested, this,
                 [this, code] { renameSymbol(code->symbolAtCursor()); });
     }

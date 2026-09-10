@@ -4,33 +4,34 @@
 #include <QtConcurrent>
 #include <QtWidgets>
 #include <algorithm>
+#include <cmath>
 #include <functional>
 
 namespace {
+class GraphNode;
+
 class CallGraphView final : public QGraphicsView {
   public:
     explicit CallGraphView(QGraphicsScene *scene, QWidget *parent = nullptr)
         : QGraphicsView(scene, parent) {
-        setDragMode(QGraphicsView::ScrollHandDrag);
+        setDragMode(QGraphicsView::NoDrag);
         setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
         setResizeAnchor(QGraphicsView::AnchorUnderMouse);
         setToolTip(QObject::tr("滚动鼠标滚轮缩放；按住鼠标左键拖动画布平移。"));
+        viewport()->setCursor(Qt::OpenHandCursor);
     }
 
   protected:
-    void wheelEvent(QWheelEvent *event) override {
-        const int delta = event->angleDelta().y();
-        if (!delta) {
-            QGraphicsView::wheelEvent(event);
-            return;
-        }
-        const qreal current = transform().m11();
-        const qreal factor = delta > 0 ? 1.16 : 1.0 / 1.16;
-        const qreal next = current * factor;
-        if (next >= 0.12 && next <= 5.0)
-            scale(factor, factor);
-        event->accept();
-    }
+    void wheelEvent(QWheelEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) override;
+    void mouseDoubleClickEvent(QMouseEvent *event) override;
+
+  private:
+    GraphNode *nodeAt(const QPoint &position) const;
+    bool panning_ = false;
+    QPoint lastPosition_;
 };
 
 class GraphNode : public QGraphicsRectItem {
@@ -50,10 +51,14 @@ class GraphNode : public QGraphicsRectItem {
         setFlag(QGraphicsItem::ItemIsSelectable);
     }
 
-  protected:
-    void mouseDoubleClickEvent(QGraphicsSceneMouseEvent *event) override {
+    void activate() {
         if (open_)
             open_(id_);
+    }
+
+  protected:
+    void mouseDoubleClickEvent(QGraphicsSceneMouseEvent *event) override {
+        activate();
         event->accept();
     }
 
@@ -61,6 +66,78 @@ class GraphNode : public QGraphicsRectItem {
     QString id_;
     std::function<void(const QString &)> open_;
 };
+
+GraphNode *CallGraphView::nodeAt(const QPoint &position) const {
+    auto item = itemAt(position);
+    while (item) {
+        if (auto node = dynamic_cast<GraphNode *>(item))
+            return node;
+        item = item->parentItem();
+    }
+    return nullptr;
+}
+
+void CallGraphView::wheelEvent(QWheelEvent *event) {
+    qreal steps = event->angleDelta().y() / 120.0;
+    if (qFuzzyIsNull(steps))
+        steps = event->pixelDelta().y() / 80.0;
+    if (qFuzzyIsNull(steps)) {
+        event->ignore();
+        return;
+    }
+    const qreal current = transform().m11();
+    const qreal target = qBound(0.12, current * std::pow(1.16, steps), 5.0);
+    if (!qFuzzyCompare(current, target))
+        scale(target / current, target / current);
+    event->accept();
+}
+
+void CallGraphView::mousePressEvent(QMouseEvent *event) {
+    if (event->button() == Qt::LeftButton) {
+        panning_ = true;
+        lastPosition_ = event->position().toPoint();
+        viewport()->setCursor(Qt::ClosedHandCursor);
+        event->accept();
+        return;
+    }
+    QGraphicsView::mousePressEvent(event);
+}
+
+void CallGraphView::mouseMoveEvent(QMouseEvent *event) {
+    if (panning_) {
+        const QPoint position = event->position().toPoint();
+        const QPoint delta = position - lastPosition_;
+        horizontalScrollBar()->setValue(horizontalScrollBar()->value() - delta.x());
+        verticalScrollBar()->setValue(verticalScrollBar()->value() - delta.y());
+        lastPosition_ = position;
+        event->accept();
+        return;
+    }
+    QGraphicsView::mouseMoveEvent(event);
+}
+
+void CallGraphView::mouseReleaseEvent(QMouseEvent *event) {
+    if (event->button() == Qt::LeftButton && panning_) {
+        panning_ = false;
+        viewport()->setCursor(Qt::OpenHandCursor);
+        event->accept();
+        return;
+    }
+    QGraphicsView::mouseReleaseEvent(event);
+}
+
+void CallGraphView::mouseDoubleClickEvent(QMouseEvent *event) {
+    panning_ = false;
+    viewport()->setCursor(Qt::OpenHandCursor);
+    if (event->button() == Qt::LeftButton) {
+        if (auto node = nodeAt(event->position().toPoint())) {
+            node->activate();
+            event->accept();
+            return;
+        }
+    }
+    QGraphicsView::mouseDoubleClickEvent(event);
+}
 
 QString labelFor(const std::shared_ptr<Project> &project, const QString &id) {
     const auto owner = Project::classOf(id).replace('/', '.');

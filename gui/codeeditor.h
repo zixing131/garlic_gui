@@ -23,6 +23,7 @@ class CodeEditor : public QPlainTextEdit {
   signals:
     void navigateRequested();
     void referencesRequested();
+    void callGraphRequested();
     void renameRequested();
 
   protected:
