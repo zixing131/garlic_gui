@@ -37,7 +37,8 @@ void Project::addClass(const QJsonObject &entry) {
     symbols_.insert(classId(name), {{"id", classId(name)},
                                     {"name", name.section('/', -1)},
                                     {"owner", name},
-                                    {"kind", entry.value("kind")}});
+                                    {"kind", entry.value("kind")},
+                                    {"flags", entry.value("flags")}});
     for (const auto &kind : {QString("methods"), QString("fields")})
         for (const auto &v : entry.value(kind).toArray()) {
             auto s = v.toObject();

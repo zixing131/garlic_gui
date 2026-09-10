@@ -80,6 +80,8 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
                                                 symbol.value("descriptor").toString()
                                           : QString())},
                         {"kind", kind},
+                        {"flags", symbol.value("flags")},
+                        {"constructor", symbol.value("name").toString() == "<init>"},
                         {"line", 0},
                         {"text", text + symbol.value("descriptor").toString()}});
         }
@@ -188,6 +190,8 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
                         append({{"class", name},
                                 {"node", QString(name).replace('/', '.')},
                                 {"kind", "code"},
+                                {"icon_kind", project->info(name).value("kind")},
+                                {"flags", project->info(name).value("flags")},
                                 {"line", lineNumber},
                                 {"text", line.mid(crop, 1200)}});
                     }

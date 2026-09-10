@@ -1,5 +1,6 @@
 #include "searchdialog.h"
 #include "mainwindow.h"
+#include "nodeicons.h"
 #include <QtWidgets>
 namespace {
 class ResultsModel : public QAbstractTableModel {
@@ -17,6 +18,9 @@ class ResultsModel : public QAbstractTableModel {
         if (!index.isValid())
             return {};
         const auto hit = hits[index.row()].toObject();
+        if (role == Qt::DecorationRole && index.column() == 0)
+            return NodeIcons::icon(hit.value("icon_kind").toString(hit.value("kind").toString()),
+                                   hit.value("flags").toInt(), hit.value("constructor").toBool());
         if (role == Qt::UserRole)
             return hit;
         if (role == Qt::DisplayRole || role == Qt::ToolTipRole) {
@@ -51,8 +55,9 @@ class MatchDelegate : public QStyledItemDelegate {
         QStyleOptionViewItem opt(option);
         initStyleOption(&opt, index);
         QString text = opt.text;
-        opt.text.clear();
         auto style = opt.widget ? opt.widget->style() : QApplication::style();
+        const auto textRect = style->subElementRect(QStyle::SE_ItemViewItemText, &opt, opt.widget);
+        opt.text.clear();
         style->drawControl(QStyle::CE_ItemViewItem, &opt, p, opt.widget);
         QTextLayout layout(text, option.font);
         QList<QTextLayout::FormatRange> formats;
@@ -76,10 +81,10 @@ class MatchDelegate : public QStyledItemDelegate {
             line.setLineWidth(100000);
         layout.endLayout();
         p->save();
-        p->setClipRect(option.rect);
+        p->setClipRect(textRect);
         p->setPen(option.palette.color(
             option.state & QStyle::State_Selected ? QPalette::HighlightedText : QPalette::Text));
-        layout.draw(p, QPointF(option.rect.left() + 6,
+        layout.draw(p, QPointF(textRect.left() + 3,
                                option.rect.top() +
                                    (option.rect.height() - option.fontMetrics.height()) / 2));
         p->restore();

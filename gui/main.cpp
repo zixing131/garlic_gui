@@ -13,7 +13,7 @@ int main(int argc, char **argv) {
     QApplication app(argc, argv);
     app.setApplicationName("Garlic GUI");
     app.setOrganizationName("Garlic");
-    app.setApplicationVersion("0.3.0");
+    app.setApplicationVersion("0.3.1");
     app.setStyle(QStyleFactory::create("Fusion"));
     QPalette palette;
     palette.setColor(QPalette::Window, QColor("#17212d"));

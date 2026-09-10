@@ -1,5 +1,6 @@
 #include "mainwindow.h"
 #include "mcpserver.h"
+#include "nodeicons.h"
 #include "searchdialog.h"
 #include <QFutureWatcher>
 #include <QtConcurrent>
@@ -128,6 +129,7 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     filter_->setClearButtonEnabled(true);
     leftLayout->addWidget(filter_);
     tree_ = new QTreeView;
+    tree_->setIconSize(QSize(16, 16));
     tree_->setObjectName("classTree");
     tree_->setUniformRowHeights(true);
     connect(tree_, &QTreeView::expanded, this, &MainWindow::populateMembers);
@@ -179,6 +181,7 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     welcomeLayout->addStretch();
     connect(open, &QPushButton::clicked, this, &MainWindow::chooseFile);
     tabs_ = new QTabWidget;
+    tabs_->setIconSize(QSize(16, 16));
     tabs_->setObjectName("sourceTabs");
     tabs_->setTabsClosable(true);
     tabs_->setMovable(true);
@@ -310,35 +313,6 @@ ClassView *MainWindow::view() const { return qobject_cast<ClassView *>(tabs_->cu
 CodeEditor *MainWindow::editor() const { return view() ? view()->editor() : nullptr; }
 QString MainWindow::selectedClass() const { return view() ? view()->name() : QString(); }
 QString MainWindow::mcpEndpoint() const { return mcp_->endpoint(); }
-QIcon MainWindow::classIcon(const QString &kind) const {
-    static QHash<QString, QIcon> cache;
-    if (cache.contains(kind))
-        return cache.value(kind);
-    const QHash<QString, QString> letters{{"class", "C"}, {"abstract", "C"},   {"interface", "I"},
-                                          {"enum", "E"},  {"annotation", "C"}, {"method", "m"},
-                                          {"field", "f"}};
-    const QHash<QString, QColor> colors{
-        {"class", QColor("#56b6db")},      {"abstract", QColor("#729de0")},
-        {"interface", QColor("#86c883")},  {"enum", QColor("#d5b46b")},
-        {"annotation", QColor("#c994e3")}, {"method", QColor("#c899e8")},
-        {"field", QColor("#80beb7")}};
-    QPixmap pix(36, 36);
-    pix.fill(Qt::transparent);
-    QPainter p(&pix);
-    p.setRenderHint(QPainter::Antialiasing);
-    p.setPen(Qt::NoPen);
-    p.setBrush(colors.value(kind, QColor("#89a0b7")));
-    p.drawEllipse(2, 2, 32, 32);
-    p.setPen(QColor("#14212d"));
-    QFont font = p.font();
-    font.setBold(true);
-    font.setPixelSize(23);
-    p.setFont(font);
-    p.drawText(pix.rect(), Qt::AlignCenter, letters.value(kind, "?"));
-    pix.setDevicePixelRatio(2);
-    cache[kind] = QIcon(pix);
-    return cache[kind];
-}
 void MainWindow::chooseFile() {
     if (backend_.busy())
         return;
@@ -399,14 +373,15 @@ void MainWindow::populate(const QStringList &classes) {
                                     ? QString(name.section('/', 0, -2)).replace('/', '.')
                                     : tr("默认包");
             if (!state->packages.contains(pkg)) {
-                auto p = new QStandardItem(style()->standardIcon(QStyle::SP_DirIcon), pkg);
+                auto p = new QStandardItem(NodeIcons::icon("package"), pkg);
                 p->setData(pkg, Qt::UserRole + 2);
                 model_->appendRow(p);
                 state->packages[pkg] = p;
             }
             auto info = backend_.project()->info(name);
-            auto item = new QStandardItem(classIcon(info.value("kind").toString()),
-                                          backend_.project()->displayName(name));
+            auto item = new QStandardItem(
+                NodeIcons::icon(info.value("kind").toString(), info.value("flags").toInt()),
+                backend_.project()->displayName(name));
             item->setData(Project::classId(name), Qt::UserRole + 1);
             item->setData(QString(name).replace('/', '.') + " " + item->text(), Qt::UserRole + 2);
             item->setToolTip(name + " · " + info.value("kind").toString());
@@ -455,9 +430,10 @@ void MainWindow::populateMembers(const QModelIndex &index) {
         for (const auto &v : info.value(kind).toArray()) {
             auto m = v.toObject();
             const auto id = m.value("id").toString();
-            auto child = new QStandardItem(classIcon(kind == "methods" ? "method" : "field"),
-                                           backend_.project()->symbolName(id) +
-                                               m.value("descriptor").toString());
+            auto child = new QStandardItem(
+                NodeIcons::icon(kind == "methods" ? "method" : "field", m.value("flags").toInt(),
+                                m.value("name").toString() == "<init>"),
+                backend_.project()->symbolName(id) + m.value("descriptor").toString());
             child->setData(id, Qt::UserRole + 1);
             child->setData(name + " " + child->text(), Qt::UserRole + 2);
             child->setToolTip(id);
@@ -495,8 +471,10 @@ void MainWindow::openClass(const QString &name, bool smali) {
         connect(code, &CodeEditor::renameRequested, this,
                 [this, code] { renameSymbol(code->symbolAtCursor()); });
     }
-    int index = tabs_->addTab(page, classIcon(backend_.project()->info(n).value("kind").toString()),
-                              backend_.project()->displayName(n));
+    const auto info = backend_.project()->info(n);
+    int index = tabs_->addTab(
+        page, NodeIcons::icon(info.value("kind").toString(), info.value("flags").toInt()),
+        backend_.project()->displayName(n));
     tabs_->setTabToolTip(index, n);
     tabs_->setCurrentIndex(index);
     page->selectMode(smali);

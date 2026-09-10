@@ -88,6 +88,10 @@ def main():
     folder.mkdir(parents=True)
     root = Path(__file__).resolve().parents[1]
     shutil.copy2(root / 'LICENSE', folder / 'LICENSE')
+    notices = folder / 'ThirdParty' / 'jadx-icons'
+    notices.mkdir(parents=True, exist_ok=True)
+    for name in ('LICENSE', 'NOTICE', 'README.md'):
+        shutil.copy2(root / 'gui/icons/jadx' / name, notices / name)
     shutil.copy2(root / 'docs/garlic-gui.md', folder / 'README.md')
     for candidate in [qt / 'Licenses', qt / 'licenses', qt / 'share/licenses/qt6-base']:
         if candidate.is_dir():

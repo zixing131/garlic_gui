@@ -53,7 +53,6 @@ class MainWindow : public QMainWindow {
     void saveProject();
     void openProject();
     void recordHistory();
-    QIcon classIcon(const QString &kind) const;
     Backend backend_;
     McpServer *mcp_;
     SearchDialog *searchDialog_ = nullptr;
