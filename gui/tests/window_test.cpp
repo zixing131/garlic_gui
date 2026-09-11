@@ -155,6 +155,14 @@ class WindowTest : public QObject {
         QTemporaryDir fixture;
         const auto archive = fixture.path() + "/resources.apks";
         QVERIFY(QFile::copy(qEnvironmentVariable("GARLIC_TEST_FIXTURES") + "/resources.apks", archive));
+        QString extractionError;
+        const auto base = Resources::materialize(archive, "base.apk", &extractionError);
+        QVERIFY2(!base.isEmpty(), qPrintable(extractionError));
+        // Verify persistence after the temporary-file owner has been destroyed.
+        QCOMPARE(Resources::read(base, "assets/base.txt", 1024, &extractionError), QByteArray("base"));
+        QCOMPARE(Resources::materialize(archive, "base.apk", &extractionError), base);
+        const auto canceled = std::make_shared<std::atomic_bool>(true);
+        QVERIFY(Resources::materialize(archive, "config.en.apk", &extractionError, canceled).isEmpty());
         const auto inspected = Resources::inspect(archive);
         QCOMPARE(inspected.value("application").toString(), QString("demo.App"));
         QCOMPARE(inspected.value("main_activities").toArray(), QJsonArray{"demo.cases.Foo"});
@@ -442,12 +450,13 @@ class WindowTest : public QObject {
         tree->expand(idx);
         tree->setCurrentIndex(idx);
         filter->setText("no_matching_class_123");
-        QTest::qWait(220);
+        QTRY_VERIFY_WITH_TIMEOUT(tree->model()->match(tree->model()->index(0, 0),
+            Qt::UserRole + 1, "Ldemo/Main;", 1,
+            Qt::MatchExactly | Qt::MatchRecursive).isEmpty(), 5000);
         filter->clear();
-        QTest::qWait(220);
-        matches = tree->model()->match(tree->model()->index(0, 0), Qt::UserRole + 1, "Ldemo/Main;",
-                                       1, Qt::MatchExactly | Qt::MatchRecursive);
-        QVERIFY(!matches.isEmpty());
+        QTRY_VERIFY_WITH_TIMEOUT(!(matches = tree->model()->match(tree->model()->index(0, 0),
+            Qt::UserRole + 1, "Ldemo/Main;", 1,
+            Qt::MatchExactly | Qt::MatchRecursive)).isEmpty(), 5000);
         QVERIFY(tree->isExpanded(matches.first()));
     }
     void clearCacheAndResize() {

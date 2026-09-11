@@ -74,12 +74,14 @@ jobs:
             ctest --test-dir build --rerun-failed -V --timeout 120 || true
             exit 1
           fi
-      - name: Preserve failed CLI test sources
+      - name: Preserve failed test logs and CLI sources
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: cli-test-failure-${{ matrix.platform }}
-          path: build/cli-test-failures/
+          path: |
+            build/cli-test-failures/
+            build/Testing/Temporary/
           if-no-files-found: ignore
       - name: Package runtime and smoke test
         shell: bash
@@ -146,12 +148,14 @@ jobs:
             ctest --test-dir build --rerun-failed -V --timeout 120 || true
             exit 1
           fi
-      - name: Preserve failed CLI test sources
+      - name: Preserve failed test logs and CLI sources
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: cli-test-failure-${{ matrix.platform }}
-          path: build/cli-test-failures/
+          path: |
+            build/cli-test-failures/
+            build/Testing/Temporary/
           if-no-files-found: ignore
       - name: Package runtime and smoke test
         env:

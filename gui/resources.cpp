@@ -280,7 +280,6 @@ QString materialize(const QString &path, const QString &entry, QString *error, s
     }
     QTemporaryFile partial(directory + "/extract-XXXXXX");
     if (!partial.open()) { *error = partial.errorString(); return {}; }
-    const auto temporary = partial.fileName();
     struct Extraction { QFile *file; std::shared_ptr<std::atomic_bool> canceled; } extraction{&partial, canceled};
     const auto write = [](void *context, uint64_t offset, const void *data, size_t size) -> size_t {
         auto state = static_cast<Extraction *>(context);
@@ -292,8 +291,12 @@ QString materialize(const QString &path, const QString &entry, QString *error, s
     if (zip_entry_extract(archive.z, write, &extraction) < 0) {
         *error = "资源解压失败"; return {};
     }
-    partial.close();
-    if (!QFile::rename(temporary, target)) { *error = "无法保存资源缓存"; return {}; }
+    // close() keeps QTemporaryFile's native handle open. Let the owning object
+    // rename it, otherwise Windows rejects the rename with a sharing violation.
+    if (!partial.flush() || !partial.rename(target)) {
+        *error = "无法保存资源缓存：" + partial.errorString(); return {};
+    }
+    partial.setAutoRemove(false);
     return target;
 }
 QByteArray read(const QString &path, const QString &entry, qint64 limit, QString *error) {

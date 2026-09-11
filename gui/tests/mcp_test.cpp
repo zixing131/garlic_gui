@@ -40,6 +40,27 @@ class McpTest : public QObject {
         return result;
     }
   private slots:
+    void privateSessionEndpoints() {
+        Backend backend;
+        McpServer first(&backend), second(&backend);
+        QString error;
+        QVERIFY2(first.start(&error, true), qPrintable(error));
+        QVERIFY2(second.start(&error, true), qPrintable(error));
+        QVERIFY(first.endpoint() != second.endpoint());
+#ifndef Q_OS_WIN
+        QVERIFY(first.endpoint().toUtf8().size() < 104);
+#endif
+        QLocalSocket socket;
+        socket.connectToServer(first.endpoint());
+        QVERIFY(socket.waitForConnected(3000));
+        QVERIFY(call(socket, "initialize").contains("result"));
+        socket.abort();
+        first.stop();
+        // Stopping one script session must not invalidate another session.
+        socket.connectToServer(second.endpoint());
+        QVERIFY(socket.waitForConnected(3000));
+        QVERIFY(call(socket, "initialize").contains("result"));
+    }
     void progressiveMembers() {
         QCoreApplication::setOrganizationName("GarlicTests");
         QCoreApplication::setApplicationName("McpTest");

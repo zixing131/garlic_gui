@@ -138,14 +138,19 @@ with test_workspace() as root:
     data[12:32] = hashlib.sha1(data[32:]).digest()
     struct.pack_into('<I', data, 8, zlib.adler32(data[12:]) & 0xffffffff)
     root_dex = root / 'root-package.dex'; root_dex.write_bytes(data)
-    for smali in (False, True):
-        destination = root / ('root-smali' if smali else 'root-java')
-        args = [str(engine), str(root_dex), '-c', 'AUX', '-o', str(destination)]
-        if smali: args.append('-s')
-        run(args, check=True, capture_output=True, timeout=20)
-        text = (destination / ('AUX.smali' if smali else 'AUX.java')).read_text()
-        assert 'package default;' not in text
-        assert ('LAUX;' if smali else 'class AUX') in text
+    # AUX is a Windows device name. Always test safe paths; legacy paths can
+    # represent this name only on Unix filesystems.
+    for safe in ((True,) if os.name == 'nt' else (False, True)):
+        for smali in (False, True):
+            destination = root / (f'root-{safe}-smali' if smali else f'root-{safe}-java')
+            args = [str(engine), str(root_dex), '-c', 'AUX', '-o', str(destination)]
+            if smali: args.append('-s')
+            environment = dict(os.environ, GARLIC_SAFE_SOURCE_PATHS='1' if safe else '0')
+            run(args, env=environment, check=True, capture_output=True, timeout=20)
+            stem = '_classes/415558' if safe else 'AUX'
+            text = (destination / (stem + ('.smali' if smali else '.java'))).read_text()
+            assert 'package default;' not in text
+            assert ('LAUX;' if smali else 'class AUX') in text
     # Full and directory indexing both report progress for DEX in subdirectories.
     nested_zip = root / 'nested-dex.zip'
     with zipfile.ZipFile(nested_zip, 'w', compression=zipfile.ZIP_DEFLATED) as archive:

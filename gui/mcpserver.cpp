@@ -190,7 +190,11 @@ McpServer::McpServer(Backend *backend, QObject *parent) : QObject(parent), backe
 }
 bool McpServer::start(QString *error, bool privateSession) {
     if (privateSession && server_.isListening()) return true;
-    if (privateSession) endpoint_ = QDir::tempPath() + "/garlic-script-" + QUuid::createUuid().toString(QUuid::WithoutBraces);
+    if (privateSession) {
+        // macOS TMPDIR can already consume most of sockaddr_un::sun_path.
+        // Keep the UUID and UserAccessOption, but use a bounded socket path.
+        endpoint_ = "/tmp/garlic-script-" + QUuid::createUuid().toString(QUuid::WithoutBraces);
+    }
 #ifdef Q_OS_WIN
     if (privateSession) endpoint_ = QFileInfo(endpoint_).fileName();
 #endif

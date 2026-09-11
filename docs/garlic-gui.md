@@ -1,8 +1,15 @@
-# Garlic GUI 0.5.21（C++ / Qt 6）
+# Garlic GUI 0.5.22（C++ / Qt 6）
 
 原生桌面浏览器，使用本项目的 garlic C 引擎。Qt 界面通过 `QProcess` 调用引擎，
 先建立类型、成员和引用索引，点击类时生成 Java / Smali。索引读取 CLASS / DEX
 元数据与引用，不执行方法反编译。JAR 索引会读取其中的 CLASS 内容。
+
+## 0.5.22 跨平台集成测试修复
+
+- 修复 Windows 解压资源时临时文件仍持有句柄导致缓存重命名失败，恢复 APKS 合并资源、Manifest/主 Activity 导航与脚本资源读取。
+- 私有脚本 MCP 使用短路径，避免 macOS 长临时目录超过 Unix socket 路径上限；保留随机端点和当前用户访问权限。
+- 目录过滤回归等待实际模型状态，消除固定延时在慢机器上的误报；Windows CLI 的 `AUX` 类测试使用安全文件名，同时在 Unix 验证传统与安全路径。
+- 交互测试通过文件收集 QtTest 日志，Actions 失败时保留 CTest 日志和 CLI 测试产物，便于定位跨平台断言。
 
 ## 0.5.21 可选发布 Release
 
