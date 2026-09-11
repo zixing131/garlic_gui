@@ -81,6 +81,7 @@ Backend::Backend(QObject *parent)
 }
 
 Backend::~Backend() {
+    sourceCacheCanceled_->store(true);
     project_.cancelPendingWork();
     if (metadataCanceled_)
         metadataCanceled_->store(true);
@@ -105,6 +106,7 @@ Backend::~Backend() {
 }
 
 bool Backend::prepareExit(const QString &executable) {
+    sourceCacheCanceled_->store(true);
     project_.cancelPendingWork(); cancel();
     disconnect(&background_, nullptr, this, nullptr); disconnect(&process_, nullptr, this, nullptr);
     for (auto process : {&background_, &process_}) if (process->state() != QProcess::NotRunning) {
@@ -242,6 +244,9 @@ void Backend::openPaths(const QStringList &paths) {
     preparing_ = false;
     sourceGenerating_->store(false);
     fullReady_ = false;
+    sourceCacheCanceled_->store(true);
+    sourceCacheCanceled_ = std::make_shared<std::atomic_bool>(false);
+    sourceCacheDirectory_.clear(); restoredSourceRoot_.clear();
     ownedWorkspaces_ << workspace->path();
     workspace_ = std::move(workspace);
     input_ = QFileInfo(path).absoluteFilePath();
@@ -282,6 +287,10 @@ void Backend::openPaths(const QStringList &paths) {
         indexing_ = false;
         if (configuration != indexConfiguration_) { nextIndex(); return; }
         indexTicket_ = result.ticket;
+        sourceCacheDirectory_ = result.sources;
+        restoredSourceRoot_ = IndexCache::fullSources(sourceCacheDirectory_);
+        fullReady_ = !restoredSourceRoot_.isEmpty();
+        if (fullReady_) emit log(tr("已恢复全量源码缓存，无需重新反编译。"));
         if (!result.project) { nextIndex(); return; }
         indexCacheHit_ = true; directoryOnly_ = false; metadataReady_ = true; indexQueue_.clear();
         project_.replaceData(*result.project);
@@ -290,6 +299,7 @@ void Backend::openPaths(const QStringList &paths) {
         emit indexed(project_.classes());
         if (generation != projectGeneration_ || canceled->load()) return;
         emit busyChanged(false); emit metadataCompleted(); emit indexCacheChanged();
+        if (fullReady_) emit projectSourcesReady();
         if (generation == projectGeneration_ && settings_.background) prepareSources();
     });
     const auto settings = settings_; const auto inputs = inputs_; const auto engine = engine_;
@@ -309,7 +319,7 @@ void Backend::clearIndexes(const QString &directory) {
     auto watcher = new QFutureWatcher<QString>(this);
     connect(watcher, &QFutureWatcher<QString>::finished, this, [this, watcher] {
         const auto error = watcher->result(); watcher->deleteLater();
-        emit log(error.isEmpty() ? tr("磁盘索引已清除，当前打开的内存索引仍可使用。") : tr("清除索引失败：%1").arg(error));
+        emit log(error.isEmpty() ? tr("磁盘索引和源码缓存已清除，当前打开的内存索引仍可使用。") : tr("清除索引失败：%1").arg(error));
         emit indexCacheChanged();
     });
     watcher->setFuture(QtConcurrent::run([settings] { QString error; if (!IndexCache::clear(settings, &error) && error.isEmpty()) error = "Cannot clear index directory"; return error; }));
@@ -325,14 +335,47 @@ void Backend::persistIndex(const std::shared_ptr<Project> &project, const QStrin
         emit log(result.isEmpty() ? tr("磁盘索引已保存（含 JSONL）。") : tr("索引缓存未保存：%1").arg(result));
         emit indexCacheChanged();
     });
-    watcher->setFuture(QtConcurrent::run([settings, ticket, project, jsonl, keep = std::shared_ptr<QTemporaryDir>(keep), workspace]() mutable {
+    const auto generation = projectGeneration_, configuration = indexConfiguration_; QPointer<Backend> self(this);
+    watcher->setFuture(QtConcurrent::run([settings, ticket, project, jsonl, keep = std::shared_ptr<QTemporaryDir>(keep), workspace, self, generation, configuration]() mutable {
         QString error;
-        if (!IndexCache::store(settings, ticket, project, jsonl, workspace->path(), &error) && error.isEmpty()) error = "Canceled";
+        const auto resolved = IndexCache::resolveTicket(settings, ticket, project->cancellationToken());
+        if (self) QMetaObject::invokeMethod(self, [self, resolved, generation, configuration] {
+            if (self && self->projectGeneration_ == generation && self->indexConfiguration_ == configuration) self->indexTicket_ = resolved;
+        }, Qt::QueuedConnection);
+        if (!IndexCache::store(settings, resolved, project, jsonl, workspace->path(), &error) && error.isEmpty()) error = "Canceled";
         // Remove the nested metadata directory while its parent workspace is
         // still retained; otherwise both cleanup jobs can race on reopen.
         keep.reset();
         return error;
     }));
+}
+void Backend::persistSources(const QString &name, bool smali, const QString &path, bool full) {
+    if (!IndexCache::enabled(settings_) || indexTicket_.key.isEmpty() || !workspace_) return;
+    ++indexWriters_; emit indexCacheChanged();
+    const auto settings = settings_; const auto ticket = indexTicket_; const auto workspace = workspace_;
+    const auto canceled = sourceCacheCanceled_; const auto generation = projectGeneration_, configuration = indexConfiguration_;
+    using Result = QPair<IndexCache::Ticket, QString>;
+    auto watcher = new QFutureWatcher<Result>(this);
+    connect(watcher, &QFutureWatcher<Result>::finished, this, [this, watcher, generation, configuration, canceled, settings] {
+        const auto result = watcher->result(); watcher->deleteLater(); --indexWriters_;
+        if (!canceled->load() && generation == projectGeneration_ && configuration == indexConfiguration_) {
+            if (result.second.isEmpty()) {
+                indexTicket_ = result.first;
+                sourceCacheDirectory_ = IndexCache::sourceDirectory(settings, result.first);
+                emit log(tr("源码缓存已保存（含定位映射），下次打开可直接使用。"));
+            } else emit log(tr("源码缓存未保存：%1").arg(result.second));
+        }
+        emit indexCacheChanged();
+    });
+    watcher->setFuture(QtConcurrent::run([settings, ticket, workspace, name, smali, path, full, canceled] {
+        const auto resolved = IndexCache::resolveTicket(settings, ticket, canceled);
+        QString error;
+        if (!IndexCache::storeSources(settings, resolved, workspace->path(), name, smali, path, full, canceled, &error) && error.isEmpty()) error = "Canceled";
+        return Result{resolved, error};
+    }));
+}
+QString Backend::sourceRoot() const {
+    return restoredSourceRoot_.isEmpty() ? (workspace_ ? workspace_->path() + "/all-java" : QString()) : restoredSourceRoot_;
 }
 void Backend::nextIndex() {
     activeInput_ = indexQueue_.takeFirst();
@@ -575,6 +618,7 @@ void Backend::finish(int code, QProcess::ExitStatus status) {
             map.chop(key.endsWith(":smali") ? 6 : 5);
             QFile::remove(map + ".map.json");
         }
+        persistSources(smali_ ? currentName_ : project_.owner(currentName_), smali_, path);
         emit sourceReady(currentName_, smali_, path);
     } else {
         if (inputs_.size() > 1 && QFileInfo(process_.arguments().value(0)).suffix() == "class") {
@@ -688,19 +732,25 @@ void Backend::configure(const AppSettings &settings) {
                               settings_.unflatten != settings.unflatten ||
                               settings_.deobfuscate != settings.deobfuscate ||
                               settings_.cacheMode != settings.cacheMode;
-    if (engineChange || settings_.indexDirectory != settings.indexDirectory || settings_.indexCacheGiB != settings.indexCacheGiB) {
-        ++indexConfiguration_; indexTicket_ = {};
+    const bool indexChange = settings_.excluded != settings.excluded || settings_.deobfuscate != settings.deobfuscate ||
+        settings_.cacheMode != settings.cacheMode || settings_.indexDirectory != settings.indexDirectory || settings_.indexCacheGiB != settings.indexCacheGiB;
+    if (engineChange || indexChange) {
+        ++indexConfiguration_;
+        if (indexChange) indexTicket_ = {};
     }
     settings_ = settings;
     if (engineChange && !busy() && !preparing_ && !metadataPreparing_)
-        clearCache();
+        clearCache(false);
 }
 QString Backend::cachedPath(const QString &name, bool smali) const {
     const auto direct = cache_.value(name + (smali ? ":smali" : ":java"));
     if (direct.startsWith("memory:") || QFileInfo::exists(direct))
         return direct;
+    const auto persistent = IndexCache::cachedSource(sourceCacheDirectory_, smali ? name : project_.owner(name), smali);
+    if (!persistent.isEmpty()) return persistent;
     if (fullReady_ && !smali && workspace_) {
-        const auto directory = workspace_->path() + "/all-java";
+        if (!restoredSourceRoot_.isEmpty() && IndexCache::fullSources(sourceCacheDirectory_).isEmpty()) return {};
+        const auto directory = sourceRoot();
         const auto path = inputs_.size() == 1 && QFileInfo(input_).suffix() == "class"
             ? directory + "/source.java" : Project::sourcePath(directory, project_.owner(name), ".java");
         if (QFileInfo::exists(path) || QFileInfo::exists(directory + "/java-sources.bin"))
@@ -719,13 +769,16 @@ QJsonObject Backend::cacheStats() const {
             {"full_project_ready", fullReady_},
             {"preparing", preparing_}};
 }
-void Backend::clearCache() {
+void Backend::clearCache(bool persistent) {
     if (busy() || preparing_ || metadataPreparing_) {
         emit log(tr("请先停止正在运行的任务，再清理源码缓存。"));
         return;
     }
     ++searchGeneration_;
     cancelSearch();
+    sourceCacheCanceled_->store(true);
+    sourceCacheCanceled_ = std::make_shared<std::atomic_bool>(false);
+    sourceCacheDirectory_.clear(); restoredSourceRoot_.clear();
     if (searchWarmControl_)
         searchWarmControl_->canceled = true;
     cache_.clear();
@@ -740,18 +793,28 @@ void Backend::clearCache() {
     emit busyChanged(true);
     auto workspace = workspace_;
     auto task = new QFutureWatcher<QStringList>(this);
-    connect(task, &QFutureWatcher<QStringList>::finished, this, [this, task] {
+    connect(task, &QFutureWatcher<QStringList>::finished, this, [this, task, persistent] {
         const auto failures = task->result();
         task->deleteLater();
         clearing_ = false;
+        if (!persistent) {
+            sourceCacheDirectory_ = IndexCache::sourceDirectory(settings_, indexTicket_);
+            restoredSourceRoot_ = IndexCache::fullSources(sourceCacheDirectory_);
+            fullReady_ = !restoredSourceRoot_.isEmpty();
+        }
         emit busyChanged(false);
+        if (fullReady_) emit projectSourcesReady();
         if (failures.isEmpty())
-            emit log(tr("源码缓存已清理；类索引保留，已打开标签重新选择时按需加载。"));
+            emit log(persistent ? tr("源码缓存已清理；类索引保留，已打开标签重新选择时按需加载。")
+                                : tr("源码配置已切换，其他配置的持久源码缓存仍保留。"));
         else
             emit failed(tr("部分缓存删除失败（可能被占用）：\n%1").arg(failures.join('\n')));
     });
-    task->setFuture(QtConcurrent::run([workspace] {
+    const auto settings = settings_; const auto ticket = indexTicket_;
+    task->setFuture(QtConcurrent::run([workspace, settings, ticket, persistent] {
         QStringList failures;
+        QString error;
+        if (persistent && !IndexCache::clearSources(settings, ticket, &error)) failures.append(error);
         QDir dir(workspace->path());
         for (const auto &name : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot))
             if (name != "index" && !QDir(dir.filePath(name)).removeRecursively())
@@ -764,6 +827,9 @@ void Backend::prepareSources() {
         sourcesAfterMetadata_ = true;
         prepareMetadata();
         return;
+    }
+    if (!restoredSourceRoot_.isEmpty() && IndexCache::fullSources(sourceCacheDirectory_).isEmpty()) {
+        restoredSourceRoot_.clear(); fullReady_ = false;
     }
     if (clearing_ || preparing_ || fullReady_ || !workspace_ || project_.classCount() == 0)
         return;
@@ -863,6 +929,7 @@ void Backend::prepareFinished(int code, QProcess::ExitStatus status) {
         return;
     }
     fullReady_ = true;
+    persistSources({}, false, workspace_->path() + "/all-java", true);
     emit projectSourcesReady();
     if ((!searchControl_ || searchControl_->canceled) &&
         (!searchWarmControl_ || searchWarmControl_->canceled))
@@ -878,7 +945,7 @@ void Backend::warmSearchIndex() {
     const auto control = searchWarmControl_;
     const auto snapshot = project_.snapshot();
     const auto index = searchIndex_;
-    const auto directory = workspace_->path() + "/all-java";
+    const auto directory = sourceRoot();
     const bool single = inputs_.size() == 1 && QFileInfo(input_).suffix() == "class";
     SearchOptions options;
     options.query = "__garlic_background_search_index_probe__";
@@ -964,6 +1031,9 @@ int Backend::search(const SearchOptions &options) {
 }
 void Backend::runSearch(const SearchOptions &options, int request,
                         const std::shared_ptr<SearchControl> &control) {
+    if (!restoredSourceRoot_.isEmpty() && IndexCache::fullSources(sourceCacheDirectory_).isEmpty()) {
+        restoredSourceRoot_.clear(); fullReady_ = false;
+    }
     if ((options.code || options.comments) && !fullReady_ && !options.query.isEmpty() &&
         searchExpression(options).isValid())
         prepareSources();
@@ -989,10 +1059,11 @@ void Backend::runSearch(const SearchOptions &options, int request,
     auto settings = options;
     settings.sourceMiB = settings_.sourceMiB;
     const bool single = inputs_.size() == 1 && QFileInfo(input_).suffix() == "class";
+    const auto directory = sourceRoot();
     watcher->setFuture(QtConcurrent::run(
-        [snapshot, settings, control, generating, workspace, single, events, request, index] {
+        [snapshot, settings, control, generating, workspace, single, events, request, index, directory] {
             return searchProject(snapshot, settings,
-                                 workspace ? workspace->path() + "/all-java" : QString(), single,
+                                 directory, single,
                                  generating, control, events, request, index, true);
         }));
 }
@@ -1190,6 +1261,7 @@ void Backend::readIndex() {
                 if (generation != projectGeneration_)
                     return;
                 emit busyChanged(false);
+                if (fullReady_) emit projectSourcesReady();
                 if (directoryOnly_)
                     QTimer::singleShot(0, this, &Backend::prepareMetadata);
                 else if (settings_.background)

@@ -176,7 +176,7 @@ void MainWindow::settingsDialog() {
     cacheMode->setCurrentIndex(settings.cacheMode == "memory" ? 1 : 0);
     cache->addRow(tr("源码 / 索引缓存模式"), cacheMode);
     auto cacheLimit = spin(cache, tr("按类源码缓存上限（MiB）"), settings.cacheMiB, 16, 4096);
-    auto indexLimit = spin(cache, tr("磁盘索引容量（GiB）"), settings.indexCacheGiB, 1, 1024);
+    auto indexLimit = spin(cache, tr("索引 / 源码总容量（GiB）"), settings.indexCacheGiB, 1, 1024);
     indexLimit->setObjectName("indexCacheGiB");
     auto indexDirectory = new QLineEdit(settings.indexDirectory);
     indexDirectory->setObjectName("indexDirectory");
@@ -188,9 +188,9 @@ void MainWindow::settingsDialog() {
         auto selected = QFileDialog::getExistingDirectory(this, tr("选择索引缓存目录"), indexDirectory->text());
         if (!selected.isEmpty()) indexDirectory->setText(selected);
     });
-    auto indexHint = new QLabel(tr("磁盘模式保存完整索引和 JSONL；空间不足时删除创建时间最早的索引。\n更改目录不搬迁旧缓存，可选回旧目录清理。"));
+    auto indexHint = new QLabel(tr("磁盘模式保存完整索引、JSONL 和已生成源码；空间不足时删除创建时间最早的缓存。\n更改目录不搬迁旧缓存，可选回旧目录清理。"));
     indexHint->setWordWrap(true); cache->addRow(indexHint);
-    auto clearIndexes = new QPushButton(tr("清除目录中的全部索引"));
+    auto clearIndexes = new QPushButton(tr("清除目录中的索引和源码缓存"));
     clearIndexes->setObjectName("clearIndexes"); cache->addRow(clearIndexes);
     connect(clearIndexes, &QPushButton::clicked, &dialog, [this, indexDirectory] {
         auto target = backend_.settings(); target.indexDirectory = indexDirectory->text().trimmed();
@@ -205,9 +205,9 @@ void MainWindow::settingsDialog() {
         auto watcher = new QFutureWatcher<QJsonObject>(&dialog);
         connect(watcher, &QFutureWatcher<QJsonObject>::finished, &dialog, [this, watcher, indexUsage, indexScanning] {
             auto stats = watcher->result(); watcher->deleteLater(); *indexScanning = false;
-            indexUsage->setText(tr("持久索引：%1 个 · %2 GiB%3").arg(stats.value("entries").toInt())
+            indexUsage->setText(tr("持久缓存：%1 个索引 / %4 组源码 · %2 GiB%3").arg(stats.value("entries").toInt())
                 .arg(stats.value("bytes").toDouble() / (1024 * 1024 * 1024), 0, 'f', 2)
-                .arg(backend_.indexCacheWriting() ? tr(" · 正在后台保存…") : QString()));
+                .arg(backend_.indexCacheWriting() ? tr(" · 正在后台保存…") : QString()).arg(stats.value("sourceEntries").toInt()));
         });
         watcher->setFuture(QtConcurrent::run([target] { return IndexCache::stats(target); }));
     };

@@ -30,7 +30,7 @@ class Backend : public QObject {
     void search(const QString &query, bool regex = false, bool caseSensitive = false);
     int search(const SearchOptions &options);
     void cancelSearch(int request = -1);
-    void clearCache();
+    void clearCache(bool persistent = true);
     void clearIndexes(const QString &directory = QString());
     void rebuildIndex();
     bool indexCacheWriting() const { return indexWriters_ > 0; }
@@ -98,6 +98,10 @@ class Backend : public QObject {
     bool rebuildIndex_ = false, indexCacheHit_ = false;
     int indexWriters_ = 0;
 
+    void persistSources(const QString &name, bool smali, const QString &path, bool full = false);
+    QString sourceRoot() const;
+    QString sourceCacheDirectory_, restoredSourceRoot_;
+    std::shared_ptr<std::atomic_bool> sourceCacheCanceled_ = std::make_shared<std::atomic_bool>(false);
     void nextBackground();
     Project project_;
     AppSettings settings_;

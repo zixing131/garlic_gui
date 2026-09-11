@@ -98,6 +98,133 @@ class IndexCacheTest : public QObject {
         QVERIFY(IndexCache::clear(settings)); QVERIFY(QFileInfo::exists(settings.indexDirectory + "/keep.txt"));
         QVERIFY(!QFileInfo::exists(settings.indexDirectory + "/.garlic-stage-orphan"));
     }
+    void sourceQuotaAndCancellation() {
+        QTemporaryDir temp; AppSettings settings; settings.indexDirectory = temp.path() + "/cache";
+        const auto input = temp.path() + "/input", engine = temp.path() + "/engine", source = temp.path() + "/code.java", jsonl = temp.path() + "/classes.jsonl";
+        write(input, "input"); write(engine, "engine"); write(source, QByteArray(100000, 'x')); write(jsonl, "{}\n");
+        auto cancel = std::make_shared<std::atomic_bool>(false);
+        const auto ticket = IndexCache::lookup(settings, {input}, engine, cancel).ticket;
+        QString error;
+        cancel->store(true);
+        QVERIFY(!IndexCache::storeSources(settings, ticket, temp.path(), "Caller", false, source, false, cancel, &error));
+        cancel->store(false);
+        auto tiny = settings; tiny.indexCacheGiB = 0;
+        QVERIFY(!IndexCache::storeSources(tiny, ticket, temp.path(), "Caller", false, source, false, cancel, &error));
+        QCOMPARE(IndexCache::stats(settings).value("sourceEntries").toInt(), 0);
+        QVERIFY2(IndexCache::storeSources(settings, ticket, temp.path(), "Caller", false, source, false, cancel, &error), qPrintable(error));
+        QCOMPARE(IndexCache::stats(settings).value("sourceEntries").toInt(), 1);
+        // Index and source entries share the same oldest-first storage budget.
+        QVERIFY2(IndexCache::store(settings, ticket, project(input), {jsonl}, temp.path(), &error, 16000), qPrintable(error));
+        QCOMPARE(IndexCache::stats(settings).value("sourceEntries").toInt(), 0);
+        QCOMPARE(IndexCache::stats(settings).value("entries").toInt(), 1);
+        QVERIFY(IndexCache::clear(settings));
+        QVERIFY(!IndexCache::storeSources(settings, ticket, temp.path(), "Caller", false, source, false, cancel, &error));
+        QCOMPARE(IndexCache::stats(settings).value("sourceEntries").toInt(), 0);
+    }
+    void persistentSources_data() {
+        QTest::addColumn<bool>("full"); QTest::addColumn<QString>("fixture");
+        QTest::newRow("per-class-dex") << false << QString("cases.dex");
+        QTest::newRow("full-packed-dex") << true << QString("cases.dex");
+        QTest::newRow("full-directory-jar") << true << QString("demo.jar");
+        QTest::newRow("per-class-class") << false << QString("Main.class");
+        QTest::newRow("full-class") << true << QString("Main.class");
+        QTest::newRow("full-apks") << true << QString("resources.apks");
+    }
+    void persistentSources() {
+        QFETCH(bool, full); QFETCH(QString, fixture);
+        QTemporaryDir temp; AppSettings settings; settings.indexDirectory = temp.path() + "/cache"; settings.background = false;
+        const auto input = qEnvironmentVariable("GARLIC_TEST_FIXTURES") + '/' + fixture;
+        const auto engine = qEnvironmentVariable("GARLIC_TEST_ENGINE");
+        const auto name = (fixture == "demo.jar" || fixture == "Main.class") ? QString("demo/Main") : QString("demo/cases/Foo");
+        SourceDocument expected;
+        QString oldWorkspace;
+        {
+            Backend first; first.setEngine(engine); first.configure(settings); first.open(input);
+            QTRY_VERIFY_WITH_TIMEOUT(!first.busy() && first.metadataReady(), 15000);
+            if (full) {
+                first.prepareSources(); QTRY_VERIFY_WITH_TIMEOUT(first.projectReady(), 15000);
+            } else {
+                QSignalSpy ready(&first, &Backend::sourceReady); first.request(name, false);
+                QTRY_COMPARE_WITH_TIMEOUT(ready.count(), 1, 15000);
+                if (first.supportsSmali(name)) { first.request(name, true); QTRY_COMPARE_WITH_TIMEOUT(ready.count(), 2, 15000); }
+            }
+            QTRY_VERIFY_WITH_TIMEOUT(!first.indexCacheWriting(), 15000);
+            QCOMPARE(IndexCache::stats(settings).value("sourceEntries").toInt(), 1);
+            expected = first.project()->document(name, false, first.cachedPath(name, false));
+            QVERIFY(!expected.text.isEmpty()); QVERIFY(!expected.spans.isEmpty());
+            oldWorkspace = first.workspacePath();
+        }
+        QVERIFY(QThreadPool::globalInstance()->waitForDone(15000));
+        QVERIFY(!QFileInfo::exists(oldWorkspace)); // No session temp file can satisfy the following reads.
+        Backend second; second.setEngine(engine); second.configure(settings); second.open(input);
+        QTRY_VERIFY_WITH_TIMEOUT(!second.busy(), 15000);
+        QVERIFY(second.indexCacheHit()); QCOMPARE(second.projectReady(), full);
+        QSignalSpy ready(&second, &Backend::sourceReady), preparing(&second, &Backend::preparationChanged);
+        second.request(name, false); QCOMPARE(ready.count(), 1); QVERIFY(!second.busy());
+        const auto restored = second.project()->document(name, false, second.cachedPath(name, false));
+        QCOMPARE(restored.text, expected.text); QCOMPARE(restored.spans.size(), expected.spans.size());
+        for (qsizetype i = 0; i < restored.spans.size(); ++i) {
+            QCOMPARE(restored.spans[i].id, expected.spans[i].id);
+            QCOMPARE(restored.spans[i].start, expected.spans[i].start);
+        }
+        if (full) {
+            second.prepareSources(); QCOMPARE(preparing.count(), 0); QVERIFY(second.workerPids().isEmpty());
+            QSignalSpy searched(&second, &Backend::searchCompleted);
+            SearchOptions options; options.query = "return"; options.code = true; options.limit = 10;
+            second.search(options); QTRY_COMPARE_WITH_TIMEOUT(searched.count(), 1, 15000);
+            const auto result = qvariant_cast<SearchResult>(searched.first()[1]);
+            QVERIFY(result.error.isEmpty()); QVERIFY(!result.hits.isEmpty()); QVERIFY(second.workerPids().isEmpty());
+        } else {
+            if (second.supportsSmali(name)) {
+                second.request(name, true); QCOMPARE(ready.count(), 2);
+                QVERIFY(second.project()->document(name, true, second.cachedPath(name, true)).text.contains(".class"));
+            }
+            const auto path = second.cachedPath(name, false);
+            QVERIFY(QFile::remove(path)); QVERIFY(second.cachedPath(name, false).isEmpty());
+        }
+        auto changed = settings; changed.unflatten = !settings.unflatten;
+        const auto different = IndexCache::lookup(changed, {input}, engine, std::make_shared<std::atomic_bool>(false));
+        QVERIFY(different.project); QVERIFY(different.sources.isEmpty());
+        second.configure(changed); QTRY_VERIFY_WITH_TIMEOUT(!second.busy(), 15000);
+        QCOMPARE(IndexCache::stats(settings).value("sourceEntries").toInt(), 1);
+        QVERIFY(second.cachedPath(name, false).isEmpty());
+        second.configure(settings); QTRY_VERIFY_WITH_TIMEOUT(!second.busy(), 15000);
+        QCOMPARE(second.projectReady(), full);
+        if (full) QVERIFY(!second.cachedPath(name, false).isEmpty());
+        second.clearCache(); QTRY_VERIFY_WITH_TIMEOUT(!second.busy(), 15000);
+        QCOMPARE(IndexCache::stats(settings).value("sourceEntries").toInt(), 0);
+        QCOMPARE(IndexCache::stats(settings).value("entries").toInt(), 1);
+        QVERIFY(second.cachedPath(name, false).isEmpty());
+    }
+    void realSourceCache() {
+        const auto input = qEnvironmentVariable("GARLIC_TEST_CACHE_APK");
+        if (input.isEmpty()) QSKIP("Set GARLIC_TEST_CACHE_APK for persistent source timing");
+        QTemporaryDir temp; AppSettings settings; settings.indexDirectory = temp.path() + "/cache"; settings.deobfuscate = true;
+        const auto engine = qEnvironmentVariable("GARLIC_TEST_ENGINE");
+        const QString name = "com/tencent/mm/ui/LauncherUI";
+        SourceDocument expected;
+        {
+            Backend first; first.setEngine(engine); first.configure(settings); first.open(input);
+            QTRY_VERIFY_WITH_TIMEOUT(first.metadataReady() && !first.busy(), 120000);
+            first.prepareSources(); QTRY_VERIFY_WITH_TIMEOUT(first.projectReady(), 180000);
+            QTRY_VERIFY_WITH_TIMEOUT(!first.indexCacheWriting(), 180000);
+            expected = first.project()->document(name, false, first.cachedPath(name, false));
+            QVERIFY(!expected.text.isEmpty());
+            qInfo() << "source cache bytes" << IndexCache::stats(settings).value("bytes");
+        }
+        QVERIFY(QThreadPool::globalInstance()->waitForDone(30000));
+        Backend second; second.setEngine(engine); second.configure(settings);
+        QElapsedTimer timer; timer.start(); second.open(input);
+        QTRY_VERIFY_WITH_TIMEOUT(!second.busy(), 120000);
+        QVERIFY(second.indexCacheHit()); QVERIFY(second.projectReady());
+        qInfo() << "index and sources restored ms" << timer.elapsed();
+        timer.restart();
+        QSignalSpy ready(&second, &Backend::sourceReady); second.request(name, false); QCOMPARE(ready.count(), 1);
+        const auto actual = second.project()->document(name, false, second.cachedPath(name, false));
+        QCOMPARE(actual.text, expected.text); QCOMPARE(actual.spans.size(), expected.spans.size());
+        QVERIFY(second.workerPids().isEmpty());
+        qInfo() << "cached Java and mappings read ms" << timer.elapsed() << "spans" << actual.spans.size();
+    }
     void realApkCache() {
         const auto input = qEnvironmentVariable("GARLIC_TEST_CACHE_APK");
         if (input.isEmpty()) QSKIP("Set GARLIC_TEST_CACHE_APK for cold/warm timing");
