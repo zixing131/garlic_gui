@@ -70,6 +70,20 @@ HTTP 模式持续运行，结束分析后停止进程。`--mcp` 单独使用仍�
 需要 CMake 3.26+、C++17 编译器、Qt 6.5+ Widgets、Network 和 Concurrent。CLI 构建无需 Qt，
 `GARLIC_BUILD_GUI` 默认关闭。
 
+推荐使用仓库根目录的一键脚本，编译当前本地源码中的最新 GUI 及配套引擎：
+
+```sh
+./build_gui.sh
+./build_gui.sh --debug              # 输出到 build-debug
+./build_gui.sh --help               # 自定义 Qt 路径、输出目录和并行数
+```
+
+脚本可从任意工作目录调用，macOS 自动查找 Homebrew Qt。构建成功会显示版本、程序路径及
+AI 文档路径；不会自动拉取 Git 或删除已有产物。`build/` 和 `build-debug/` 可删除后重建，
+但其中的发布包、测试结果和日志也会被删除。
+
+也可手动构建：
+
 ```sh
 brew install qtbase
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
