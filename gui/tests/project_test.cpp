@@ -43,10 +43,27 @@ class ProjectTest : public QObject {
             project.addClass({{"name", name}, {"kind", "class"}});
         project.deobfuscateNames();
         QVERIFY(!project.aliasMap().contains("LValid_123;"));
-        QVERIFY(!project.aliasMap().contains("L正常名称;"));
+        QVERIFY(project.aliasMap().contains("L正常名称;"));
         QVERIFY(project.aliasMap().contains("La;"));
         QVERIFY(project.aliasMap().contains("L9invalid;"));
         QVERIFY(project.aliasMap().contains(QString("Lno") + QChar(0x200b) + "isy;"));
+    }
+    void unicodeClassAndMethodAliases() {
+        Project project;
+        const QString name = QString::fromUtf8("混淆/ＡΒЖꙮ");
+        const QString method = "L" + name + ";->" + QString::fromUtf8("҉函数ꙮ") + "()V";
+        const QString init = "L" + name + ";-><init>()V";
+        project.addClass({{"name", name}, {"methods", QJsonArray{
+            QJsonObject{{"id", method}, {"name", QString::fromUtf8("҉函数ꙮ")}},
+            QJsonObject{{"id", init}, {"name", "<init>"}}}}});
+        QVERIFY(project.aliasMap().isEmpty());
+        project.deobfuscateNames();
+        QVERIFY(project.aliasMap().value("L" + name + ";").startsWith("Class_"));
+        QVERIFY(project.aliasMap().value(method).startsWith("method_"));
+        QVERIFY(!project.aliasMap().contains(init));
+        const auto aliases = project.aliasMap();
+        project.deobfuscateNames();
+        QCOMPARE(project.aliasMap(), aliases);
     }
     void filterOnlyWarmup() {
         auto project = std::make_shared<Project>();

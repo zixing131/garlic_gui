@@ -300,9 +300,13 @@ static void dispatch(jd_mcp_server *server, cJSON *msg)
                               "tools/call requires 'name' (string)");
             return;
         }
-        mcp_handle_tools_call(server, id,
-                              name->valuestring,
-                              args ? args : cJSON_CreateObject());
+        cJSON *empty_args = args ? NULL : cJSON_CreateObject();
+        server->pool = mem_create_pool();
+        mcp_handle_tools_call(server, id, name->valuestring, args ? args : empty_args);
+        // One owner for request memory, including every early error return.
+        mem_pool_free(server->pool);
+        server->pool = NULL;
+        cJSON_Delete(empty_args);
     }
     else {
         jd_mcp_send_error(id, JD_MCP_ERROR_METHOD_NOT_FOUND, "Method not found");
@@ -317,11 +321,10 @@ void jd_mcp_server_init(jd_mcp_server *server)
 
 jd_mcp_server* jd_init_mcp_server()
 {
-    mem_pool *pool = mem_create_pool();
-    jd_mcp_server *server = make_obj_in(jd_mcp_server, pool);
+    // The session must outlive the scratch pool of any individual tool call.
+    jd_mcp_server *server = calloc(1, sizeof(*server));
     if (server == NULL)
         return NULL;
-    server->pool = pool;
     server->initialized = false;
     server->shutdown = false;
     return server;
@@ -351,6 +354,8 @@ void jd_mcp_server_run(jd_mcp_server *server)
 
 void jd_mcp_server_cleanup(jd_mcp_server *server)
 {
-    (void)server;
+    if (!server) return;
+    if (server->pool) mem_pool_free(server->pool);
+    free(server);
     jd_mcp_log("cleanup");
 }

@@ -25,7 +25,7 @@ static inline void sql_cg_tables(char *buf, size_t cap, size_t *len,
         "node_id BIGINT, method_raw VARCHAR, node_type BIGINT, api_type BIGINT);\n"
         "INSERT INTO java_cg_nodes "
         "SELECT CAST(id AS BIGINT), CAST(method AS VARCHAR), "
-        "CAST(COALESCE(type,0) AS BIGINT), CAST(COALESCE(api_type,0) AS BIGINT) "
+        "COALESCE(CAST(type AS BIGINT),0), COALESCE(CAST(api_type AS BIGINT),0) "
         "FROM read_csv_auto('%s', HEADER=TRUE, SAMPLE_SIZE=-1, ignore_errors=true);\n"
         "CREATE TABLE IF NOT EXISTS java_cg_edges("
         "src_id BIGINT, dst_id BIGINT);\n"

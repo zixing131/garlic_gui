@@ -398,13 +398,15 @@ void Project::deobfuscateNames() {
             asciiIdentifier = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c == '$' ||
                 (i > 0 && c >= '0' && c <= '9');
         }
+        const bool member = id.contains("->");
+        const bool method = member && id.contains('(');
+        // Unicode letters can be valid Java identifiers yet deliberately
+        // unreadable. Use readable aliases for class/method names in deobf mode.
         const bool suspicious = name.size() <= 1 || (!asciiIdentifier &&
-            (noisy.match(name).hasMatch() || name.contains(QChar(0xfffd))));
+            (!member || method || noisy.match(name).hasMatch() || name.contains(QChar(0xfffd))));
         if (aliases_.contains(id) || name.isEmpty() || name == "<init>" || name == "<clinit>" ||
             ((asciiIdentifier || identifier.match(name).hasMatch()) && !suspicious))
             continue;
-        const bool method = id.contains("->") && id.contains('(');
-        const bool member = id.contains("->");
         const QString prefix = !member ? "Class_" : method ? "method_" : "field_";
         int &number = !member ? classNumber : method ? methodNumber : fieldNumber;
         QString replacement;
