@@ -72,6 +72,7 @@ class MainWindow : public QMainWindow {
     void populate(const QStringList &classes);
     void populateMembers(const QModelIndex &index);
     int treeGeneration_ = 0;
+    QHash<QString, QStandardItem *> classItems_;
     void showSource(const QString &name, bool smali, const QString &path);
     void loadCurrent();
     void find(bool backwards);

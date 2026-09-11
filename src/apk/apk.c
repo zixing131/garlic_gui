@@ -217,6 +217,14 @@ static void apk_process_dex_from_zip(jd_apk *apk, struct zip_t *zip, const char 
             continue;
         }
 
+        // The GUI index records the owning DEX. A single-class request can
+        // skip every other DEX instead of reparsing the entire application.
+        const char *selected_dex = getenv("GARLIC_DEX_ENTRY");
+        if (class_selection_explicit() && selected_dex && *selected_dex &&
+            strcmp(selected_dex, path_in_zip)) {
+            zip_entry_close(zip);
+            continue;
+        }
         class_selection_origin(path_in_zip);
         size_t buf_size = zip_entry_size(zip);
         char *buf = NULL;

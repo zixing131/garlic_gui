@@ -131,6 +131,14 @@ void Backend::start(Job job, const QStringList &arguments) {
     errorTail_.clear();
     process_.setWorkingDirectory(workspace_->path());
     applyEnvironment(process_, jobDir_);
+    if (job == Job::Source && QFileInfo(arguments.value(0)).suffix().compare("apk", Qt::CaseInsensitive) == 0) {
+        const auto origin = project_.info(argumentClass_).value("origin").toString();
+        if (!origin.isEmpty() && origin.endsWith(".dex", Qt::CaseSensitive)) {
+            auto environment = process_.processEnvironment();
+            environment.insert("GARLIC_DEX_ENTRY", origin);
+            process_.setProcessEnvironment(environment);
+        }
+    }
     if (job == Job::Index) {
         auto environment = process_.processEnvironment();
         environment.insert("GARLIC_COMPACT_INDEX", "2");
@@ -543,6 +551,7 @@ void Backend::finish(int code, QProcess::ExitStatus status) {
 void Backend::applyEnvironment(QProcess &process, const QString &directory) {
     auto env = QProcessEnvironment::systemEnvironment();
     env.remove("GARLIC_DIRECTORY_INDEX");
+    env.remove("GARLIC_DEX_ENTRY");
     env.insert("GARLIC_SOURCE_MAP_DIR", directory);
     if (workspace_)
         env.insert("GARLIC_APK_CACHE_DIR", workspace_->path() + "/apk-cache");

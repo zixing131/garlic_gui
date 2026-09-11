@@ -49,6 +49,17 @@ with test_workspace() as root:
     with zipfile.ZipFile(archive_path, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
         archive.write(fixtures / 'cases.dex', 'classes.dex')
         archive.write(fixtures / 'flattened.dex', 'classes2.dex')
+    # Selecting the indexed DEX must preserve single-class output exactly.
+    outputs = []
+    for entry in ('', 'classes.dex'):
+        destination = root / ('selected-dex' if entry else 'all-dex')
+        environment = dict(os.environ)
+        environment.pop('GARLIC_DEX_ENTRY', None)
+        if entry: environment['GARLIC_DEX_ENTRY'] = entry
+        run([str(engine), str(archive_path), '-c', 'demo/cases/Foo', '-o', str(destination)],
+            env=environment, check=True, capture_output=True, timeout=20)
+        outputs.append((destination / 'demo/cases/Foo.java').read_bytes())
+    assert outputs[0] == outputs[1]
     listings = []
     for mode, threads in [('full', '1'), ('names', '1'), ('names', '2')]:
         index = root / ('directory-' + mode + threads + '.jsonl')

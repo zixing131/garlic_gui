@@ -296,6 +296,33 @@ class WindowTest : public QObject {
                 << "classes:" << count;
         const auto limit = qEnvironmentVariableIntValue("GARLIC_TEST_OPEN_LIMIT_MS");
         if (limit > 0) QVERIFY(elapsed.elapsed() < limit);
+        const auto sourceClass = qEnvironmentVariable("GARLIC_TEST_SOURCE_CLASS");
+        if (!sourceClass.isEmpty()) {
+            QElapsedTimer sourceTime, heartbeat;
+            sourceTime.start(); heartbeat.start();
+            qint64 maxGap = 0;
+            QTimer pulse;
+            connect(&pulse, &QTimer::timeout, &window, [&] {
+                maxGap = qMax(maxGap, heartbeat.restart());
+            });
+            pulse.start(10);
+            window.openClass(sourceClass);
+            QTRY_VERIFY_WITH_TIMEOUT(window.editor() &&
+                window.editor()->toPlainText().contains("class " + sourceClass.section('/', -1)), 30000);
+            qInfo() << "Java source ready ms:" << sourceTime.elapsed() << "Max UI heartbeat gap ms:" << maxGap;
+            const auto sourceLimit = qEnvironmentVariableIntValue("GARLIC_TEST_SOURCE_LIMIT_MS");
+            if (sourceLimit > 0) QVERIFY(sourceTime.elapsed() < sourceLimit);
+            QVERIFY(maxGap < 1000);
+            if (qEnvironmentVariableIsSet("GARLIC_TEST_WAIT_METADATA")) {
+                auto tree = window.findChild<QTreeView *>("classTree");
+                const QPersistentModelIndex firstClass(tree->model()->index(0, 0));
+                QTRY_VERIFY_WITH_TIMEOUT(window.backend()->metadataReady(), 120000);
+                QTest::qWait(200);
+                QVERIFY(firstClass.isValid());
+                qInfo() << "Through metadata completion max UI heartbeat gap ms:" << maxGap;
+                QVERIFY(maxGap < 1000);
+            }
+        }
         if (qEnvironmentVariableIsSet("GARLIC_TEST_WAIT_METADATA")) {
             QTRY_VERIFY_WITH_TIMEOUT(window.backend()->metadataReady(), 120000);
             qInfo() << "Full metadata ready ms:" << elapsed.elapsed();

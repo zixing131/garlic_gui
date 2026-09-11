@@ -1,4 +1,4 @@
-# Garlic GUI 0.5.8（C++ / Qt 6）
+# Garlic GUI 0.5.9（C++ / Qt 6）
 
 原生桌面浏览器，使用本项目的 garlic C 引擎。Qt 界面通过 `QProcess` 调用引擎，
 先建立类型、成员和引用索引，点击类时生成 Java / Smali。索引读取 CLASS / DEX

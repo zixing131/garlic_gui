@@ -13,6 +13,9 @@
 #include <QtWidgets>
 #include <algorithm>
 
+static SourceDocument presentDocument(const Project &project, const AppSettings &settings,
+                                      const QString &selectedName, const SourceDocument &raw, bool smali);
+
 MainWindow::MainWindow(const QString &engine, QWidget *parent)
     : QMainWindow(parent), backend_(this) {
     setWindowTitle(QString("Garlic - 代码浏览器 v %1").arg(QCoreApplication::applicationVersion().isEmpty() ? GARLIC_GUI_VERSION : QCoreApplication::applicationVersion()));
@@ -477,7 +480,30 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     });
     connect(&backend_, &Backend::sourceReady, this, &MainWindow::showSource);
     connect(&backend_, &Backend::metadataCompleted, this, [this] {
-        refreshAliases();
+        if (backend_.project()->hasAliases()) {
+            refreshAliases();
+        } else {
+            // Names/kinds are unchanged: retain the 390k-class tree instead of
+            // synchronously destroying and reconstructing it when metadata arrives.
+            const auto pending = std::exchange(pendingMemberClasses_, {});
+            for (const auto &name : pending) {
+                if (auto item = classItems_.value(name)) {
+                    const auto index = proxy_->mapFromSource(item->index());
+                    populateMembers(index);
+                    tree_->expand(index);
+                } else {
+                    pendingMemberClasses_.insert(name);
+                }
+            }
+            for (int i = 0; i < tabs_->count(); ++i) {
+                auto page = qobject_cast<ClassView *>(tabs_->widget(i));
+                if (!page) continue;
+                for (bool mode : {false, true}) {
+                    const auto path = backend_.cachedPath(page->name(), mode);
+                    if (page->loaded(mode) && !path.isEmpty()) showSource(page->name(), mode, path);
+                }
+            }
+        }
         updateBusy();
     });
     connect(&backend_, &Backend::cacheCleared, this, [this] {
@@ -579,6 +605,7 @@ void MainWindow::openPaths(const QStringList &paths) {
     }
     ++treeGeneration_;
     expandedNodes_.clear();
+    classItems_.clear();
     model_->clear();
     filter_->clear();
     logs_->clear();
@@ -609,6 +636,7 @@ void MainWindow::openPaths(const QStringList &paths) {
 }
 void MainWindow::populate(const QStringList &classes) {
     const int generation = ++treeGeneration_;
+    classItems_.clear();
     expandedNodes_.clear();
     model_->clear();
     projectNodes();
@@ -679,6 +707,7 @@ void MainWindow::populate(const QStringList &classes) {
         }
         while (state->root->rowCount())
             sourceRoot_->appendRow(state->root->takeRow(0));
+        classItems_ = state->items;
         if (backend_.metadataReady()) {
             const auto pending = std::exchange(pendingMemberClasses_, {});
             for (const auto &name : pending)
@@ -839,18 +868,28 @@ void MainWindow::showSource(const QString &name, bool smali, const QString &path
             return;
         page->setProperty(key, true);
         auto snapshot = backend_.project()->snapshot();
-        auto watcher = new QFutureWatcher<SourceDocument>(this);
+        const auto settings = backend_.settings();
+        const auto aliases = snapshot->aliasVersion();
+        const bool metadataReady = backend_.metadataReady();
+        using Documents = QPair<SourceDocument, SourceDocument>;
+        auto watcher = new QFutureWatcher<Documents>(this);
         QPointer<ClassView> target(page);
         const int sourceGeneration = page->property("sourceGeneration").toInt();
-        connect(watcher, &QFutureWatcher<SourceDocument>::finished, this,
-                [this, watcher, target, smali, key, name, sourceGeneration] {
-                    const auto raw = watcher->result();
+        connect(watcher, &QFutureWatcher<Documents>::finished, this,
+                [this, watcher, target, smali, key, name, path, sourceGeneration, settings, aliases, metadataReady] {
+                    const auto documents = watcher->result();
                     watcher->deleteLater();
                     if (!target || target->property("sourceGeneration").toInt() != sourceGeneration)
                         return;
                     target->setProperty(key, false);
-                    target->setRawDocument(smali, raw);
-                    target->setSource(smali, present(raw, smali));
+                    if (aliases != backend_.project()->aliasVersion() ||
+                        settings.toJson() != backend_.settings().toJson() ||
+                        metadataReady != backend_.metadataReady()) {
+                        showSource(name, smali, path);
+                        return;
+                    }
+                    target->setRawDocument(smali, documents.first);
+                    target->setSource(smali, documents.second);
                     if (target == view())
                         status_->setText(
                             tr("%1 · %2 行").arg(name).arg(target->editor(smali)->blockCount()));
@@ -858,8 +897,9 @@ void MainWindow::showSource(const QString &name, bool smali, const QString &path
                         refreshFindHighlights();
                     loadCurrent();
                 });
-        watcher->setFuture(QtConcurrent::run([snapshot, name, smali, path] {
-            return snapshot->document(name, smali, path, false);
+        watcher->setFuture(QtConcurrent::run([snapshot, name, smali, path, settings] {
+            auto raw = snapshot->document(name, smali, path, false);
+            return Documents{raw, presentDocument(*snapshot, settings, name, raw, smali)};
         }));
 
         return;
@@ -1082,7 +1122,11 @@ void MainWindow::closeEvent(QCloseEvent *event) {
 }
 
 SourceDocument MainWindow::present(const SourceDocument &raw, bool smali) const {
-    auto doc = backend_.project()->applyAliases(raw, smali);
+    return presentDocument(*backend_.project(), backend_.settings(), selectedClass(), raw, smali);
+}
+static SourceDocument presentDocument(const Project &project, const AppSettings &settings,
+                                      const QString &selectedName, const SourceDocument &raw, bool smali) {
+    auto doc = project.applyAliases(raw, smali);
     if (smali)
         return doc;
     // garlic keeps source text close to bytecode and may omit Java's presentation-only
@@ -1095,7 +1139,7 @@ SourceDocument MainWindow::present(const SourceDocument &raw, bool smali) const 
     for (const auto &span : doc.spans) {
         if (!span.declaration || !span.id.contains("->"))
             continue;
-        const auto annotation = backend_.project()->overrideAnnotation(span.id);
+        const auto annotation = project.overrideAnnotation(span.id);
         if (annotation.isEmpty())
             continue;
         const int lineStart = doc.text.lastIndexOf('\n', span.start) + 1;
@@ -1120,9 +1164,9 @@ SourceDocument MainWindow::present(const SourceDocument &raw, bool smali) const 
     int offset = 0;
     for (const auto &line : doc.text.split('\n')) {
         bool hide =
-            !backend_.settings().showMetadata && (line.trimmed().startsWith("@Metadata(") ||
+            !settings.showMetadata && (line.trimmed().startsWith("@Metadata(") ||
                                                   line.trimmed().startsWith("@kotlin.Metadata("));
-        if (!backend_.settings().showNotice && (line.startsWith(" *") || line == "/*" ||
+        if (!settings.showNotice && (line.startsWith(" *") || line == "/*" ||
                                                 line == " */" || line.startsWith("// class:")))
             hide = true;
         if (hide)
@@ -1130,10 +1174,10 @@ SourceDocument MainWindow::present(const SourceDocument &raw, bool smali) const 
                 doc.text[offset + j] = ' ';
         offset += line.size() + 1;
     }
-    if (backend_.settings().showNotice) {
+    if (settings.showNotice) {
         const auto classComment = QRegularExpression("// class:\\s*(\\S+)").match(doc.text);
-        const auto name = classComment.hasMatch() ? classComment.captured(1) : selectedClass();
-        auto info = backend_.project()->info(name);
+        const auto name = classComment.hasMatch() ? classComment.captured(1) : selectedName;
+        auto info = project.info(name);
         int comment = doc.text.indexOf("// class:");
         int end = comment < 0 ? -1 : doc.text.indexOf('\n', comment);
         if (!info.isEmpty() && end >= 0) {
