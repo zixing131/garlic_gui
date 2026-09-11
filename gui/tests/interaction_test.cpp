@@ -86,6 +86,21 @@ class InteractionTest : public QObject {
         QVERIFY(!view.smali());
         QCOMPARE(view.editor()->textCursor().selectedText(), QString("bridge"));
     }
+    void editorSyncUsesEnclosingMethod() {
+        CodeEditor editor(false);
+        const QString caller = "LUse;->caller()V", target = "LUse;->target()V";
+        const QString text = "void caller() { target(); }\nvoid target() {}\n";
+        const int callerStart = text.indexOf("caller"), callStart = text.indexOf("target"),
+                  targetStart = text.lastIndexOf("target");
+        editor.setSource({text, {{callerStart, callerStart + 6, caller, true},
+                                {callStart, callStart + 6, target, false},
+                                {targetStart, targetStart + 6, target, true}}});
+        auto cursor = editor.textCursor(); cursor.setPosition(callStart + 2); editor.setTextCursor(cursor);
+        QCOMPARE(editor.symbolAtCursor(), target);
+        QCOMPARE(editor.scopeSymbolAtCursor(), caller);
+        cursor.setPosition(text.indexOf("void caller") + 7); editor.setTextCursor(cursor);
+        QCOMPARE(editor.scopeSymbolAtCursor(), caller);
+    }
     void smaliSearchOptIn() {
         Backend backend; backend.setEngine(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
         backend.open(qEnvironmentVariable("GARLIC_TEST_FIXTURES") + "/cases.dex");

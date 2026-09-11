@@ -10,6 +10,8 @@ class CodeEditor : public QPlainTextEdit {
     void setTheme(bool light);
     void setSource(const SourceDocument &document);
     QString symbolAtCursor() const;
+    // Semantic member enclosing the caret.  Method scope takes precedence over a callee token.
+    QString scopeSymbolAtCursor() const;
     QJsonObject locationAtCursor() const;
     QVector<SourceSpan> spans() const { return spans_; }
     bool goToSymbol(const QString &id, int line = 0);

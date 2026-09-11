@@ -274,6 +274,30 @@ QString CodeEditor::symbolAtCursor() const {
             return s.id;
     return {};
 }
+QString CodeEditor::scopeSymbolAtCursor() const {
+    const int position = textCursor().selectionStart();
+    const auto isMethod = [](const SourceSpan &span) {
+        return span.declaration && span.id.contains("->") && span.id.contains('(') &&
+               !span.id.contains("@local:");
+    };
+    // A native declaration has no body/source location.  Its modifier precedes the name span,
+    // so resolve any method declaration on the current line before looking backwards.
+    const auto block = document()->findBlock(position);
+    for (const auto &span : spans_)
+        if (isMethod(span) && document()->findBlock(span.start) == block)
+            return span.id;
+    const auto location = locationAtCursor();
+    const auto mappedScope = location.value("scope").toString();
+    if (mappedScope.contains("->") && mappedScope.contains('('))
+        return mappedScope;
+    QString current;
+    for (const auto &span : spans_) {
+        if (span.start > position) break;
+        if (isMethod(span)) current = span.id;
+    }
+    if (!current.isEmpty()) return current;
+    return symbolAtCursor();
+}
 bool CodeEditor::goToSymbol(const QString &id, int line) {
     for (const auto &s : spans_)
         if ((s.id == id) && (line > 0 ? document()->findBlock(s.start).blockNumber() + 1 == line : s.declaration)) {

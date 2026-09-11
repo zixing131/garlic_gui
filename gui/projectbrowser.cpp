@@ -578,7 +578,9 @@ void MainWindow::syncEditor() {
     const auto cls = qobject_cast<ClassView *>(page);
     QString member;
     if (cls && editor()) {
-        member = editor()->symbolAtCursor();
+        // The tree follows the caret's enclosing member, not a reference under the caret.
+        // For example, placing the caret on a call to foo() inside bar() must select bar().
+        member = editor()->scopeSymbolAtCursor();
         if (member.contains("@local:"))
             member = member.section("@local:", 0, 0);
         if (!member.contains("->"))
