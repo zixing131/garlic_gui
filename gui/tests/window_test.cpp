@@ -16,6 +16,24 @@
 class WindowTest : public QObject {
     Q_OBJECT
   private slots:
+    void initTestCase() {
+        // Native Windows QSettings requires an organization before the first write.
+        // A per-run namespace also isolates concurrent runs and developer preferences.
+        QCoreApplication::setOrganizationName("GarlicTests");
+        QCoreApplication::setApplicationName("WindowTest-" + QUuid::createUuid().toString(QUuid::WithoutBraces));
+    }
+    void init() {
+        QSettings settings;
+        settings.clear();
+        settings.sync();
+        QCOMPARE(settings.status(), QSettings::NoError);
+    }
+    void cleanupTestCase() {
+        QSettings settings;
+        settings.clear();
+        settings.sync();
+        QCOMPARE(settings.status(), QSettings::NoError);
+    }
     void resultNavigationAfterPresentation() {
         MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
         window.openPath(qEnvironmentVariable("GARLIC_TEST_FIXTURES") + "/demo.jar");
@@ -61,8 +79,12 @@ class WindowTest : public QObject {
             else QSettings().remove("shortcuts-v3/references");
             qApp->setFont(originalFont);
         });
-        QSettings().setValue("shortcuts-v3/references", "Ctrl+R");
-        QSettings().remove("preferences");
+        QSettings settings;
+        settings.setValue("shortcuts-v3/references", "Ctrl+R");
+        settings.remove("preferences");
+        settings.sync();
+        QCOMPARE(settings.status(), QSettings::NoError);
+        QCOMPARE(QSettings().value("shortcuts-v3/references").toString(), QString("Ctrl+R"));
         const auto available = Localization::languages();
         QCOMPARE(available.size(), 7);
         for (const auto &locale : {"en", "zh_TW", "ru", "fr", "ja", "ko"}) {
@@ -481,8 +503,6 @@ class WindowTest : public QObject {
         }
     }
     void shortcutsAndFilterState() {
-        QCoreApplication::setOrganizationName("GarlicTests");
-        QCoreApplication::setApplicationName("WindowTest");
         QSettings().clear();
         QSettings().setValue("shortcuts/查找引用", "Ctrl+Shift+U");
         QSettings().setValue("shortcuts/重命名", "F2");
@@ -787,8 +807,6 @@ class WindowTest : public QObject {
         QCOMPARE(requested.count(), 1);
     }
     void browseSwitchFindRenameAndReopen() {
-        QCoreApplication::setOrganizationName("GarlicTests");
-        QCoreApplication::setApplicationName("WindowTest");
         QSettings().clear();
         const QString fixtures = qEnvironmentVariable("GARLIC_TEST_FIXTURES");
         MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
