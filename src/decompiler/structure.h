@@ -106,7 +106,7 @@ typedef struct jd_class_opcode {
 
 typedef union {
     int     int_val;
-    long    long_val;
+    int64_t long_val; /* Java long is 64 bits, including Windows LLP64. */
     float   float_val;
     double  double_val;
 } jd_primitive_union;

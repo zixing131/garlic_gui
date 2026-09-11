@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import zipfile
 
 engine, fixtures = Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve()
 files = [fixtures / 'demo.jar', fixtures / 'demo.zip', fixtures / 'Main.class', fixtures / 'unknown.jar']
@@ -79,18 +80,18 @@ public class Check {
 import java.util.Arrays;
 public class Check {
     public static void main(String[] args) {
-        if (!Arrays.equals(PrimitiveArrays.shorts(), new short[]{-32768,-1,0,32767})
-            || !Arrays.equals(PrimitiveArrays.bytes(), new byte[]{-128,-1,127})
-            || !Arrays.equals(PrimitiveArrays.chars(), new char[]{0,65,65535})
-            || !Arrays.equals(PrimitiveArrays.ints(), new int[]{Integer.MIN_VALUE,0,Integer.MAX_VALUE})
-            || !Arrays.equals(PrimitiveArrays.longs(), new long[]{Long.MIN_VALUE,-1,Long.MAX_VALUE})
-            || !Arrays.equals(PrimitiveArrays.floats(), new float[]{1F,-2.5F})
-            || !Arrays.equals(PrimitiveArrays.doubles(), new double[]{1D,-2.5D})
-            || !Arrays.equals(PrimitiveArrays.bools(), new boolean[]{false,true})
-            || !Arrays.equals(PrimitiveArrays.filled(), new int[]{3,-2})
-            || !Arrays.equals(PrimitiveArrays.filledRange(), new int[]{3,-2})
-            || PrimitiveArrays.sized(7).length != 7 || PrimitiveArrays.empty().length != 0)
-            throw new AssertionError("Primitive array payload changed");
+        if (!Arrays.equals(PrimitiveArrays.shorts(), new short[]{-32768,-1,0,32767})) throw new AssertionError("Primitive array payload changed: shorts");
+        if (!Arrays.equals(PrimitiveArrays.bytes(), new byte[]{-128,-1,127})) throw new AssertionError("Primitive array payload changed: bytes");
+        if (!Arrays.equals(PrimitiveArrays.chars(), new char[]{0,65,65535})) throw new AssertionError("Primitive array payload changed: chars");
+        if (!Arrays.equals(PrimitiveArrays.ints(), new int[]{Integer.MIN_VALUE,0,Integer.MAX_VALUE})) throw new AssertionError("Primitive array payload changed: ints");
+        if (!Arrays.equals(PrimitiveArrays.longs(), new long[]{Long.MIN_VALUE,-1,Long.MAX_VALUE})) throw new AssertionError("Primitive array payload changed: longs");
+        if (!Arrays.equals(PrimitiveArrays.floats(), new float[]{1F,-2.5F})) throw new AssertionError("Primitive array payload changed: floats");
+        if (!Arrays.equals(PrimitiveArrays.doubles(), new double[]{1D,-2.5D})) throw new AssertionError("Primitive array payload changed: doubles");
+        if (!Arrays.equals(PrimitiveArrays.bools(), new boolean[]{false,true})) throw new AssertionError("Primitive array payload changed: bools");
+        if (!Arrays.equals(PrimitiveArrays.filled(), new int[]{3,-2})) throw new AssertionError("Primitive array payload changed: filled");
+        if (!Arrays.equals(PrimitiveArrays.filledRange(), new int[]{3,-2})) throw new AssertionError("Primitive array payload changed: filledRange");
+        if (PrimitiveArrays.sized(7).length != 7 || PrimitiveArrays.empty().length != 0)
+            throw new AssertionError("Primitive array length changed");
         short[] shared = PrimitiveArrays.shared();
         shared[0] = 91;
         if (PrimitiveArrays.shared() != shared || PrimitiveArrays.shared()[0] != 91)
@@ -144,6 +145,38 @@ public class Check {
                    capture_output=True, timeout=30)
     run(['java', '-cp', str(flattened), 'Check'], check=True,
                    capture_output=True, timeout=20)
+    # Round-trip JVM long constants too: Windows C long is only 32 bits.
+    wide_input = root / 'wide-input'
+    wide_input.mkdir()
+    wide_source = wide_input / 'WideConstants.java'
+    wide_source.write_text('''package demo;
+public class WideConstants {
+    public static long low() { return Long.MIN_VALUE; }
+    public static long high() { return Long.MAX_VALUE; }
+    public static long mixed() { return 0x1234567887654321L; }
+}
+''', encoding='utf-8')
+    run(['javac', '--release', '8', '-encoding', 'UTF-8', '-d', str(wide_input), str(wide_source)],
+        check=True, capture_output=True, timeout=30)
+    wide_archive = wide_input / 'wide.jar'
+    with zipfile.ZipFile(wide_archive, 'w') as archive:
+        archive.write(wide_input / 'demo/WideConstants.class', 'demo/WideConstants.class')
+    wide_output = root / 'wide-output'
+    run([str(engine), str(wide_archive), '-o', str(wide_output), '-t', '1'],
+        check=True, capture_output=True, timeout=20)
+    runner.write_text('''import demo.WideConstants;
+public class Check {
+    public static void main(String[] args) {
+        if (WideConstants.low() != Long.MIN_VALUE || WideConstants.high() != Long.MAX_VALUE
+            || WideConstants.mixed() != 0x1234567887654321L)
+            throw new AssertionError("JVM 64-bit constants changed");
+    }
+}
+''', encoding='utf-8')
+    run(['javac', '-encoding', 'UTF-8', '-d', str(wide_output),
+         str(wide_output / 'demo/WideConstants.java'), str(runner)],
+        check=True, capture_output=True, timeout=30)
+    run(['java', '-cp', str(wide_output), 'Check'], check=True, capture_output=True, timeout=20)
     # Use non-ASCII input, output, index and environment paths on every runner,
     # including Windows ARM64 where an ANSI argv previously disagreed with miniz.
     unicode_root = root / ('中文路径 测试' * 10)

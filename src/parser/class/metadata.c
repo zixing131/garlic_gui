@@ -148,8 +148,8 @@ static void setup_string_of_const_pool(jclass_file *jc)
             }
             case CONST_LONG_TAG: {
                 jconst_long *l = info->long_info;
-                int64_t long_value = ((int64_t)(ntohl(l->high_bytes)) << 32) |
-                                     (uint32_t)ntohl(l->low_bytes);
+                int64_t long_value = (int64_t)(((uint64_t)ntohl(l->high_bytes) << 32) |
+                                               (uint32_t)ntohl(l->low_bytes));
                 item->readable = l2a(long_value);
                 i++;
                 break;

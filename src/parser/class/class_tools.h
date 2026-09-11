@@ -116,11 +116,11 @@ static inline double get_const_double(jcp_info *info)
 }
 
 
-static inline long get_const_long(jcp_info *info)
+static inline int64_t get_const_long(jcp_info *info)
 {
     jconst_long *l = info->info->long_info;
-    return ((int64_t) (ntohl(l->high_bytes)) << 32) |
-           (uint32_t) ntohl(l->low_bytes);
+    return (int64_t)(((uint64_t)ntohl(l->high_bytes) << 32) |
+                     (uint32_t)ntohl(l->low_bytes));
 }
 
 static inline string get_const_string(jclass_file *jc, jcp_info *info)

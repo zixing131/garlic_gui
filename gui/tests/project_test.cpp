@@ -39,8 +39,14 @@ class ProjectTest : public QObject {
         QCOMPARE(compact.callees(from).size(), 1);
         Project dictionary;
         entry["ref_targets"] = QJsonArray{"Ldemo/Base;", target};
-        entry["refs"] = QJsonObject{{"Ldemo/Main;", QJsonArray{QJsonArray{0, -1, "extends"}}},
+        // A single nested QJsonArray can select the copy constructor on Qt 6.8,
+        // flattening the row. Append explicitly so this fixture matches wire JSON.
+        QJsonArray dictionaryInheritance;
+        dictionaryInheritance.append(QJsonArray{0, -1, "extends"});
+        entry["refs"] = QJsonObject{{"Ldemo/Main;", dictionaryInheritance},
                                     {from, QJsonArray{QJsonArray{1, 3}, QJsonArray{1, 3}, QJsonArray{99, 4}}}};
+        QCOMPARE(entry["refs"].toObject()["Ldemo/Main;"].toArray().size(), 1);
+        QVERIFY(entry["refs"].toObject()["Ldemo/Main;"].toArray().first().isArray());
         dictionary.addClass(entry);
         QCOMPARE(dictionary.xrefs(target), compact.xrefs(target));
         QCOMPARE(dictionary.xrefs("Ldemo/Base;"), compact.xrefs("Ldemo/Base;"));

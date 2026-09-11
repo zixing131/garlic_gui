@@ -588,7 +588,7 @@ static inline int jvm_ins_iconst_value(jd_ins *ins)
     }
 }
 
-static inline long jvm_ins_lconst_value(jd_ins *ins)
+static inline int64_t jvm_ins_lconst_value(jd_ins *ins)
 {
     switch (ins->code) {
         case INS_LCONST_0: /*lconst_0*/ return 0;

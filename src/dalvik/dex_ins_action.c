@@ -318,7 +318,7 @@ static inline void build_dex_ins_const_high16_act(jd_dex_ins *ins)
     save_stack_val(ins, val, u_a);
 }
 
-static inline void build_dex_ins_long_act(jd_dex_ins *ins, int reg, long l)
+static inline void build_dex_ins_long_act(jd_dex_ins *ins, int reg, int64_t l)
 {
     jd_val *val = dex_primitive_val(ins, reg, 'J');
     val->data->primitive->long_val = l;

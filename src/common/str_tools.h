@@ -56,9 +56,9 @@ static inline string i2a(int num)
     return str_create("%d", num);
 }
 
-static inline string l2a(long num)
+static inline string l2a(int64_t num)
 {
-    return str_create("%ld", num);
+    return str_create("%lld", (long long)num);
 }
 
 static inline string double2a(double num)
