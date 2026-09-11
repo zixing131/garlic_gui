@@ -1,8 +1,13 @@
-# Garlic GUI 0.5.20（C++ / Qt 6）
+# Garlic GUI 0.5.21（C++ / Qt 6）
 
 原生桌面浏览器，使用本项目的 garlic C 引擎。Qt 界面通过 `QProcess` 调用引擎，
 先建立类型、成员和引用索引，点击类时生成 Java / Smali。索引读取 CLASS / DEX
 元数据与引用，不执行方法反编译。JAR 索引会读取其中的 CLASS 内容。
+
+## 0.5.21 可选发布 Release
+
+- Actions → Build and release Garlic GUI → Run workflow：新增“是否发布到 Release”复选框，默认关闭，仅构建并上传 Artifacts。
+- 勾选后，六个平台构建、测试和打包成功才发布。分支构建使用 `gui-v` 加当前 GUI 版本号作为标签，新标签指向本次构建的提交；已有 Release 会更新附件。推送 `gui-v*` 标签仍自动发布，手动运行时以复选框为准。
 
 ## 0.5.20 持久源码缓存
 
