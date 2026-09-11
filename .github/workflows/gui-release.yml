@@ -1,10 +1,6 @@
 name: Build and release Garlic GUI
 
 on:
-  push:
-    branches: [main]
-    tags: ['gui-v*']
-  pull_request:
   workflow_dispatch:
     inputs:
       publish_release:
@@ -169,9 +165,7 @@ jobs:
 
   release:
     name: Publish release
-    if: >-
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/gui-v')) ||
-      (github.event_name == 'workflow_dispatch' && inputs.publish_release)
+    if: inputs.publish_release
     needs: [unix, windows]
     runs-on: ubuntu-24.04
     permissions:
