@@ -6,6 +6,85 @@
 class ProjectTest : public QObject {
     Q_OBJECT
   private slots:
+    void sameNameCallAndLocal() {
+        Project project;
+        const QString method = "LUse;->run()V", target = "Lother/a;->a(Ljava/lang/Object;)V";
+        project.addClass({{"name", "Use"}, {"methods", QJsonArray{QJsonObject{{"id", method}, {"name", "run"}}}}});
+        project.addClass({{"name", "a"}});
+        const QString text = "class Use { void run() { Object a = null; a.a(a); a[0]; } }";
+        QTemporaryDir dir;
+        QFile file(dir.path() + "/Use.java"); QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write(text.toUtf8()); file.close();
+        QJsonArray records{
+            QJsonObject{{"id", method}, {"token", "run"}, {"start", text.indexOf("run")}, {"end", text.indexOf("run") + 3}, {"declaration", true}},
+            QJsonObject{{"id", target}, {"token", "a"}, {"start", text.indexOf("a.a(a)")}, {"end", text.indexOf("a.a(a)") + 6}}};
+        QFile map(dir.path() + "/Use.map.json"); QVERIFY(map.open(QIODevice::WriteOnly));
+        map.write(QJsonDocument(records).toJson()); map.close();
+        const auto doc = project.document("Use", false, file.fileName());
+        const int call = text.indexOf("a.a(a)");
+        bool receiver = false, invoked = false, argument = false;
+        for (const auto &span : doc.spans) {
+            if (span.start == call) receiver = span.id.contains("@local:");
+            if (span.start == call + 2) invoked = span.id == target;
+            if (span.start == call + 4) argument = span.id.contains("@local:");
+            if (span.start == text.indexOf("a[0]")) QVERIFY(span.id.contains("@local:"));
+        }
+        QVERIFY(receiver && invoked && argument);
+    }
+    void exactReferenceIdentities() {
+        Project project;
+        const QString first = "Lone/a;->a()V", other = "Ltwo/a;->a()V", field = "Lone/a;->a:I";
+        project.addClass({{"name", "demo/Caller"}, {"refs", QJsonArray{
+            QJsonObject{{"from", "Ldemo/Caller;->first()V"}, {"target", first}, {"offset", 1}},
+            QJsonObject{{"from", "Ldemo/Caller;->other()V"}, {"target", other}, {"offset", 2}},
+            QJsonObject{{"from", "Ldemo/Caller;->field()V"}, {"target", field}, {"offset", 3}}}}});
+        QCOMPARE(project.xrefs(first).size(), 1);
+        QCOMPARE(project.xrefs(field).size(), 1);
+        QCOMPARE(project.xrefs("Lone/a;").size(), 2);
+        for (const auto &ref : project.xrefs("Lone/a;"))
+            QVERIFY(ref.toObject().value("target").toString() != other);
+    }
+    void realResourceSearch() {
+        const auto input = qEnvironmentVariable("GARLIC_TEST_LARGE_APK");
+        if (input.isEmpty()) QSKIP("Set APK to validate decoded resource search");
+        auto project = std::make_shared<Project>(); project->setInputs({input});
+        SearchOptions options; options.code = false; options.resources = true;
+        options.query = "Android resource table";
+        QElapsedTimer timer; timer.start();
+        const auto result = searchProject(project, options, {}, false,
+            std::make_shared<std::atomic_bool>(false), std::make_shared<SearchControl>(),
+            std::make_shared<SearchEvents>(), 1, std::make_shared<SearchIndex>());
+        QVERIFY(std::any_of(result.hits.begin(), result.hits.end(), [](const auto &v) {
+            return v.toObject().value("entry").toString() == "resources.arsc";
+        }));
+        qInfo() << "Resource scan ms:" << timer.elapsed() << "scanned:" << result.scanned;
+    }
+    void resourceSearchOptIn() {
+        auto project = std::make_shared<Project>();
+        project->setInputs({qEnvironmentVariable("GARLIC_TEST_FIXTURES") + "/demo.zip"});
+        SearchOptions options; options.code = false; options.query = "ZIP resource preview";
+        auto index = std::make_shared<SearchIndex>();
+        auto run = [&] { return searchProject(project, options, {}, false,
+            std::make_shared<std::atomic_bool>(false), std::make_shared<SearchControl>(),
+            std::make_shared<SearchEvents>(), 1, index); };
+        QVERIFY(run().hits.isEmpty());
+        options.resources = true;
+        const auto result = run();
+        QCOMPARE(result.hits.size(), 1);
+        QCOMPARE(result.hits.first().toObject().value("entry").toString(), QString("assets/readme.txt"));
+        QVERIFY(run().cachedFiles > 0);
+    }
+    void sameNameTypeDoesNotCaptureVariable() {
+        Project project;
+        project.addClass({{"name", "other/a"}});
+        project.addClass({{"name", "demo/Use"}});
+        QTemporaryDir directory;
+        QFile file(directory.path() + "/Use.java");
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("package demo; class Use { void run() { int a = 0; a.run(); } }"); file.close();
+        const auto doc = project.document("demo/Use", false, file.fileName());
+        for (const auto &span : doc.spans) QVERIFY(span.id != "Lother/a;");
+    }
     void localVariableAliases() {
         QTemporaryDir directory;
         Project project;

@@ -136,16 +136,17 @@ static void dex_class_source_save_dir(jd_dex *dex, jsource_file *jf)
     if (meta->source_dir == NULL || ((jf->is_anonymous || jf->is_inner) &&
         (!class_selection_explicit() || jf->parent != NULL)))
         return;
-    string full_dir = str_create("%s/%s", meta->source_dir, jf->pname);
-    mkdir_p(full_dir);
-
-    string path = str_create("%s/%s.java", full_dir, jf->sname);
+    string path;
     if (source_safe_paths_enabled()) {
         char *stem = source_storage_name(jf->fname);
         path = str_create("%s/%s.java", meta->source_dir, stem);
         free(stem);
         char *parent = str_dup(path), *slash = strrchr(parent, '/');
         if (slash) { *slash = 0; mkdir_p(parent); }
+    } else {
+        string full_dir = str_create("%s/%s", meta->source_dir, jf->pname);
+        mkdir_p(full_dir);
+        path = str_create("%s/%s.java", full_dir, jf->sname);
     }
     FILE *stream = fopen(path, "wb");
     if (stream == NULL) {

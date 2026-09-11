@@ -300,7 +300,7 @@ void expression_to_stream(FILE *stream, jd_node *node, jd_exp *expression)
         }
         fputs("\" */ ", stream);
     }
-    long start=getenv("GARLIC_SOURCE_MAP_DIR")?ftell(stream):-1;
+    long start = source_map_tracks_expression(expression) ? ftell(stream) : -1;
     expression_to_stream_impl(stream,node,expression);
-    source_map_expression(stream,start,expression);
+    if (start >= 0) source_map_expression(stream,start,expression);
 }

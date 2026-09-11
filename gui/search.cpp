@@ -1,4 +1,5 @@
 #include "search.h"
+#include "resources.h"
 #include <QDateTime>
 #include <QElapsedTimer>
 #include <QFile>
@@ -158,6 +159,54 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
         }
         return false;
     };
+    if (o.resources) {
+        for (const auto &input : project->inputs()) {
+            if (stopped()) break;
+            const auto entries = Resources::inspect(input, std::shared_ptr<std::atomic_bool>(control, &control->canceled)).value("entries").toArray();
+            for (const auto &value : entries) {
+                if (stopped()) break;
+                const auto entry = value.toObject();
+                const auto name = entry.value("name").toString();
+                const auto path = entry.value("sourcePath").toString(input);
+                const auto sourceEntry = entry.value("sourceEntry").toString(name);
+                auto hit = [&](const QString &text, int line) {
+                    append({{"kind", "resource"}, {"node", name}, {"text", text.left(1200)},
+                            {"line", line}, {"path", path}, {"entry", sourceEntry}});
+                };
+                if (contains(name)) hit(name, 0);
+                if (stopped()) break;
+                const auto suffix = QFileInfo(name).suffix().toLower();
+                if (!QStringList{"xml", "arsc", "txt", "json", "html", "js", "css", "properties", "csv", "yaml", "yml"}.contains(suffix)) continue;
+                const QString key = "resource:" + path + '!' + sourceEntry;
+                std::shared_ptr<const SearchDocument> document;
+                if (index) {
+                    std::lock_guard<std::mutex> guard(index->mutex);
+                    const auto filter = index->filters.constFind(key);
+                    if (filter != index->filters.cend() && !possibleMatch(*filter, bits)) { ++result.indexRejected; continue; }
+                    if (auto cached = index->documents.object(key)) { document = *cached; ++result.cachedFiles; }
+                }
+                if (!document) {
+                    QString error;
+                    const auto bytes = Resources::read(path, sourceEntry, qint64(suffix == "arsc" ? 64 : o.sourceMiB) * 1048576, &error);
+                    if (!error.isEmpty()) { ++result.skipped; continue; }
+                    const auto text = suffix == "arsc" ? Resources::describeTable(bytes, nullptr, true, std::shared_ptr<std::atomic_bool>(control, &control->canceled))
+                        : suffix == "xml" ? Resources::decodeXml(bytes) : QString::fromUtf8(bytes);
+                    auto options = o; options.code = options.comments = true;
+                    document = prepareDocument(text, options, control);
+                    if (!document) break;
+                    if (index) {
+                        std::lock_guard<std::mutex> guard(index->mutex);
+                        index->filters.insert(key, document->grams);
+                        index->documents.insert(key, new std::shared_ptr<const SearchDocument>(document), qMax(1, int(text.size() * 4LL / 1024)));
+                    }
+                }
+                ++result.scanned;
+                for (int line = 0; line < document->lines.size() && !stopped(); ++line)
+                    if (contains(document->lines[line])) hit(document->lines[line], line + 1);
+            }
+        }
+        flush();
+    }
     if (o.classes || o.methods || o.fields)
         for (const auto &v : project->symbols()) {
             if (stopped())

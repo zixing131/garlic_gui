@@ -34,6 +34,7 @@ class MainWindow : public QMainWindow {
     void openClass(const QString &name, bool smali = false);
     void navigateTo(const QString &id, int line = 0);
     void showReferences(const QString &id);
+    void openResource(const QString &path, const QString &entry, const QString &generated = {});
     void showCallGraph(const QString &id);
     void applySettings(const AppSettings &settings);
     QString mcpEndpoint() const;
@@ -53,7 +54,6 @@ class MainWindow : public QMainWindow {
     QSet<QPersistentModelIndex> expandedNodes_;
     bool filtering_ = false;
     void projectNodes();
-    void openResource(const QString &path, const QString &entry, const QString &generated = {});
     void showNativeAnalysis(const QString &path, const QString &entry = {});
     void expandResourceTable(const QModelIndex &index);
     QHash<QString, QMap<QString, QString>> decodedResources_;

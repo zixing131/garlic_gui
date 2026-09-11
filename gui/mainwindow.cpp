@@ -1019,7 +1019,11 @@ void MainWindow::showReferences(const QString &id) {
     dialog->show();
 }
 void MainWindow::showCallGraph(const QString &id) {
-    if (waitForMetadata([this, id] { showCallGraph(id); })) return;
+    if (!backend_.metadataReady()) {
+        status_->setText(tr("请等待索引完成后再执行此操作。"));
+        backend_.prepareMetadata();
+        return;
+    }
     const auto method = backend_.project()->canonicalId(id);
     if (!method.contains("->") || !method.contains('(')) {
         status_->setText(tr("请先选择一个方法，再查看函数调用图。"));
@@ -1039,7 +1043,11 @@ void MainWindow::showNativeAnalysis(const QString &path, const QString &entry) {
 void MainWindow::renameSymbol(const QString &id) {
     if (id.isEmpty())
         return;
-    if (waitForMetadata([this, id] { renameSymbol(id); })) return;
+    if (!backend_.metadataReady()) {
+        status_->setText(tr("请等待索引完成后再执行此操作。"));
+        backend_.prepareMetadata();
+        return;
+    }
     bool ok = false;
     const auto name =
         QInputDialog::getText(this, tr("重命名符号"), id + tr("\n新的项目名称（保留原始字节码）："),

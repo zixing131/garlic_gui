@@ -632,6 +632,14 @@ SourceDocument Project::document(const QString &name, bool smali, const QString 
             while (matches.hasNext()) {
                 const auto m = matches.next();
                 int pos = start + m.capturedStart();
+                // A mapped call can contain a receiver/argument with the same name.
+                // Select the call identifier, not the first same-spelled local variable.
+                const auto id = r.value("id").toString();
+                if (id.contains("->") && id.contains('(')) {
+                    int next = pos + m.capturedLength();
+                    while (next < end && mask[next].isSpace()) ++next;
+                    if (next >= mask.size() || mask[next] != '(') continue;
+                }
                 const bool covered = overlaps(pos, pos + m.capturedLength());
                 if (!covered) {
                     add(pos, pos + m.capturedLength(), r.value("id").toString(),
@@ -671,48 +679,6 @@ SourceDocument Project::document(const QString &name, bool smali, const QString 
                 const auto match = matches.next();
                 add(match.capturedStart(1), match.capturedEnd(1), field.value(), false);
             }
-        }
-        QHash<QString, QString> imports;
-        const QRegularExpression importRe("\\bimport\\s+([\\w.$]+)\\s*;");
-        auto importsIt = importRe.globalMatch(mask);
-        while (importsIt.hasNext()) {
-            auto m = importsIt.next();
-            const auto n = normalize(m.captured(1));
-            imports[n.section('/', -1)] = classId(n);
-        }
-        const auto aliasClasses = classAliases();
-        auto resolveType = [&](const QString &word) -> QString {
-            auto candidates = classNames_.value(word);
-            for (const auto &id : aliasClasses.value(word))
-                if (!candidates.contains(id)) candidates.append(id);
-            if (candidates.size() == 1) return candidates.first();
-            QStringList local;
-            const auto package = normalize(name).section('/', 0, -2);
-            for (const auto &id : candidates)
-                if (classOf(id).section('/', 0, -2) == package) local.append(id);
-            return local.size() == 1 ? local.first() : QString();
-        };
-        const QRegularExpression typeBefore("(?:\\b(?:new|instanceof|extends|implements|class|interface|"
-                                            "enum|import)\\s+|@)$");
-        const QRegularExpression typeAfter("^\\s*(?:[.<\\[]|[\\p{L}_$][\\p{L}\\p{N}_$]*\\s*[,;=()])");
-        const QRegularExpression words("[\\p{L}_$][\\p{L}\\p{N}_$]*");
-        auto wordsIt = words.globalMatch(mask);
-        while (wordsIt.hasNext()) {
-            if (canceled_->load()) return {};
-            const auto m = wordsIt.next();
-            if (overlaps(m.capturedStart(), m.capturedEnd())) continue;
-            const QString word = m.captured();
-            const QString before = mask.mid(qMax(0, int(m.capturedStart()) - 32),
-                                            qMin(32, int(m.capturedStart()))),
-                          after = mask.mid(m.capturedEnd(), 80);
-            const bool typeContext = typeBefore.match(before).hasMatch() || typeAfter.match(after).hasMatch();
-            if (!typeContext)
-                continue;
-            QString id = imports.value(word);
-            if (id.isEmpty())
-                id = resolveType(word);
-            if (!id.isEmpty())
-                add(m.capturedStart(), m.capturedEnd(), id, false);
         }
     } else {
         const QRegularExpression refs("(L[^\\s;]+;)->([\\w$<>]+)(\\([^\\s]*|:[^\\s,]+)");
@@ -818,6 +784,50 @@ SourceDocument Project::document(const QString &name, bool smali, const QString 
                         break;
                     }
             }
+        }
+    }
+    // Lexically resolved locals take priority over guessed type contexts (a[i], a < b).
+    if (!smali) {
+        QHash<QString, QString> imports;
+        const QRegularExpression importRe("\\bimport\\s+([\\w.$]+)\\s*;");
+        auto importsIt = importRe.globalMatch(mask);
+        while (importsIt.hasNext()) {
+            auto m = importsIt.next();
+            const auto n = normalize(m.captured(1));
+            imports[n.section('/', -1)] = classId(n);
+        }
+        const auto aliasClasses = classAliases();
+        auto resolveType = [&](const QString &word) -> QString {
+            auto candidates = classNames_.value(word);
+            for (const auto &id : aliasClasses.value(word))
+                if (!candidates.contains(id)) candidates.append(id);
+            QStringList local;
+            const auto package = normalize(name).section('/', 0, -2);
+            for (const auto &id : candidates)
+                if (classOf(id).section('/', 0, -2) == package) local.append(id);
+            return local.size() == 1 ? local.first() : QString();
+        };
+        const QRegularExpression typeBefore("(?:\\b(?:new|instanceof|extends|implements|class|interface|"
+                                            "enum|import)\\s+|@)$");
+        const QRegularExpression typeAfter("^\\s*(?:[<\\[]|[\\p{L}_$][\\p{L}\\p{N}_$]*\\s*[,;=()])");
+        const QRegularExpression words("[\\p{L}_$][\\p{L}\\p{N}_$]*");
+        auto wordsIt = words.globalMatch(mask);
+        while (wordsIt.hasNext()) {
+            if (canceled_->load()) return {};
+            const auto m = wordsIt.next();
+            if (overlaps(m.capturedStart(), m.capturedEnd())) continue;
+            const QString word = m.captured();
+            const QString before = mask.mid(qMax(0, int(m.capturedStart()) - 32),
+                                            qMin(32, int(m.capturedStart()))),
+                          after = mask.mid(m.capturedEnd(), 80);
+            const bool typeContext = typeBefore.match(before).hasMatch() || typeAfter.match(after).hasMatch();
+            if (!typeContext)
+                continue;
+            QString id = imports.value(word);
+            if (id.isEmpty())
+                id = resolveType(word);
+            if (!id.isEmpty())
+                add(m.capturedStart(), m.capturedEnd(), id, false);
         }
     }
     std::sort(result.spans.begin(), result.spans.end(),

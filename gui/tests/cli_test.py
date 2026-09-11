@@ -46,6 +46,17 @@ def test_workspace():
 
 
 with test_workspace() as root:
+    # Constructors with a Signature attribute must never acquire a void return type.
+    generic = root / 'GenericConstructor.java'
+    generic.write_text('package demo; public class GenericConstructor { public <T> GenericConstructor(T value) {} }', encoding='utf-8')
+    run(['javac', '-d', str(root), str(generic)], check=True, capture_output=True, timeout=20)
+    result = run([str(engine), str(root / 'demo/GenericConstructor.class')],
+                 check=True, capture_output=True, timeout=20)
+    code = result.stdout.decode('utf-8')
+    assert 'void GenericConstructor(' not in code and 'GenericConstructor(' in code, code
+    generic.write_text(code, encoding='utf-8')
+    run(['javac', '-d', str(root / 'generic-check'), str(generic)], check=True, capture_output=True, timeout=20)
+
     # Encoded paths remain distinct after Windows case folding.
     for mode in (['explicit', 'windows-default'] if os.name == 'nt' else ['explicit']):
         safe = root / ('safe-output-' + mode)
@@ -58,6 +69,20 @@ with test_workspace() as root:
         sources = [p.read_text(encoding='utf-8') for p in paths]
         assert any('class Foo' in text for text in sources)
         assert any('class foo' in text for text in sources)
+
+    # Default compact v2 and explicit legacy output retain the same class records.
+    indexes = []
+    for mode in (None, '0'):
+        environment = dict(os.environ)
+        environment.pop('GARLIC_COMPACT_INDEX', None)
+        if mode is not None: environment['GARLIC_COMPACT_INDEX'] = mode
+        target = root / ('format-' + str(mode) + '.jsonl')
+        run([str(engine), str(fixtures / 'cases.dex'), '-I', str(target), '-o', str(root / 'format-output')],
+            env=environment, check=True, capture_output=True, timeout=20)
+        indexes.append([json.loads(line) for line in target.read_text().splitlines()])
+    assert all(isinstance(row['refs'], dict) and 'ref_targets' in row for row in indexes[0])
+    assert all(isinstance(row['refs'], list) for row in indexes[1])
+    assert sorted(row['name'] for row in indexes[0]) == sorted(row['name'] for row in indexes[1])
 
     # Fast directory mode must preserve archive order, case and class kinds.
     archive_path = root / 'directory.apk'

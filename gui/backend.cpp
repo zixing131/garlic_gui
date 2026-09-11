@@ -821,7 +821,7 @@ int Backend::search(const SearchOptions &options) {
     const int request = ++searchGeneration_;
     searchControl_ = std::make_shared<SearchControl>();
     const auto control = searchControl_;
-    if (!metadataReady_) {
+    if (!metadataReady_ && (options.classes || options.methods || options.fields || options.code || options.comments)) {
         prepareMetadata();
         const auto workspace = workspace_;
         auto timer = new QTimer(this);

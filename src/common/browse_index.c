@@ -27,10 +27,12 @@ static cJSON *class_json(const char *name, unsigned flags, int inner) {
     cJSON_AddBoolToObject(entry, "inner", inner);
     cJSON_AddItemToObject(entry, "methods", cJSON_CreateArray());
     cJSON_AddItemToObject(entry, "fields", cJSON_CreateArray());
-    cJSON_AddItemToObject(entry, "refs", getenv("GARLIC_COMPACT_INDEX") ? cJSON_CreateObject() : cJSON_CreateArray());
-    reference_groups = getenv("GARLIC_COMPACT_INDEX") ? hashmap_init((hcmp_fn)s2o_cmp, 32) : NULL;
     const char *version = getenv("GARLIC_COMPACT_INDEX");
-    reference_ids = version && !strcmp(version, "2") ? hashmap_init((hcmp_fn)s2i_cmp, 128) : NULL;
+    if (!version) version = "2";
+    const int compact = *version && strcmp(version, "0");
+    cJSON_AddItemToObject(entry, "refs", compact ? cJSON_CreateObject() : cJSON_CreateArray());
+    reference_groups = compact ? hashmap_init((hcmp_fn)s2o_cmp, 32) : NULL;
+    reference_ids = compact && !strcmp(version, "2") ? hashmap_init((hcmp_fn)s2i_cmp, 128) : NULL;
     reference_dictionary = NULL;
     reference_count = 0;
     if (reference_ids) {

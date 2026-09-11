@@ -200,6 +200,8 @@ class InteractionTest : public QObject {
         QTRY_VERIFY_WITH_TIMEOUT(table->model()->rowCount() > 0, 15000);
         QVERIFY2(table->model()->index(0, 1).data().toString().contains("greet"),
                  qPrintable(table->model()->index(0, 1).data().toString()));
+        QTRY_VERIFY_WITH_TIMEOUT(table->model()->index(0, 0).data(Qt::UserRole + 2).toInt() > 0, 15000);
+        QVERIFY(!table->model()->index(0, 1).data(Qt::UserRole + 3).toJsonArray().isEmpty());
         auto tree = window.findChild<QTreeView *>();
         QVERIFY(tree);
         auto root = tree->model()->index(0, 0);
@@ -315,6 +317,11 @@ class InteractionTest : public QObject {
             }
         QVERIFY(checked);
         SearchDialog search(&window);
+        auto resources = search.findChild<QCheckBox *>("searchResources");
+        QVERIFY(resources && !resources->isChecked());
+        resources->setChecked(true);
+        { SearchDialog restored(&window); QVERIFY(restored.findChild<QCheckBox *>("searchResources")->isChecked()); }
+        resources->setChecked(false);
         search.show();
         auto query = search.findChild<QLineEdit *>("projectQuery");
         auto table = search.findChild<QTableView *>("searchResults");

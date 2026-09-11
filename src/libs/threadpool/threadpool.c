@@ -109,7 +109,10 @@ int threadpool_add(threadpool_t *pool,
 
     do {
         if (pool->tail >= pool->queue_size) {
-            if (pool->head > 0) {
+            /* Compact only after consuming half the capacity. Compacting for
+             * every newly freed slot copies a nearly full queue under the lock
+             * once per submitted class on large APKs. Grow otherwise. */
+            if (pool->head >= pool->queue_size / 2) {
 
                 memmove(pool->queue, &pool->queue[pool->head],
                         sizeof(threadpool_task_t) * pool->count);

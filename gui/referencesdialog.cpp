@@ -17,8 +17,9 @@ struct ReferenceDocument {
         for (const auto &span : doc.spans) {
             if (span.declaration) {
                 if (!declarations.contains(span.id)) declarations.insert(span.id, span.start);
-                if (span.id.contains("->")) members.append(span);
-            } else if (span.id == id) matches.append(span);
+                if (span.id.contains("->") && !span.id.contains("@local:")) members.append(span);
+            } else if (span.id == id || (!id.contains("->") && !span.id.contains("@local:") &&
+                       Project::classId(Project::classOf(span.id)) == id)) matches.append(span);
         }
         const auto order = [](const SourceSpan &a, const SourceSpan &b) { return a.start < b.start; };
         std::sort(members.begin(), members.end(), order);
@@ -41,6 +42,17 @@ struct ReferenceDocument {
         const int a = lines[row], b = row + 1 < lines.size() ? lines[row + 1] - 1 : doc.text.size();
         return doc.text.mid(a, qMin(1200, b - a));
     }
+    QJsonArray highlights(int at) const {
+        QJsonArray result;
+        const int row = line(at) - 1;
+        if (row < 0) return result;
+        const int start = lines[row], end = row + 1 < lines.size() ? lines[row + 1] : doc.text.size();
+        auto match = std::lower_bound(matches.cbegin(), matches.cend(), start,
+            [](const SourceSpan &span, int p) { return span.start < p; });
+        for (; match != matches.cend() && match->start < end; ++match)
+            result.append(QJsonObject{{"start", match->start - start}, {"end", match->end - start}});
+        return result;
+    }
     QString container(int at, const QString &fallback) const {
         auto decl = std::lower_bound(members.cbegin(), members.cend(), at,
             [](const SourceSpan &s, int p) { return s.start < p; });
@@ -49,7 +61,6 @@ struct ReferenceDocument {
 };
 class SnippetDelegate : public QStyledItemDelegate {
   public:
-    QString token;
     using QStyledItemDelegate::QStyledItemDelegate;
     void paint(QPainter *p, const QStyleOptionViewItem &option,
                const QModelIndex &index) const override {
@@ -70,12 +81,19 @@ class SnippetDelegate : public QStyledItemDelegate {
                                         "final",  "class",   "new",       "return",
                                         "void",   "if",      "else",      "interface"};
         while (matches.hasNext()) {
-            auto t = matches.next().captured();
+            const auto match = matches.next();
+            const auto t = match.captured();
+            bool referenced = false;
+            for (const auto &v : index.data(Qt::UserRole + 3).toJsonArray()) {
+                const auto range = v.toObject();
+                if (match.capturedStart() >= range.value("start").toInt() &&
+                    match.capturedEnd() <= range.value("end").toInt()) { referenced = true; break; }
+            }
             QString esc = t.toHtmlEscaped();
-            if (!token.isEmpty() && t.contains(token))
-                esc.replace(token.toHtmlEscaped(),
+            if (referenced)
+                esc.replace(t.toHtmlEscaped(),
                             "<span style='background:#ffe373;color:#152536'>" +
-                                token.toHtmlEscaped() + "</span>");
+                                t.toHtmlEscaped() + "</span>");
             if (keywords.contains(t))
                 esc = "<b style='color:#397eca'>" + esc + "</b>";
             html += esc;
@@ -128,7 +146,6 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
     table->verticalHeader()->setDefaultSectionSize(28);
     table->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     auto delegate = new SnippetDelegate(table);
-    delegate->token = window->backend()->project()->symbolName(id).section('$', -1);
     table->setItemDelegate(delegate);
     root->addWidget(table, 1);
     auto count = new QLabel(tr("正在查询引用索引…"));
@@ -180,29 +197,69 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
             text += model->item(i, 0)->text() + "\t" + model->item(i, 1)->text() + "\n";
         QApplication::clipboard()->setText(text);
     });
+    auto previewTimer = new QTimer(this);
+    previewTimer->setInterval(200);
+    auto attempted = std::make_shared<QSet<QString>>();
+    connect(previewTimer, &QTimer::timeout, this, [window, table, model, canceled, attempted] {
+        if (*canceled || window->backend()->busy() || !table->isVisible()) return;
+        int first = table->rowAt(0);
+        if (first < 0) first = 0;
+        int last = table->rowAt(table->viewport()->height() - 1);
+        if (last < 0) last = model->rowCount() - 1;
+        for (int row = first; row <= last; ++row) {
+            if (model->item(row)->data(Qt::UserRole + 2).toInt() > 0) continue;
+            const auto owner = window->backend()->project()->owner(
+                Project::classOf(model->item(row)->data(Qt::UserRole + 1).toString()));
+            if (attempted->contains(owner)) continue;
+            attempted->insert(owner);
+            window->backend()->request(owner, false);
+            break;
+        }
+    });
+    previewTimer->start();
     connect(window->backend(), &Backend::sourceReady, this,
-            [this, window, model, id](const QString &name, bool smali, const QString &path) {
+            [this, window, model, id, count](const QString &name, bool smali, const QString &path) {
                 if (smali)
                     return;
                 auto project = window->backend()->project()->snapshot();
+                bool relevant = false;
+                for (int row = 0; row < model->rowCount(); ++row)
+                    if (project->owner(Project::classOf(model->item(row)->data(Qt::UserRole + 1).toString())) == project->owner(name)) {
+                        relevant = true;
+                        break;
+                    }
+                if (!relevant) return;
                 auto task = new QFutureWatcher<ReferenceDocument>(this);
                 connect(task, &QFutureWatcher<ReferenceDocument>::finished, this,
-                        [task, model, project, name, id] {
+                        [task, model, project, name, id, count] {
                             auto doc = task->result();
                             task->deleteLater();
-                            for (int row = 0; row < model->rowCount(); row++) {
-                                const auto from =
-                                    model->item(row)->data(Qt::UserRole + 1).toString();
-                                if (project->owner(Project::classOf(from)) != project->owner(name))
-                                    continue;
+                            QSet<QString> shown;
+                            for (int row = model->rowCount() - 1; row >= 0; --row) {
+                                auto node = model->item(row);
+                                const auto from = node->data(Qt::UserRole + 1).toString();
+                                if (project->owner(Project::classOf(from)) != project->owner(name)) continue;
                                 const int start = doc.start(from), end = doc.end(from);
-                                const auto match = std::lower_bound(doc.matches.cbegin(), doc.matches.cend(), start,
+                                if (start < 0 && from.contains("->")) continue;
+                                auto match = std::lower_bound(doc.matches.cbegin(), doc.matches.cend(), start,
                                     [](const SourceSpan &span, int p) { return span.start < p; });
-                                if (match != doc.matches.cend() && match->start < end) {
-                                    model->item(row, 1)->setText(doc.text(match->start));
-                                    model->item(row)->setData(doc.line(match->start), Qt::UserRole + 2);
+                                bool matched = false, replaced = false;
+                                for (; match != doc.matches.cend() && match->start < end; ++match) {
+                                    matched = true;
+                                    const auto key = from + ':' + QString::number(doc.line(match->start));
+                                    if (shown.contains(key)) continue;
+                                    shown.insert(key);
+                                    auto target = replaced ? node->clone() : node;
+                                    auto snippet = replaced ? new QStandardItem : model->item(row, 1);
+                                    snippet->setText(doc.text(match->start));
+                                    snippet->setData(doc.highlights(match->start), Qt::UserRole + 3);
+                                    target->setData(doc.line(match->start), Qt::UserRole + 2);
+                                    if (replaced) model->appendRow({target, snippet});
+                                    replaced = true;
                                 }
+                                if (matched && !replaced) model->removeRow(row);
                             }
+                            count->setText(QObject::tr("%1 处引用").arg(model->rowCount()));
                         });
                 task->setFuture(QtConcurrent::run(
                     [project, name, path, id] { return ReferenceDocument(project->document(name, false, path), id); }));
@@ -239,7 +296,9 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
                                  : QString()));
                     node->setData(symbol, Qt::UserRole + 1);
                     node->setData(row.value("line").toInt(), Qt::UserRole + 2);
-                    model->appendRow({node, new QStandardItem(row.value("text").toString())});
+                    auto snippet = new QStandardItem(row.value("text").toString());
+                    snippet->setData(row.value("highlights").toArray(), Qt::UserRole + 3);
+                    model->appendRow({node, snippet});
                 }
                 count->setText(QObject::tr("已找到 %1 处引用…").arg(model->rowCount()));
             });
@@ -255,6 +314,8 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
                                        canceled](QPromise<QJsonArray> &promise) {
         QJsonArray rows;
         auto refs = project->xrefs(id);
+        if (id.contains("@local:"))
+            refs.append(QJsonObject{{"from", id.left(id.indexOf("@local:"))}, {"target", id}});
         // Group by owner: one cached document read per class, without spawning processes.
         QList<QPair<QString, QJsonObject>> ordered;
         for (const auto &v : refs) {
@@ -289,7 +350,8 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
                 else
                     doc = ReferenceDocument();
             }
-            const int start = doc.start(from), end = doc.end(from);
+            const int start = doc.start(from),
+                      end = start < 0 && from.contains("->") ? 0 : doc.end(from);
             bool found = false;
             auto match = std::lower_bound(doc.matches.cbegin(), doc.matches.cend(), start,
                 [](const SourceSpan &span, int pos) { return span.start < pos; });
@@ -301,7 +363,7 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
                 if (seen.contains(key)) continue;
                 seen.insert(key);
                 rows.append(QJsonObject{{"from", doc.container(span.start, from)},
-                                        {"line", line}, {"text", doc.text(span.start)}});
+                                        {"line", line}, {"text", doc.text(span.start)}, {"highlights", doc.highlights(span.start)}});
             }
             if (found) resolvedMethods.insert(from);
             if (!found) {

@@ -91,9 +91,12 @@ void apk_status(jd_apk *apk)
     if (apk->threadpool)
         pthread_mutex_lock(apk->threadpool->lock);
     apk->done++;
-    for (int i = 0; i < apk_progress_len; i++) putchar('\b');
-    apk_progress_len = printf("Progress : %d (%d)", apk->done, apk->added);
-    fflush(stdout);
+    /* Small class batches must not serialize every worker on a flushed pipe. */
+    if (apk->done == 1 || (apk->done & 255) == 0) {
+        for (int i = 0; i < apk_progress_len; i++) putchar('\b');
+        apk_progress_len = printf("Progress : %d (%d)", apk->done, apk->added);
+        fflush(stdout);
+    }
     if (apk->threadpool)
         pthread_mutex_unlock(apk->threadpool->lock);
 }
@@ -350,7 +353,10 @@ static void apk_release(jd_apk *apk)
 {
     if (apk->threadpool)
         threadpool_destroy(apk->threadpool, 1);
-
+    if (apk->done) {
+        printf("\nProgress : %d (%d)\n", apk->done, apk->added);
+        fflush(stdout);
+    }
     mem_pool_free(apk->pool);
     mem_free_pool();
 }

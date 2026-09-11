@@ -63,7 +63,7 @@ QJsonArray toolsList() {
          {"offset", prop("integer")},
          {"count", prop("integer")},
          {"regex", prop("boolean")},
-         {"case_sensitive", prop("boolean")}});
+         {"case_sensitive", prop("boolean")}, {"include_resources", prop("boolean")}});
     for (const auto &kind : {QString("class"), QString("method"), QString("field")}) {
         auto args = clazz;
         QStringList required{"class_name"};
@@ -542,6 +542,7 @@ void McpServer::dispatch(QLocalSocket *socket, const QJsonObject &request) {
         options.query = args.value("search_term").toString();
         options.regex = args.value("regex").toBool();
         options.caseSensitive = args.value("case_sensitive").toBool();
+        options.resources = args.value("include_resources").toBool();
         const int request = backend->search(options);
         connect(backend, &Backend::searchCompleted, pending,
                 [done, args, request](int id, const SearchResult &result) {

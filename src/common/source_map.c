@@ -104,6 +104,12 @@ void source_map_method(FILE *stream, long start, jsource_file *jf, jd_method *m)
     source_map_definition(stream, start, jf->fname, m->name, desc,
                           m->name[0] == '<' ? jf->sname : m->name, 1);
 }
+int source_map_tracks_expression(jd_exp *exp) {
+    if (!spans || !exp->ins || !exp->ins->method) return 0;
+    return exp->type == JD_EXPRESSION_INVOKE || exp->type == JD_EXPRESSION_PUT_FIELD ||
+           exp->type == JD_EXPRESSION_GET_FIELD || exp->type == JD_EXPRESSION_GET_STATIC ||
+           exp->type == JD_EXPRESSION_PUT_STATIC;
+}
 void source_map_expression(FILE *stream, long start, jd_exp *exp) {
     if (!spans || !exp->ins || !exp->ins->method)
         return;

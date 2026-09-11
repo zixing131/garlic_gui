@@ -6,5 +6,6 @@ void source_map_end(jsource_file *jf);
 void source_map_definition(FILE *stream, long start, const char *owner, const char *name,
                            const char *desc, const char *token, int method);
 void source_map_method(FILE *stream, long start, jsource_file *jf, jd_method *method);
+int source_map_tracks_expression(jd_exp *exp);
 void source_map_expression(FILE *stream, long start, jd_exp *exp);
 #endif

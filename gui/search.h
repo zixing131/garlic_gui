@@ -9,6 +9,7 @@
 struct SearchOptions {
     QString query, package;
     bool classes = false, methods = false, fields = false, code = true, comments = false;
+    bool resources = false;
     bool regex = false, caseSensitive = false;
     bool indexOnly = false; // Internal background preparation; never stop at a query hit.
     int limit = 1000, sourceMiB = 8;

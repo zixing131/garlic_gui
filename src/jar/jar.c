@@ -149,21 +149,20 @@ static void jar_inner_and_anoymous_class(jd_jar *jar)
 
 static void jar_entry_source_file(jclass_file *jc, string dir, string name)
 {
-    struct stat sb;
-    string full_dir = str_create("%s/%s", dir, dirname(name));
-    if (stat(full_dir, &sb) == -1)
-        make_dir(full_dir);
-
     jcp_info *info = pool_item(jc, jc->this_class);
     string full = get_class_name(jc, info);
     string class_name = class_simple_name(full);
-    string path = str_create("%s/%s.java", full_dir, class_name);
+    string path;
     if (source_safe_paths_enabled()) {
         char *stem = source_storage_name(full);
         path = str_create("%s/%s.java", dir, stem);
         free(stem);
         char *parent = str_dup(path), *slash = strrchr(parent, '/');
         if (slash) { *slash = 0; mkdir_p(parent); }
+    } else {
+        string full_dir = str_create("%s/%s", dir, dirname(name));
+        mkdir_p(full_dir);
+        path = str_create("%s/%s.java", full_dir, class_name);
     }
     FILE *stream = fopen(path, "w");
     if (stream == NULL)

@@ -30,7 +30,7 @@ static void create_method_defination_with_signature(jd_method *m,
         string ftp = formal_type_parameters_to_s(ftps);
         strs_concat(list, 2, ftp, " ");
     }
-    if (sig->return_type != NULL) {
+    if (!method_is_init(m) && sig->return_type != NULL) {
         string ret = field_type_sig_to_s(sig->return_type);
         if (ret != NULL)
             strs_concat(list, 2, ret, " ");

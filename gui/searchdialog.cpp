@@ -128,9 +128,8 @@ SearchDialog::SearchDialog(MainWindow *window) : QDialog(window), window_(window
     fields_ = check(tr("字段名"), true);
     code_ = check(tr("代码"), true);
     comments_ = check(tr("注释"), false);
-    auto resources = check(tr("资源"), false);
-    resources->setEnabled(false);
-    resources->setToolTip(tr("当前 Garlic 尚无资源文本索引"));
+    resources_ = check(tr("资源（含 ARSC）"), false);
+    resources_->setObjectName("searchResources");
     filters->addWidget(group);
     auto packages = new QGroupBox(tr("限制 package"));
     auto packageLayout = new QVBoxLayout(packages);
@@ -180,7 +179,7 @@ SearchDialog::SearchDialog(MainWindow *window) : QDialog(window), window_(window
     footer->addWidget(close);
     root->addLayout(footer);
     const QList<QPair<QString, QCheckBox *>> options = {
-        {"classes", classes_}, {"methods", methods_},   {"fields", fields_},
+        {"resources", resources_}, {"classes", classes_}, {"methods", methods_},   {"fields", fields_},
         {"code", code_},       {"comments", comments_}, {"regex", regex_},
         {"case", sensitive_},  {"auto", automatic_},    {"keep", keep_}};
     for (const auto &option : options) {
@@ -204,7 +203,7 @@ SearchDialog::SearchDialog(MainWindow *window) : QDialog(window), window_(window
     connect(window_->backend()->project(), &Project::renamed, this, changed);
     connect(query_, &QLineEdit::textChanged, this, changed);
     connect(package_, &QLineEdit::textChanged, this, changed);
-    for (auto box : {classes_, methods_, fields_, code_, comments_, regex_, sensitive_, automatic_})
+    for (auto box : {resources_, classes_, methods_, fields_, code_, comments_, regex_, sensitive_, automatic_})
         connect(box, &QCheckBox::toggled, this, changed);
     connect(debounce_, &QTimer::timeout, this, [this] { startSearch(); });
     connect(query_, &QLineEdit::returnPressed, this, [this] { startSearch(); });
@@ -273,6 +272,7 @@ void SearchDialog::startSearch(int limit) {
     o.fields = fields_->isChecked();
     o.code = code_->isChecked();
     o.comments = comments_->isChecked();
+    o.resources = resources_->isChecked();
     o.regex = regex_->isChecked();
     o.caseSensitive = sensitive_->isChecked();
     o.limit = limit;
@@ -288,7 +288,9 @@ void SearchDialog::navigate() {
         return;
     auto hit = index.data(Qt::UserRole).toJsonObject();
     const auto id = hit.value("id").toString();
-    window_->navigateTo(id.isEmpty() ? Project::classId(hit.value("class").toString()) : id,
+    if (hit.value("kind") == "resource") {
+        window_->openResource(hit.value("path").toString(), hit.value("entry").toString());
+    } else window_->navigateTo(id.isEmpty() ? Project::classId(hit.value("class").toString()) : id,
                         hit.value("line").toInt());
     if (!keep_->isChecked())
         hide();

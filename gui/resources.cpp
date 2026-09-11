@@ -473,7 +473,8 @@ QString configurationName(const QByteArray &config) {
     return q.isEmpty() ? QString() : "-" + q.join('-');
 }
 // Android ResTable layout: frameworks/base/libs/androidfw/include/androidfw/ResourceTypes.h.
-QString describeTable(const QByteArray &bytes, QMap<QString, QString> *files) {
+QString describeTable(const QByteArray &bytes, QMap<QString, QString> *files,
+                      bool fullText, std::shared_ptr<std::atomic_bool> canceled) {
     QMap<QString, QString> generated;
     QHash<QString, QString> names;
     try {
@@ -508,6 +509,7 @@ QString describeTable(const QByteArray &bytes, QMap<QString, QString> *files) {
                 auto typeOffset = head >= 288 ? d.u32(p + 284) : 0;
                 out += "\nPackage: " + package + "\n";
                 for (quint32 t = p + head; t + 8 <= p + size;) {
+                    if (canceled && canceled->load()) return {};
                     auto th = d.u16(t + 2);
                     auto ts = d.u32(t + 4);
                     if (th < 8 || ts < th || ts > p + size - t)
@@ -650,7 +652,7 @@ QString describeTable(const QByteArray &bytes, QMap<QString, QString> *files) {
                                         "\" />\n";
                             }
                             out += '\n';
-                            if (out.size() > 4 * 1024 * 1024) {
+                            if (!fullText && out.size() > 4 * 1024 * 1024) {
                                 if (!files)
                                     return out +
                                            "\n预览达到 4 MiB 上限，可展开资源表查看分类文件。\n";
