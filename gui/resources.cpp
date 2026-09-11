@@ -761,6 +761,15 @@ QJsonObject inspect(const QString &path, std::shared_ptr<std::atomic_bool> cance
     QString error;
     if (QStringList{"apk", "zip"}.contains(QFileInfo(path).suffix().toLower()))
         manifest = decodeXml(read(path, "AndroidManifest.xml", 16 * 1024 * 1024, &error));
+    if (manifest.isEmpty())
+        for (const auto &v : entries) {
+            const auto e = v.toObject();
+            if (e.value("name").toString() == "AndroidManifest.xml") {
+                manifest = decodeXml(read(e.value("sourcePath").toString(path),
+                    e.value("sourceEntry").toString("AndroidManifest.xml"), 16 * 1024 * 1024, &error));
+                break;
+            }
+        }
     QXmlStreamReader xml(manifest);
     QString package, application, version;
     while (!xml.atEnd()) {

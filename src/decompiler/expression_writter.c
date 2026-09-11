@@ -11,8 +11,10 @@
 #include "ssa.h"
 #include "control_flow.h"
 
+static __thread FILE *class_output;
 static inline FILE* file_output(jsource_file *jf)
 {
+    if (class_output) return class_output;
     return jf->source == NULL ? DEFAULT_WRITE_OUT : jf->source;
 }
 
@@ -754,9 +756,34 @@ static void write_default(FILE *stream, jsource_file *jf, jd_node *n)
     fprintf(stream, "%s}\n", ident);
 }
 
+#ifdef _WIN32
+static __thread FILE *class_scratch;
+#endif
 void writter_for_class(jsource_file *jf, jd_node *node)
 {
     int root=node==NULL;
+    FILE *destination = NULL, *memory = NULL;
+    char *buffer = NULL;
+    size_t length = 0;
+#ifndef _WIN32
+    /* On a file stream ftell may issue lseek for every mapped expression.
+     * Buffer one class so offsets stay exact without millions of syscalls. */
+    if (root && !class_output) {
+        destination = file_output(jf);
+        memory = open_memstream(&buffer, &length);
+        if (memory) class_output = memory;
+    }
+#endif
+#ifdef _WIN32
+    if (root && source_java_packed()) {
+        if (!class_scratch) class_scratch = tmpfile();
+        memory = class_scratch;
+        if (memory) { rewind(memory); class_output = memory; }
+    }
+#endif
+    if (root && source_java_packed() && !memory) {
+        fprintf(stderr, "Cannot buffer generated Java\n"); exit(EXIT_FAILURE);
+    }
     if (root) source_map_begin();
     if (node == NULL)
         node = lget_obj_first(jf->blocks);
@@ -818,7 +845,28 @@ void writter_for_class(jsource_file *jf, jd_node *node)
                 break;
         }
     }
-    if (root) { fflush(stream); source_map_end(jf); }
+    if (root) {
+        fflush(stream);
+        if (memory) {
+#ifdef _WIN32
+            length = (size_t)ftell(memory);
+            buffer = malloc(length ? length : 1);
+            rewind(memory);
+            if (!buffer || fread(buffer, 1, length, memory) != length) {
+                fprintf(stderr, "Cannot read generated Java buffer\n"); exit(EXIT_FAILURE);
+            }
+#else
+            fclose(memory);
+#endif
+            class_output = NULL;
+            if (!source_java_pack(jf, buffer, length) && fwrite(buffer, 1, length, destination) != length) {
+                fprintf(stderr, "Failed to write generated Java\n"); exit(EXIT_FAILURE);
+            }
+            free(buffer);
+            if (destination) fflush(destination);
+        }
+        source_map_end(jf);
+    }
 }
 
 void writter_for_anonymous_class(jsource_file *jf, jd_node *node)

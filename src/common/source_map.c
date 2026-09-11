@@ -1,12 +1,118 @@
 #include "source_map.h"
-#include "cJSON.h"
 #include "dalvik/dex_ins.h"
 #include "dalvik/dex_meta_helper.h"
 #include "dalvik/dex_structure.h"
 #include "file_tools.h"
 #include "parser/class/class_tools.h"
 
-static __thread cJSON *spans;
+static __thread char *spans;
+static __thread size_t spans_length, spans_capacity;
+static pthread_mutex_t pack_lock = PTHREAD_MUTEX_INITIALIZER;
+typedef struct { FILE *file, *index; unsigned long long offset; char *path; } SourceArchive;
+static SourceArchive map_archive, java_archive;
+static int archive_cleanup_registered;
+static void close_archives(void) {
+    SourceArchive *archives[] = {&map_archive, &java_archive};
+    int failed = 0;
+    for (int i = 0; i < 2; ++i) {
+        if (archives[i]->file && fclose(archives[i]->file)) failed = 1;
+        if (archives[i]->index && fclose(archives[i]->index)) failed = 1;
+    }
+    if (failed) { fprintf(stderr, "Failed to flush source archive\n"); _Exit(EXIT_FAILURE); }
+}
+#ifdef _WIN32
+#define archive_tell _ftelli64
+#define archive_seek _fseeki64
+#else
+#define archive_tell ftello
+#define archive_seek fseeko
+#endif
+static void write_pack(SourceArchive *archive, const char *directory, const char *filename,
+                       const char *name, const char *data, size_t length) {
+    pthread_mutex_lock(&pack_lock);
+    if (!archive_cleanup_registered) { atexit(close_archives); archive_cleanup_registered = 1; }
+    const size_t path_size = strlen(directory) + 32;
+    char *path = malloc(path_size);
+    snprintf(path, path_size, "%s/%s", directory, filename);
+    if (!archive->path || strcmp(archive->path, path)) {
+        if (archive->file) fclose(archive->file);
+        if (archive->index) fclose(archive->index);
+        free(archive->path); archive->path = path; path = NULL;
+        archive->file = fopen(archive->path, "ab+");
+        char *index_path = malloc(path_size + 8);
+        snprintf(index_path, path_size + 8, "%s.index", archive->path);
+        archive->index = fopen(index_path, "ab+"); free(index_path);
+        if (archive->file) {
+            setvbuf(archive->file, NULL, _IOFBF, 1024 * 1024);
+            archive_seek(archive->file, 0, SEEK_END); archive->offset = (unsigned long long)archive_tell(archive->file);
+            if (!archive->offset) { fwrite("GSMAP001", 1, 8, archive->file); archive->offset = 8; }
+        }
+        if (archive->index) {
+            setvbuf(archive->index, NULL, _IOFBF, 256 * 1024);
+            archive_seek(archive->index, 0, SEEK_END);
+            if (archive_tell(archive->index) == 0) fwrite("GSMIDX01", 1, 8, archive->index);
+        }
+    }
+    free(path);
+    const size_t name_size = strlen(name);
+    unsigned char header[8];
+    for (int i = 0; i < 4; ++i) {
+        header[i] = (unsigned char)(name_size >> (8 * i));
+        header[i + 4] = (unsigned char)(length >> (8 * i));
+    }
+    if (!archive->file || fwrite(header, 1, 8, archive->file) != 8 ||
+        fwrite(name, 1, name_size, archive->file) != name_size ||
+        fwrite(data, 1, length, archive->file) != length) {
+        fprintf(stderr, "Failed to write source map archive\n"); exit(EXIT_FAILURE);
+    }
+    unsigned char index_header[16];
+    memcpy(index_header, header, 4);
+    const unsigned long long position = archive->offset + 8 + name_size;
+    for (int i = 0; i < 8; ++i) index_header[4 + i] = (unsigned char)(position >> (8 * i));
+    memcpy(index_header + 12, header + 4, 4);
+    if (!archive->index || fwrite(index_header, 1, 16, archive->index) != 16 ||
+        fwrite(name, 1, name_size, archive->index) != name_size) {
+        fprintf(stderr, "Failed to write source map directory\n"); exit(EXIT_FAILURE);
+    }
+    archive->offset += 8 + name_size + length;
+    pthread_mutex_unlock(&pack_lock);
+}
+static void append_bytes(const char *text, size_t size) {
+    if (spans_length + size + 1 > spans_capacity) {
+        size_t capacity = spans_capacity ? spans_capacity : 4096;
+        while (capacity < spans_length + size + 1) capacity *= 2;
+        char *buffer = realloc(spans, capacity);
+        if (!buffer) { fprintf(stderr, "Source map allocation failed\n"); exit(EXIT_FAILURE); }
+        spans = buffer; spans_capacity = capacity;
+    }
+    memcpy(spans + spans_length, text, size);
+    spans_length += size;
+    spans[spans_length] = 0;
+}
+static void append_json_string(const char *text) {
+    append_bytes("\"", 1);
+    const unsigned char *at = (const unsigned char *)text, *begin = at;
+    for (;; ++at) {
+        if (*at && *at >= 32 && *at != '"' && *at != '\\') continue;
+        append_bytes((const char *)begin, (size_t)(at - begin));
+        if (!*at) break;
+        char escaped[7];
+        const char *short_escape = NULL;
+        switch (*at) {
+            case '"': short_escape = "\\\""; break;
+            case '\\': short_escape = "\\\\"; break;
+            case '\b': short_escape = "\\b"; break;
+            case '\f': short_escape = "\\f"; break;
+            case '\n': short_escape = "\\n"; break;
+            case '\r': short_escape = "\\r"; break;
+            case '\t': short_escape = "\\t"; break;
+        }
+        if (short_escape) append_bytes(short_escape, 2);
+        else { snprintf(escaped, sizeof escaped, "\\u%04x", *at); append_bytes(escaped, 6); }
+        begin = at + 1;
+    }
+    append_bytes("\"", 1);
+}
 static string class_id(const char *owner) {
     if (!owner)
         return "";
@@ -20,20 +126,33 @@ static void record(FILE *stream, long start, const char *id, const char *token, 
     long end = ftell(stream);
     if (end <= start)
         return;
-    cJSON *r = cJSON_CreateObject();
-    cJSON_AddNumberToObject(r, "start", start);
-    cJSON_AddNumberToObject(r, "end", end);
-    cJSON_AddStringToObject(r, "id", id);
-    cJSON_AddStringToObject(r, "token", token);
-    cJSON_AddBoolToObject(r, "declaration", declaration);
-    cJSON_AddItemToArray(spans, r);
+    char header[128];
+    const int size = snprintf(header, sizeof header, "%s{\"start\":%ld,\"end\":%ld,\"id\":", spans_length > 1 ? "," : "", start, end);
+    append_bytes(header, (size_t)size);
+    append_json_string(id);
+    append_bytes(",\"token\":", 9);
+    append_json_string(token);
+    const char *tail = declaration ? ",\"declaration\":true}" : ",\"declaration\":false}";
+    append_bytes(tail, strlen(tail));
+}
+int source_java_packed(void) {
+    const char *enabled = getenv("GARLIC_JAVA_PACK");
+    return enabled && !strcmp(enabled, "1") && getenv("GARLIC_SOURCE_MAP_DIR");
+}
+int source_java_pack(jsource_file *jf, const char *data, size_t length) {
+    if (!source_java_packed()) return 0;
+    char *name = strdup(jf->fname), *key = name;
+    size_t size = strlen(name);
+    if (size > 1 && name[0] == 'L' && name[size - 1] == ';') { key++; name[size - 1] = 0; }
+    write_pack(&java_archive, getenv("GARLIC_SOURCE_MAP_DIR"), "java-sources.bin", key, data, length);
+    free(name);
+    return 1;
 }
 void source_map_begin(void) {
     if (!getenv("GARLIC_SOURCE_MAP_DIR"))
         return;
-    if (spans)
-        cJSON_Delete(spans);
-    spans = cJSON_CreateArray();
+    spans_length = 0;
+    append_bytes("[", 1);
 }
 void source_map_end(jsource_file *jf) {
     if (!spans)
@@ -43,6 +162,14 @@ void source_map_end(jsource_file *jf) {
     if (name[0] == 'L' && name[strlen(name) - 1] == ';') {
         name++;
         name[strlen(name) - 1] = 0;
+    }
+    const char *packed = getenv("GARLIC_MAP_PACK");
+    if (packed && strcmp(packed, "1") == 0) {
+        append_bytes("]", 1);
+        write_pack(&map_archive, dir, "source-maps.bin", name, spans, spans_length);
+        free(spans); spans = NULL;
+        spans_capacity = spans_length = 0;
+        return;
     }
     char *stored = source_storage_name(name);
     string path = str_create("%s/%s.map.json", dir, stored);
@@ -55,18 +182,18 @@ void source_map_end(jsource_file *jf) {
     }
     string temporary = str_create("%s.tmp", path);
     FILE *file = fopen(temporary, "wb");
-    char *json = cJSON_PrintUnformatted(spans);
+    append_bytes("]", 1);
     if (file) {
-        int written = json && fputs(json, file) >= 0;
+        int written = fwrite(spans, 1, spans_length, file) == spans_length;
         if (fclose(file) != 0)
             written = 0;
         // The GUI uses this file as the completion marker for a flushed source file.
         if (!written || rename(temporary, path) != 0)
             remove(temporary);
     }
-    free(json);
-    cJSON_Delete(spans);
+    free(spans);
     spans = NULL;
+    spans_capacity = spans_length = 0;
 }
 void source_map_definition(FILE *stream, long start, const char *owner, const char *name,
                            const char *desc, const char *token, int method) {

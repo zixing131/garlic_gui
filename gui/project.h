@@ -1,4 +1,5 @@
 #pragma once
+#include <QDateTime>
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -70,6 +71,7 @@ class Project : public QObject {
     void cacheDocument(const QString &key, const SourceDocument &doc) { documents_[key] = doc; }
     void removeDocument(const QString &key) { documents_.remove(key); }
     void clearDocuments() { documents_.clear(); }
+    QByteArray sourceBytes(const QString &path, const QString &name) const;
     qint64 documentBytes(const QString &key) const;
     QStringList applicationCandidates() const;
     QString input() const { return input_; }
@@ -85,6 +87,16 @@ class Project : public QObject {
     QHash<QString, QStringList> classNames_, parents_;
     QVector<QHash<QString, QString>> undo_;
     QHash<QString, SourceDocument> documents_;
+    struct MapArchiveIndex {
+        std::mutex lock;
+        QString path;
+        qint64 scanned = 8;
+        QDateTime modified, created;
+        QHash<QString, QPair<qint64, quint32>> entries;
+    };
+    std::shared_ptr<MapArchiveIndex> mapArchive_ = std::make_shared<MapArchiveIndex>();
+    std::shared_ptr<MapArchiveIndex> javaArchive_ = std::make_shared<MapArchiveIndex>();
+    QByteArray packedBytes(const QString &source, const QString &name, bool java) const;
     struct ReferencePosition { int group, index; };
     struct ReferenceGroup { QString owner, from; };
     struct ReferenceIndex {

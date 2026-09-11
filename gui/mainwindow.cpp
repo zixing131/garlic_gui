@@ -844,13 +844,10 @@ void MainWindow::loadCurrent() {
     if (!page)
         return;
     if (page->loaded(page->smali())) {
-        if (!pendingId_.isEmpty()) {
-            page->editor()->goToSymbol(pendingId_);
-            pendingId_.clear();
-        }
-        if (pendingLine_) {
-            page->editor()->goToLine(pendingLine_);
-            pendingLine_ = 0;
+        if (!pendingId_.isEmpty() || pendingLine_) {
+            if (!page->editor()->goToSymbol(pendingId_, pendingLine_) && pendingLine_)
+                page->editor()->goToLine(pendingLine_);
+            pendingId_.clear(); pendingLine_ = 0;
         }
         return;
     }
@@ -996,16 +993,16 @@ void MainWindow::recordHistory() {
         history_.removeFirst();
     historyIndex_ = history_.size() - 1;
 }
-void MainWindow::navigateTo(const QString &id, int line) {
+void MainWindow::navigateTo(const QString &id, int line, const QString &target) {
     if (id.isEmpty()) {
         status_->setText(tr("此位置没有可定位的符号。"));
         return;
     }
-    if (id.contains("->") && waitForMetadata([this, id, line] { navigateTo(id, line); }))
+    if (id.contains("->") && waitForMetadata([this, id, line, target] { navigateTo(id, line, target); }))
         return;
-    pendingId_ = backend_.project()->canonicalId(id);
+    pendingId_ = backend_.project()->canonicalId(target.isEmpty() ? id : target);
     pendingLine_ = line;
-    openClass(Project::classOf(pendingId_));
+    openClass(Project::classOf(id));
 }
 void MainWindow::showReferences(const QString &id) {
     if (id.isEmpty())

@@ -563,6 +563,8 @@ void Backend::applyEnvironment(QProcess &process, const QString &directory) {
     auto env = QProcessEnvironment::systemEnvironment();
     env.remove("GARLIC_DIRECTORY_INDEX");
     env.remove("GARLIC_DEX_ENTRY");
+    env.remove("GARLIC_MAP_PACK");
+    env.remove("GARLIC_JAVA_PACK");
     env.insert("GARLIC_SOURCE_MAP_DIR", directory);
     if (workspace_)
         env.insert("GARLIC_APK_CACHE_DIR", workspace_->path() + "/apk-cache");
@@ -593,7 +595,7 @@ QString Backend::cachedPath(const QString &name, bool smali) const {
         const auto directory = workspace_->path() + "/all-java";
         const auto path = inputs_.size() == 1 && QFileInfo(input_).suffix() == "class"
             ? directory + "/source.java" : Project::sourcePath(directory, project_.owner(name), ".java");
-        if (QFileInfo::exists(path))
+        if (QFileInfo::exists(path) || QFileInfo::exists(directory + "/java-sources.bin"))
             return path;
     }
     return {};
@@ -685,6 +687,9 @@ void Backend::prepareSources() {
     sourceGenerating_->store(true);
     emit preparationChanged(true);
     applyEnvironment(background_, directory);
+    auto environment = background_.processEnvironment();
+    environment.insert("GARLIC_MAP_PACK", "1");
+    background_.setProcessEnvironment(environment);
     background_.setWorkingDirectory(workspace_->path());
     background_.setStandardOutputFile(
         QFileInfo(input_).suffix() == "class" ? directory + "/source.java" : QString());
@@ -699,6 +704,12 @@ void Backend::nextBackground() {
     const auto directory = workspace_->path() + "/all-java";
     background_.setStandardOutputFile(
         QFileInfo(input).suffix() == "class" ? directory + "/source.java" : QString());
+    auto environment = background_.processEnvironment();
+    const auto suffix = QFileInfo(input).suffix().toLower();
+    if (QStringList{"apk", "apks", "xapk", "dex"}.contains(suffix))
+        environment.insert("GARLIC_JAVA_PACK", "1");
+    else environment.remove("GARLIC_JAVA_PACK");
+    background_.setProcessEnvironment(environment);
     background_.start(engine_, {input, "-o", directory, "-t", QString::number(settings_.threads)});
 }
 void Backend::prepareFinished(int code, QProcess::ExitStatus status) {

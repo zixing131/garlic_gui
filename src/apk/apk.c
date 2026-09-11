@@ -125,7 +125,7 @@ void apk_decompile_thread_task(jd_dex_task *task)
 
     if (jf->parent == NULL) {
         writter_for_class(jf, NULL);
-        fclose(jf->source);
+        if (jf->source) fclose(jf->source);
     }
 
     mem_pool_free(tls->pool);

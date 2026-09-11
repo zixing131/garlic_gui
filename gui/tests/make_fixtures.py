@@ -90,7 +90,7 @@ print(out)
 # Resource merging does not require d8. Keep every split's assets and tables.
 import io
 splits = []
-for name, entries in [('base.apk', {'assets/base.txt': b'base', 'resources.arsc': b'base-table'}),
+for name, entries in [('base.apk', {'classes.dex': (out / 'cases.dex').read_bytes(), 'assets/base.txt': b'base', 'resources.arsc': b'base-table', 'AndroidManifest.xml': b'<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="demo"><application android:name=".App"><activity android:name=".cases.Foo"><intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity></application></manifest>'}),
                       ('config.en.apk', {'assets/en.txt': b'english', 'resources.arsc': b'en-table'})]:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as archive:

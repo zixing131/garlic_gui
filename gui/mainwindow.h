@@ -32,9 +32,9 @@ class MainWindow : public QMainWindow {
     QString selectedClass() const;
     CodeEditor *editor() const;
     void openClass(const QString &name, bool smali = false);
-    void navigateTo(const QString &id, int line = 0);
+    void navigateTo(const QString &id, int line = 0, const QString &target = {});
     void showReferences(const QString &id);
-    void openResource(const QString &path, const QString &entry, const QString &generated = {});
+    void openResource(const QString &path, const QString &entry, const QString &generated = {}, int line = 0);
     void showCallGraph(const QString &id);
     void applySettings(const AppSettings &settings);
     QString mcpEndpoint() const;

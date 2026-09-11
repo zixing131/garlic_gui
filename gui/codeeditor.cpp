@@ -1,4 +1,5 @@
 #include "codeeditor.h"
+#include <limits>
 #include "hookcode.h"
 #include <QApplication>
 #include <QClipboard>
@@ -170,8 +171,10 @@ CodeEditor::CodeEditor(bool smali, QWidget *parent)
     connect(this, &QPlainTextEdit::blockCountChanged, this,
             [this] { setViewportMargins(gutterWidth(), 0, 0, 0); });
     connect(this, &QPlainTextEdit::updateRequest, this, [this](const QRect &rect, int dy) {
-        if (dy)
+        if (dy) {
             gutter_->scroll(0, dy);
+            updateHighlights();
+        }
         else
             gutter_->update(0, rect.y(), gutter_->width(), rect.height());
         if (rect.contains(viewport()->rect()))
@@ -252,9 +255,9 @@ QString CodeEditor::symbolAtCursor() const {
             return s.id;
     return {};
 }
-bool CodeEditor::goToSymbol(const QString &id) {
+bool CodeEditor::goToSymbol(const QString &id, int line) {
     for (const auto &s : spans_)
-        if (s.id == id && s.declaration) {
+        if ((s.id == id || (line > 0 && id.endsWith(';') && s.id.startsWith(id + "->") && !s.id.contains("@local:"))) && (line > 0 ? document()->findBlock(s.start).blockNumber() + 1 == line : s.declaration)) {
             auto cursor = textCursor();
             cursor.setPosition(s.start);
             cursor.setPosition(s.end, QTextCursor::KeepAnchor);
@@ -282,6 +285,19 @@ void CodeEditor::mouseDoubleClickEvent(QMouseEvent *event) {
 }
 void CodeEditor::mousePressEvent(QMouseEvent *event) {
     QPlainTextEdit::mousePressEvent(event);
+    if (event->button() == Qt::LeftButton && !(event->modifiers() & Qt::ShiftModifier)) {
+        auto cursor = textCursor();
+        const auto text = cursor.block().text();
+        int at = cursor.positionInBlock(), first = at, last = at;
+        auto word = [](QChar c) { return c.isLetterOrNumber() || c == '_' || c == '$'; };
+        if (at < text.size() && word(text[at])) {
+            while (first > 0 && word(text[first - 1])) --first;
+            while (last < text.size() && word(text[last])) ++last;
+            cursor.setPosition(cursor.block().position() + first);
+            cursor.setPosition(cursor.block().position() + last, QTextCursor::KeepAnchor);
+            setTextCursor(cursor);
+        }
+    }
     if (event->button() == Qt::LeftButton &&
         (event->modifiers() & (Qt::ControlModifier | Qt::MetaModifier)))
         emit navigateRequested();
@@ -376,25 +392,35 @@ void CodeEditor::updateHighlights() {
     line.cursor.clearSelection();
     selections << line;
     auto addMatches = [this, &selections](const QRegularExpression &expression, const QColor &color,
-                                          int limit) {
+                                          int limit, bool visible = false) {
         if (!expression.isValid() || expression.pattern().isEmpty())
             return;
-        auto matches = expression.globalMatch(toPlainText());
+        int offset = 0;
+        QString text;
+        if (visible) {
+            auto block = firstVisibleBlock();
+            offset = block.position();
+            const int last = cursorForPosition(viewport()->rect().bottomRight()).blockNumber() + 1;
+            while (block.isValid() && block.blockNumber() <= last) {
+                text += block.text() + '\n'; block = block.next();
+            }
+        } else text = toPlainText();
+        auto matches = expression.globalMatch(text);
         int count = 0;
         while (matches.hasNext() && count++ < limit) {
             const auto match = matches.next();
             QTextEdit::ExtraSelection selection;
             selection.format.setBackground(color);
             selection.cursor = textCursor();
-            selection.cursor.setPosition(match.capturedStart());
-            selection.cursor.setPosition(match.capturedEnd(), QTextCursor::KeepAnchor);
+            selection.cursor.setPosition(offset + match.capturedStart());
+            selection.cursor.setPosition(offset + match.capturedEnd(), QTextCursor::KeepAnchor);
             selections << selection;
         }
     };
     const auto selected = selectedIdentifier();
     if (!selected.isEmpty())
         addMatches(findExpression(selected, true, true, false),
-                   QColor(light_ ? "#ffe082" : "#725f1d"), 3000);
+                   QColor(light_ ? "#ffe082" : "#725f1d"), std::numeric_limits<int>::max(), true);
     if (!findQuery_.isEmpty())
         addMatches(findExpression(findQuery_, findCaseSensitive_, findWholeWords_, findRegex_),
                    QColor(light_ ? "#b9d9f5" : "#315a75"), 3000);

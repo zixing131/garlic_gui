@@ -6,6 +6,25 @@
 class ProjectTest : public QObject {
     Q_OBJECT
   private slots:
+    void multiAndLambdaLocals() {
+        Project project;
+        const QString method = "LUse;->run()V";
+        project.addClass({{"name", "Use"}, {"methods", QJsonArray{QJsonObject{{"id", method}, {"name", "run"}}}}});
+        const QString text = "class Use { void run() { int first = call(1, 2), X = 3; X++; consume(X); use(Y -> Y + X); } }";
+        QTemporaryDir dir;
+        QFile file(dir.path() + "/Use.java"); QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write(text.toUtf8()); file.close();
+        QJsonArray records{QJsonObject{{"id", method}, {"token", "run"}, {"start", text.indexOf("run")}, {"end", text.indexOf("run") + 3}, {"declaration", true}}};
+        QFile map(dir.path() + "/Use.map.json"); QVERIFY(map.open(QIODevice::WriteOnly));
+        map.write(QJsonDocument(records).toJson()); map.close();
+        const auto doc = project.document("Use", false, file.fileName());
+        int xUses = 0, yUses = 0;
+        for (const auto &span : doc.spans) if (!span.declaration) {
+            if (span.id.endsWith(":X")) ++xUses;
+            if (span.id.endsWith(":Y")) ++yUses;
+        }
+        QCOMPARE(xUses, 3); QCOMPARE(yUses, 1);
+    }
     void sameNameCallAndLocal() {
         Project project;
         const QString method = "LUse;->run()V", target = "Lother/a;->a(Ljava/lang/Object;)V";
@@ -49,13 +68,14 @@ class ProjectTest : public QObject {
         if (input.isEmpty()) QSKIP("Set APK to validate decoded resource search");
         auto project = std::make_shared<Project>(); project->setInputs({input});
         SearchOptions options; options.code = false; options.resources = true;
-        options.query = "Android resource table";
+        options.query = "<resources>";
         QElapsedTimer timer; timer.start();
         const auto result = searchProject(project, options, {}, false,
             std::make_shared<std::atomic_bool>(false), std::make_shared<SearchControl>(),
             std::make_shared<SearchEvents>(), 1, std::make_shared<SearchIndex>());
         QVERIFY(std::any_of(result.hits.begin(), result.hits.end(), [](const auto &v) {
-            return v.toObject().value("entry").toString() == "resources.arsc";
+            return v.toObject().value("entry").toString() == "resources.arsc" &&
+                   v.toObject().value("generated").toString().endsWith(".xml");
         }));
         qInfo() << "Resource scan ms:" << timer.elapsed() << "scanned:" << result.scanned;
     }

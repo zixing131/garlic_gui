@@ -11,7 +11,7 @@ class CodeEditor : public QPlainTextEdit {
     void setSource(const SourceDocument &document);
     QString symbolAtCursor() const;
     QVector<SourceSpan> spans() const { return spans_; }
-    bool goToSymbol(const QString &id);
+    bool goToSymbol(const QString &id, int line = 0);
     void goToLine(int line);
     // Returns -1 when the supplied regular expression is invalid.
     int setFindHighlights(const QString &query, bool caseSensitive, bool wholeWords, bool regex);

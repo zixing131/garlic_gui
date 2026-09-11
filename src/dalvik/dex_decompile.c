@@ -1,3 +1,4 @@
+#include "common/source_map.h"
 #include "browse_index.h"
 #include "class_selection.h"
 #include <errno.h>
@@ -133,6 +134,7 @@ static void dex_methods(jsource_file *jf)
 static void dex_class_source_save_dir(jd_dex *dex, jsource_file *jf)
 {
     jd_meta_dex *meta = dex->meta;
+    if (source_java_packed()) return;
     if (meta->source_dir == NULL || ((jf->is_anonymous || jf->is_inner) &&
         (!class_selection_explicit() || jf->parent != NULL)))
         return;
@@ -285,7 +287,7 @@ void dex_decompile_class(jd_dex *dex, dex_class_def *cf)
     jsource_file *jf = dex_class_inside(dex, cf, NULL);
     if (jf->parent == NULL) {
         writter_for_class(jf, NULL);
-        fclose(jf->source);
+        if (jf->source) fclose(jf->source);
     }
     mem_free_pool();
 }
@@ -385,7 +387,7 @@ void dex_decompile_thread_task(jd_dex_task *task)
     jsource_file *jf = dex_class_inside(dex, cf, NULL);
     if (jf->parent == NULL) {
         writter_for_class(jf, NULL);
-        fclose(jf->source);
+        if (jf->source) fclose(jf->source);
     }
     mem_pool_free(tls->pool);
     tls->pool = NULL;
@@ -461,7 +463,7 @@ void dex_decompile_main_thread_start(jd_dex *dex)
         jsource_file *jf = dex_class_inside(dex, cf, NULL);
         if (jf->parent == NULL) {
             writter_for_class(jf, NULL);
-            fclose(jf->source);
+            if (jf->source) fclose(jf->source);
         }
         mem_free_pool();
         global_pool = parse_pool;
@@ -604,7 +606,7 @@ void dex_analyse_in_apk_task(jd_meta_dex *meta)
         jsource_file *jf = dex_class_inside(dex, cf, NULL);
         if (jf->parent == NULL) {
             writter_for_class(jf, NULL);
-            fclose(jf->source);
+            if (jf->source) fclose(jf->source);
         }
     }
 

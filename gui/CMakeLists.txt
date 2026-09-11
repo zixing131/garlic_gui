@@ -1,4 +1,4 @@
-set(GARLIC_GUI_VERSION "0.5.12")
+set(GARLIC_GUI_VERSION "0.5.13")
 find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Network Concurrent)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_CXX_STANDARD 17)

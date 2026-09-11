@@ -10,6 +10,19 @@
 class InteractionTest : public QObject {
     Q_OBJECT
   private slots:
+    void clickSelectAndReferencePosition() {
+        CodeEditor editor(false);
+        const QString text = "int X = 0;\nX += X;\n";
+        editor.setSource({text, {{4, 5, "local:X", true}, {11, 12, "local:X", false}, {16, 17, "local:X", false}}});
+        editor.resize(500, 300); editor.show();
+        QVERIFY(editor.goToSymbol("local:X", 2));
+        QCOMPARE(editor.textCursor().selectionStart(), 11);
+        QCOMPARE(editor.textCursor().selectedText(), QString("X"));
+        QTextCursor cursor(editor.document()); cursor.setPosition(4);
+        QTest::mouseClick(editor.viewport(), Qt::LeftButton, {}, editor.cursorRect(cursor).center());
+        QCOMPARE(editor.textCursor().selectedText(), QString("X"));
+        QVERIFY(editor.extraSelections().size() >= 4);
+    }
     void ghidraDecompile() {
         const auto home = qEnvironmentVariable("GARLIC_TEST_GHIDRA_HOME");
         const auto input = qEnvironmentVariable("GARLIC_TEST_NATIVE_ELF");

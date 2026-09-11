@@ -130,7 +130,7 @@ void MainWindow::projectNodes() {
     tree_->expand(proxy_->mapFromSource(root->index()));
     tree_->expand(proxy_->mapFromSource(sourceRoot_->index()));
 }
-void MainWindow::openResource(const QString &path, const QString &entry, const QString &generated) {
+void MainWindow::openResource(const QString &path, const QString &entry, const QString &generated, int line) {
     const QString key = path + "!" + entry + (generated.isEmpty() ? "" : "!" + generated);
     const bool decoded = !generated.isEmpty();
     const QString decodedText = decodedResources_.value(path + "!" + entry).value(generated);
@@ -138,6 +138,8 @@ void MainWindow::openResource(const QString &path, const QString &entry, const Q
     for (int i = 0; i < tabs_->count(); i++)
         if (tabs_->widget(i)->property("resourceKey") == key) {
             tabs_->setCurrentIndex(i);
+            if (auto code = tabs_->widget(i)->findChild<CodeEditor *>()) if (line) code->goToLine(line);
+            syncEditor();
             return;
         }
     while (tabs_->count() >= backend_.settings().maxTabs)
@@ -158,7 +160,7 @@ void MainWindow::openResource(const QString &path, const QString &entry, const Q
     auto exportButton = new QPushButton(tr("导出资源…"));
     layout->addWidget(exportButton);
     connect(exportButton, &QPushButton::clicked, page,
-            [this, path, entry, decoded, decodedText, displayEntry] {
+            [this, path, entry, decoded, generated, displayEntry] {
                 auto target = QFileDialog::getSaveFileName(this, tr("导出资源"),
                                                            QFileInfo(displayEntry).fileName());
                 if (target.isEmpty())
@@ -168,9 +170,10 @@ void MainWindow::openResource(const QString &path, const QString &entry, const Q
                     status_->setText(task->result().isEmpty() ? tr("资源已导出") : task->result());
                     task->deleteLater();
                 });
-                task->setFuture(QtConcurrent::run([path, entry, target, decoded, decodedText] {
+                const auto exportText = decoded ? decodedResources_.value(path + "!" + entry).value(generated) : QString();
+                task->setFuture(QtConcurrent::run([path, entry, target, decoded, exportText] {
                     QString error;
-                    auto data = decoded ? decodedText.toUtf8()
+                    auto data = decoded ? exportText.toUtf8()
                                         : Resources::read(path, entry, 512LL * 1024 * 1024, &error);
                     if (!error.isEmpty())
                         return error;
@@ -183,12 +186,13 @@ void MainWindow::openResource(const QString &path, const QString &entry, const Q
             });
     struct Preview {
         QString text, error, binaryPath;
+        QMap<QString, QString> files;
         QImage image;
     };
     auto task = new QFutureWatcher<Preview>(page);
     auto limit = backend_.settings().sourceMiB;
     const int hexKiB = backend_.settings().hexPreviewKiB;
-    connect(task, &QFutureWatcher<Preview>::finished, page, [task, code, layout, hexKiB] {
+    connect(task, &QFutureWatcher<Preview>::finished, page, [this, task, code, layout, hexKiB, path, entry, line] {
         auto result = task->result();
         task->deleteLater();
         if (!result.binaryPath.isEmpty()) {
@@ -202,16 +206,26 @@ void MainWindow::openResource(const QString &path, const QString &entry, const Q
             scroll->setWidget(label);
             delete layout->replaceWidget(code, scroll);
             code->deleteLater();
-        } else
+        } else {
+            if (!result.files.isEmpty()) decodedResources_[path + "!" + entry] = result.files;
             code->setSource({result.error.isEmpty() ? result.text : result.error, {}});
+            if (line) code->goToLine(line);
+            syncEditor();
+        }
     });
     const auto canceled = backend_.project()->cancellationToken();
-    task->setFuture(QtConcurrent::run([path, entry, limit, decoded, decodedText, canceled] {
+    task->setFuture(QtConcurrent::run([path, entry, limit, decoded, decodedText, canceled, generated] {
         Preview result;
         if (decoded) {
-            result.text = decodedText.size() * 2LL > qint64(limit) * 1024 * 1024
+            QString text = decodedText;
+            if (text.isEmpty()) {
+                const auto bytes = Resources::read(path, entry, 128LL * 1048576, &result.error);
+                if (result.error.isEmpty()) Resources::describeTable(bytes, &result.files, false, canceled);
+                text = result.files.value(generated);
+            }
+            result.text = text.size() * 2LL > qint64(limit) * 1024 * 1024
                               ? QString("资源预览超过大小限制，请导出文件查看。")
-                              : decodedText;
+                              : text;
             return result;
         }
         const auto local = Resources::materialize(path, entry, &result.error, canceled);
@@ -300,8 +314,9 @@ void MainWindow::showOverview(const QString &path, bool signature) {
     const auto inputs = backend_.inputs();
     const auto errors = backend_.property("errorCount").toInt();
     const auto warnings = backend_.property("warningCount").toInt();
+    const auto allReady = backend_.projectReady();
     task->setFuture(QtConcurrent::run([path, signature, project, opened, cache, work, inputs,
-                                       errors, warnings] {
+                                       errors, warnings, allReady] {
         if (signature)
             return Resources::signature(path);
         int classes = 0, methods = 0, fields = 0, topLevel = 0;
@@ -341,7 +356,7 @@ void MainWindow::showOverview(const QString &path, bool signature) {
         int generated = 0;
         for (const auto &name : owners) {
             const auto cached = cache.value(name + ":java");
-            if (cached.startsWith("memory:") || QFileInfo::exists(cached) ||
+            if (allReady || cached.startsWith("memory:") || QFileInfo::exists(cached) ||
                 QFileInfo::exists(Project::sourcePath(work + "/all-java", name, ".java")))
                 generated++;
         }
@@ -384,8 +399,12 @@ void MainWindow::showOverview(const QString &path, bool signature) {
 }
 void MainWindow::goManifest() {
     for (const auto &p : backend_.inputs())
-        if (QFileInfo(p).suffix().toLower() == "apk") {
-            openResource(p, "AndroidManifest.xml");
+        for (const auto &v : resourceInfo_.value(p).value("entries").toArray()) {
+            const auto entry = v.toObject();
+            if (entry.value("name").toString() != "AndroidManifest.xml") continue;
+            openResource(entry.value("sourcePath").toString(p),
+                         entry.value("sourceEntry").toString("AndroidManifest.xml"));
+            syncEditor();
             return;
         }
     status_->setText(tr("当前输入没有 AndroidManifest.xml"));
@@ -501,7 +520,9 @@ void MainWindow::expandResourceTable(const QModelIndex &index) {
         };
         (*step)();
     });
-    task->setFuture(QtConcurrent::run([path, entry] {
+    const auto cached = decodedResources_.value(path + "!" + entry);
+    task->setFuture(QtConcurrent::run([path, entry, cached] {
+        if (!cached.isEmpty()) return Result{cached, {}};
         QString error;
         auto bytes = Resources::read(path, entry, 128LL * 1024 * 1024, &error);
         QMap<QString, QString> files;

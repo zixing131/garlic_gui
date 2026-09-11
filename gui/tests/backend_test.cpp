@@ -8,6 +8,31 @@ class BackendTest : public QObject {
     QString fixtures_ = qEnvironmentVariable("GARLIC_TEST_FIXTURES");
     QString engine_ = qEnvironmentVariable("GARLIC_TEST_ENGINE");
   private slots:
+    void packedBackgroundSources() {
+        Backend backend;
+        backend.setEngine(engine_);
+        auto settings = backend.settings(); settings.background = false; settings.deobfuscate = false;
+        backend.configure(settings);
+        QSignalSpy indexed(&backend, &Backend::indexed), errors(&backend, &Backend::failed);
+        backend.open(fixtures_ + "/cases.dex");
+        QTRY_COMPARE_WITH_TIMEOUT(indexed.count(), 1, 15000);
+        backend.prepareSources();
+        QTRY_VERIFY_WITH_TIMEOUT(backend.projectReady() || !errors.isEmpty(), 15000);
+        QVERIFY2(errors.isEmpty(), qPrintable(errors.isEmpty() ? QString() : errors.first()[0].toString()));
+        for (const auto &name : {QString("demo/cases/Foo"), QString("demo/cases/foo")}) {
+            const auto path = backend.cachedPath(name, false);
+            QVERIFY(!path.isEmpty()); QVERIFY(!QFileInfo::exists(path));
+            const auto document = backend.project()->document(name, false, path);
+            QVERIFY(document.text.contains(name.endsWith("Foo") ? "return 11;" : "return 22;"));
+            QVERIFY(!document.spans.isEmpty());
+        }
+        SearchOptions options; options.query = "return 22";
+        QSignalSpy searched(&backend, &Backend::searchCompleted);
+        backend.search(options);
+        QTRY_COMPARE_WITH_TIMEOUT(searched.count(), 1, 15000);
+        const auto result = qvariant_cast<SearchResult>(searched.first()[1]);
+        QVERIFY(result.error.isEmpty()); QVERIFY(!result.hits.isEmpty());
+    }
     void progressiveMetadata() {
         Backend backend;
         backend.setEngine(engine_);

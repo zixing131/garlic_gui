@@ -173,13 +173,13 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
         stop->setEnabled(false);
     });
     connect(close, &QPushButton::clicked, this, &QDialog::close);
-    auto navigate = [window, table, keep, this] {
+    auto navigate = [window, table, keep, this, id] {
         auto index = table->currentIndex();
         if (!index.isValid())
             return;
         auto first = index.siblingAtColumn(0);
         window->navigateTo(first.data(Qt::UserRole + 1).toString(),
-                           first.data(Qt::UserRole + 2).toInt());
+                           first.data(Qt::UserRole + 2).toInt(), id);
         if (!keep->isChecked())
             this->close();
     };
@@ -268,6 +268,7 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
     auto cached = window->backend()->cachedSources();
     const QString allSources = window->backend()->workspacePath() + "/all-java/";
     auto settings = window->backend()->settings();
+    const bool allReady = window->backend()->projectReady();
     auto task = new QFutureWatcher<QJsonArray>(this);
     connect(task, &QFutureWatcher<QJsonArray>::resultReadyAt, this,
             [task, model, count, project](int index) {
@@ -310,7 +311,7 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
                 stop->setEnabled(false);
                 task->deleteLater();
             });
-    task->setFuture(QtConcurrent::run([project, id, cached, allSources, settings,
+    task->setFuture(QtConcurrent::run([project, id, cached, allSources, settings, allReady,
                                        canceled](QPromise<QJsonArray> &promise) {
         QJsonArray rows;
         auto refs = project->xrefs(id);
@@ -343,7 +344,7 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
             if (loadedOwner != owner) {
                 loadedOwner = owner;
                 QString path = cached.value(name + ":java", cached.value(owner + ":java"));
-                if (path.isEmpty() && QFileInfo::exists(Project::sourcePath(allSources, owner, ".map.json")))
+                if (path.isEmpty() && (allReady || QFileInfo::exists(Project::sourcePath(allSources, owner, ".map.json"))))
                     path = Project::sourcePath(allSources, owner, ".java");
                 if (!path.isEmpty() && QFileInfo(path).size() <= qint64(settings.sourceMiB) * 1048576)
                     doc = ReferenceDocument(project->document(name, false, path), id);

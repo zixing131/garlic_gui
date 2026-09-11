@@ -289,7 +289,8 @@ void SearchDialog::navigate() {
     auto hit = index.data(Qt::UserRole).toJsonObject();
     const auto id = hit.value("id").toString();
     if (hit.value("kind") == "resource") {
-        window_->openResource(hit.value("path").toString(), hit.value("entry").toString());
+        window_->openResource(hit.value("path").toString(), hit.value("entry").toString(),
+                              hit.value("generated").toString(), hit.value("line").toInt());
     } else window_->navigateTo(id.isEmpty() ? Project::classId(hit.value("class").toString()) : id,
                         hit.value("line").toInt());
     if (!keep_->isChecked())

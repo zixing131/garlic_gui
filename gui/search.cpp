@@ -177,7 +177,33 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
                 if (stopped()) break;
                 const auto suffix = QFileInfo(name).suffix().toLower();
                 if (!QStringList{"xml", "arsc", "txt", "json", "html", "js", "css", "properties", "csv", "yaml", "yml"}.contains(suffix)) continue;
-                const QString key = "resource:" + path + '!' + sourceEntry;
+                QMap<QString, QString> parts;
+                if (suffix == "arsc") {
+                    const QString tableKey = path + '!' + sourceEntry;
+                    if (index) {
+                        std::lock_guard<std::mutex> guard(index->mutex);
+                        if (auto cached = index->resourceTables.object(tableKey)) parts = *cached;
+                    }
+                    if (parts.isEmpty()) {
+                        QString error;
+                        const auto bytes = Resources::read(path, sourceEntry, 128LL * 1048576, &error);
+                        if (!error.isEmpty()) { ++result.skipped; continue; }
+                        const auto cancel = std::shared_ptr<std::atomic_bool>(control, &control->canceled);
+                        Resources::describeTable(bytes, &parts, false, cancel);
+                        if (parts.isEmpty() && !control->canceled)
+                            parts.insert({}, Resources::describeTable(bytes, nullptr, true, cancel));
+                        if (index && !control->canceled) {
+                            qint64 cost = 1;
+                            for (const auto &text : parts) cost += text.size() * 2LL / 1024 + 1;
+                            if (cost <= index->resourceTables.maxCost()) {
+                                std::lock_guard<std::mutex> guard(index->mutex);
+                                index->resourceTables.insert(tableKey, new QMap<QString, QString>(parts), int(cost));
+                            }
+                        }
+                    }
+                } else parts.insert(QString(), QString());
+                for (auto part = parts.cbegin(); part != parts.cend() && !stopped(); ++part) {
+                const QString key = "resource:" + path + '!' + sourceEntry + '!' + part.key();
                 std::shared_ptr<const SearchDocument> document;
                 if (index) {
                     std::lock_guard<std::mutex> guard(index->mutex);
@@ -187,9 +213,9 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
                 }
                 if (!document) {
                     QString error;
-                    const auto bytes = Resources::read(path, sourceEntry, qint64(suffix == "arsc" ? 64 : o.sourceMiB) * 1048576, &error);
+                    const auto bytes = suffix == "arsc" ? QByteArray() : Resources::read(path, sourceEntry, qint64(o.sourceMiB) * 1048576, &error);
                     if (!error.isEmpty()) { ++result.skipped; continue; }
-                    const auto text = suffix == "arsc" ? Resources::describeTable(bytes, nullptr, true, std::shared_ptr<std::atomic_bool>(control, &control->canceled))
+                    const auto text = suffix == "arsc" ? part.value()
                         : suffix == "xml" ? Resources::decodeXml(bytes) : QString::fromUtf8(bytes);
                     auto options = o; options.code = options.comments = true;
                     document = prepareDocument(text, options, control);
@@ -202,7 +228,12 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
                 }
                 ++result.scanned;
                 for (int line = 0; line < document->lines.size() && !stopped(); ++line)
-                    if (contains(document->lines[line])) hit(document->lines[line], line + 1);
+                    if (contains(document->lines[line])) {
+                        if (suffix == "arsc") append({{"kind", "resource"}, {"node", part.key()}, {"text", document->lines[line].left(1200)},
+                            {"line", line + 1}, {"path", path}, {"entry", sourceEntry}, {"generated", part.key()}});
+                        else hit(document->lines[line], line + 1);
+                    }
+                }
             }
         }
         flush();
@@ -280,6 +311,10 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
         const int total = pending.size();
         while (!pending.empty() && !stopped()) {
             const bool inFlight = generating->load();
+            if (inFlight && QFileInfo::exists(directory + "/source-maps.bin")) {
+                QThread::msleep(25);
+                continue;
+            }
             const int checks = inFlight ? qMin<int>(512, pending.size()) : int(pending.size());
             for (int i = 0; i < checks && !stopped(); ++i) {
                 auto name = std::move(pending.front());
@@ -298,7 +333,7 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
                 QFileInfo info(path);
                 QString filterKey = path + ":" + aliasVersion;
                 if (!immutableSources) {
-                    if (!info.exists()) {
+                    if (!info.exists() && !QFileInfo::exists(directory + "/java-sources.bin")) {
                         ++result.missing;
                         continue;
                     }
@@ -308,6 +343,10 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
                     }
                     filterKey += ":" + QString::number(info.size()) + ":" +
                            QString::number(info.lastModified().toMSecsSinceEpoch());
+                }
+                if (!info.exists()) {
+                    const QFileInfo archive(directory + "/java-sources.bin");
+                    filterKey += ":pack:" + QString::number(archive.size()) + ":" + QString::number(archive.lastModified().toMSecsSinceEpoch());
                 }
                 const QString key = filterKey + ":" + QString::number(o.code) + QString::number(o.comments);
                 std::shared_ptr<const SearchDocument> document;
@@ -331,7 +370,7 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
                 }
                 if (!document) {
                     if (immutableSources) {
-                        if (!info.exists()) {
+                        if (!info.exists() && !QFileInfo::exists(directory + "/java-sources.bin")) {
                             ++result.missing;
                             continue;
                         }
@@ -340,14 +379,15 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
                             continue;
                         }
                     }
-                    QFile file(path);
-                    if (!file.open(QIODevice::ReadOnly)) {
+                    const auto source = project->sourceBytes(path, name);
+                    if (source.isEmpty()) {
                         ++result.missing;
                         continue;
                     }
+                    if (source.size() > qint64(o.sourceMiB) * 1048576) { ++result.skipped; continue; }
                     QString text;
                     if (!hasAliases) {
-                        text = QString::fromUtf8(file.readAll());
+                        text = QString::fromUtf8(source);
                     } else {
                         // Reuse the renamed text across scopes and LRU eviction.
                         // The workspace owns these files; aliases are part of the key.

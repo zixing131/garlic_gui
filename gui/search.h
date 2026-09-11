@@ -30,6 +30,7 @@ struct SearchDocument {
 // Shared across requests within one project. KiB costs bound prepared source memory.
 struct SearchIndex {
     std::mutex mutex;
+    QCache<QString, QMap<QString, QString>> resourceTables{64 * 1024};
     std::atomic_bool ready{false};
     QCache<QString, std::shared_ptr<const SearchDocument>> documents{64 * 1024};
     // Compact per-file Bloom filters survive document-cache eviction. They let later queries

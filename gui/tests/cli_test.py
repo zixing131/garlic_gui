@@ -46,6 +46,43 @@ def test_workspace():
 
 
 with test_workspace() as root:
+    # Archives preserve Java bytes and exact map offsets, including append across inputs.
+    import struct
+    def archive_records(path):
+        data = path.read_bytes()
+        assert data[:8] == b'GSMAP001'
+        index = (path.parent / (path.name + '.index')).read_bytes()
+        assert index[:8] == b'GSMIDX01'
+        at, records = 8, {}
+        while at < len(index):
+            names, offset, size = struct.unpack_from('<IQI', index, at)
+            name = index[at+16:at+16+names].decode()
+            assert offset + size <= len(data)
+            records[name] = data[offset:offset+size]
+            at += 16 + names
+        assert at == len(index)
+        return records
+    plain, packed = root / 'archive-plain', root / 'archive-packed'
+    plain.mkdir(); packed.mkdir()
+    for target, enabled in ((plain, '0'), (packed, '1')):
+        environment = dict(os.environ, GARLIC_SAFE_SOURCE_PATHS='1', GARLIC_SOURCE_MAP_DIR=str(target),
+                           GARLIC_MAP_PACK=enabled, GARLIC_JAVA_PACK=enabled)
+        for fixture in ('cases.dex', 'flattened.dex'):
+            run([str(engine), str(fixtures / fixture), '-o', str(target), '-t', '2'],
+                env=environment, check=True, capture_output=True, timeout=20)
+    sources = archive_records(packed / 'java-sources.bin')
+    maps = archive_records(packed / 'source-maps.bin')
+    def stored(name):
+        encoded = name.encode().hex()
+        return '_classes/' + '/'.join(encoded[i:i+64] for i in range(0, len(encoded), 64))
+    expected = {name: (plain / (stored(name) + '.java')).read_bytes() for name in sources}
+    assert len(list(plain.rglob('*.java'))) == len(sources)
+    assert sources == expected, (sources.keys(), expected.keys())
+    assert maps.keys() == sources.keys()
+    for name, data in maps.items():
+        assert json.loads(data) == json.loads((plain / (stored(name) + '.map.json')).read_bytes())
+    assert not list(packed.rglob('*.java'))
+
     # Constructors with a Signature attribute must never acquire a void return type.
     generic = root / 'GenericConstructor.java'
     generic.write_text('package demo; public class GenericConstructor { public <T> GenericConstructor(T value) {} }', encoding='utf-8')

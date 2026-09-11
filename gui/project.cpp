@@ -10,6 +10,7 @@
 #include <QSaveFile>
 #include <QSet>
 #include <QSignalBlocker>
+#include <QtEndian>
 #include <algorithm>
 
 static QString referenceTarget(const QJsonArray &dictionary, const QJsonValue &value) {
@@ -44,6 +45,8 @@ void Project::reset(const QString &input) {
     inputs_ = {input};
     documents_.clear();
     localIndex_ = std::make_shared<LocalIndex>();
+    mapArchive_ = std::make_shared<MapArchiveIndex>();
+    javaArchive_ = std::make_shared<MapArchiveIndex>();
     referenceIndex_ = std::make_shared<ReferenceIndex>();
     overrideIndex_ = std::make_shared<OverrideIndex>();
     symbolIndex_ = std::make_shared<SymbolIndex>();
@@ -560,6 +563,49 @@ static QString codeMask(QString text, bool smali) {
     }
     return text;
 }
+QByteArray Project::packedBytes(const QString &source, const QString &name, bool java) const {
+    const int directory = source.lastIndexOf("/_classes/");
+    QString root = directory < 0 ? QFileInfo(source).absolutePath() : source.left(directory);
+    const auto relative = normalize(name) + ".java";
+    if (directory < 0 && source.endsWith('/' + relative)) root = source.left(source.size() - relative.size() - 1);
+    const auto path = root + (java ? "/java-sources.bin" : "/source-maps.bin");
+    const auto archive = java ? javaArchive_ : mapArchive_;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly) || file.read(8) != "GSMAP001") return {};
+    QFile index(path + ".index");
+    if (!index.open(QIODevice::ReadOnly) || index.read(8) != "GSMIDX01") return {};
+    std::lock_guard<std::mutex> guard(archive->lock);
+    const QFileInfo indexInfo(index);
+    const auto modified = indexInfo.lastModified();
+    if (archive->path != path || archive->created != indexInfo.birthTime() || index.size() < archive->scanned ||
+        (index.size() == archive->scanned && archive->modified != modified)) {
+        archive->path = path; archive->scanned = 8; archive->entries.clear();
+    }
+    archive->modified = modified; archive->created = indexInfo.birthTime();
+    index.seek(archive->scanned);
+    const auto entries = index.readAll();
+    qsizetype at = 0;
+    while (at + 16 <= entries.size()) {
+        if (canceled_->load()) return {};
+        const auto header = entries.constData() + at;
+        const auto names = qFromLittleEndian<quint32>(header);
+        const auto offset = qFromLittleEndian<quint64>(header + 4);
+        const auto bytes = qFromLittleEndian<quint32>(header + 12);
+        if (!names || names > 65536 || bytes > 128 * 1048576u || at + 16 + names > entries.size() || offset > quint64(file.size()) || bytes > quint64(file.size()) - offset) break;
+        const auto key = QString::fromUtf8(header + 16, names);
+        archive->entries.insert(key, {qint64(offset), bytes});
+        at += 16 + names;
+    }
+    archive->scanned += at;
+    const auto found = archive->entries.constFind(normalize(name));
+    if (found == archive->entries.cend() || !file.seek(found->first)) return {};
+    return file.read(found->second);
+}
+QByteArray Project::sourceBytes(const QString &path, const QString &name) const {
+    QFile file(path);
+    if (file.open(QIODevice::ReadOnly)) return file.readAll();
+    return packedBytes(path, owner(name), true);
+}
 SourceDocument Project::document(const QString &name, bool smali, const QString &path,
                                  bool applyAliases) const {
     const QString key = normalize(name) + (smali ? ":smali" : ":java");
@@ -567,11 +613,9 @@ SourceDocument Project::document(const QString &name, bool smali, const QString 
         const auto doc = documents_.value(key);
         return applyAliases ? this->applyAliases(doc, smali) : doc;
     }
-    QFile file(path);
     SourceDocument result;
-    if (!file.open(QIODevice::ReadOnly))
-        return result;
-    const QByteArray bytes = file.readAll();
+    const QByteArray bytes = sourceBytes(path, name);
+    if (bytes.isEmpty()) return result;
     result.text = QString::fromUtf8(bytes);
     const QString mask = codeMask(result.text, smali);
     QMap<int, int> occupied;
@@ -601,6 +645,7 @@ SourceDocument Project::document(const QString &name, bool smali, const QString 
         QJsonArray records;
         if (map.open(QIODevice::ReadOnly))
             records = QJsonDocument::fromJson(map.readAll()).array();
+        else records = QJsonDocument::fromJson(packedBytes(path, owner(name), false)).array();
         QVector<int> offsets{0};
         for (const auto &v : records) {
             auto r = v.toObject();
@@ -715,7 +760,7 @@ SourceDocument Project::document(const QString &name, bool smali, const QString 
         }
         const auto declarations = result.spans;
         static const QRegularExpression declaration(
-            R"((?:^|[;{}(,])\s*(?:(?:final|volatile|transient)\s+)*(?!return\b|throw\b|new\b|case\b)(?:[\p{L}_$][\p{L}\p{N}_$.]*(?:\s*<[^;{}()]*>)?(?:\s*\[\s*\])*)\s+([\p{L}_$][\p{L}\p{N}_$]*)\s*(?=[=;,:\)\[]))");
+            R"((?:^|[;{}(,])\s*(?:(?:final|volatile|transient)\s+)*(?!return\b|throw\b|new\b|case\b)(?:[\p{L}_$][\p{L}\p{N}_$.]*(?:\s*<[^;{}()]*>)?(?:\s*\[\s*\])*)(?:\s*\.\.\.)?\s+([\p{L}_$][\p{L}\p{N}_$]*)\s*(?=[=;,:\)\[]))");
         static const QRegularExpression identifier(R"([\p{L}_$][\p{L}\p{N}_$]*)");
         for (const auto &method : declarations) {
             if (canceled_->load()) return {};
@@ -762,6 +807,54 @@ SourceDocument Project::document(const QString &name, bool smali, const QString 
                 const auto token = match.captured(1);
                 locals[token].append({start, scopeEnd, method.id + "@local:" + QString::number(start - parameters) + ':' + token});
             }
+            // Subsequent declarators share a type: int x = call(1, 2), y = 3.
+            auto groups = declaration.globalMatch(region);
+            while (groups.hasNext()) {
+                const auto group = groups.next();
+                int depth = 0;
+                for (int at = parameters + group.capturedEnd(1); at < end; ++at) {
+                    const auto c = mask[at];
+                    if (c == '(' || c == '[' || c == '{') ++depth;
+                    else if (c == ')' || c == ']' || c == '}') { if (!depth) break; --depth; }
+                    if (!depth && c == ';') break;
+                    if (depth || c != ',') continue;
+                    const auto next = QRegularExpression(R"(^\s*([\p{L}_$][\p{L}\p{N}_$]*)\s*(?=[=,;]))").match(mask.mid(at + 1, end - at - 1));
+                    if (!next.hasMatch()) break;
+                    const int start = at + 1 + next.capturedStart(1);
+                    const auto token = next.captured(1);
+                    locals[token].append({start, scopeEnds[start - parameters], method.id + "@local:" + QString::number(start - parameters) + ':' + token});
+                }
+            }
+            static const QRegularExpression lambda(R"((?:\(([\p{L}\p{N}_$,\s]*)\)|([\p{L}_$][\p{L}\p{N}_$]*))\s*->)");
+            auto lambdas = lambda.globalMatch(region);
+            while (lambdas.hasNext()) {
+                const auto match = lambdas.next();
+                int bodyStart = parameters + match.capturedEnd();
+                while (bodyStart < end && mask[bodyStart].isSpace()) ++bodyStart;
+                int scopeEnd = closes.value(bodyStart, -1);
+                if (scopeEnd < 0) {
+                    scopeEnd = bodyStart;
+                    while (scopeEnd < end && mask[scopeEnd] != ';' && mask[scopeEnd] != ',') {
+                        if (closes.contains(scopeEnd)) scopeEnd = closes.value(scopeEnd);
+                        ++scopeEnd;
+                    }
+                }
+                const int capture = match.capturedStart(1) >= 0 ? 1 : 2;
+                const auto parts = match.captured(capture).split(',');
+                bool untyped = true;
+                for (const auto &part : parts)
+                    if (!QRegularExpression(R"(^\s*[\p{L}_$][\p{L}\p{N}_$]*\s*$)").match(part).hasMatch()) untyped = false;
+                if (!untyped) continue;
+                auto names = identifier.globalMatch(match.captured(capture));
+                while (names.hasNext()) {
+                    const auto name = names.next();
+                    const int start = parameters + match.capturedStart(capture) + name.capturedStart();
+                    const auto token = name.captured();
+                    locals[token].append({start, scopeEnd, method.id + "@local:" + QString::number(start - parameters) + ':' + token});
+                }
+            }
+            for (auto it = locals.begin(); it != locals.end(); ++it)
+                std::sort(it->begin(), it->end(), [](const Local &a, const Local &b) { return a.start < b.start; });
             {
                 QHash<QString, QString> variables;
                 for (auto it = locals.cbegin(); it != locals.cend(); ++it)
@@ -969,6 +1062,7 @@ void Project::replaceData(const Project &other, bool keepDocuments) {
     if (!keepDocuments)
         documents_ = other.documents_;
     if (!keepDocuments) localIndex_ = other.localIndex_;
+    if (!keepDocuments) { mapArchive_ = other.mapArchive_; javaArchive_ = other.javaArchive_; }
     if (!keepDocuments) canceled_ = other.canceled_;
     referenceIndex_ = other.referenceIndex_;
     overrideIndex_ = other.overrideIndex_;

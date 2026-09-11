@@ -54,13 +54,16 @@ class WindowTest : public QObject {
         QTemporaryDir fixture;
         const auto archive = fixture.path() + "/resources.apks";
         QVERIFY(QFile::copy(qEnvironmentVariable("GARLIC_TEST_FIXTURES") + "/resources.apks", archive));
-        const auto entries = Resources::inspect(archive).value("entries").toArray();
+        const auto inspected = Resources::inspect(archive);
+        QCOMPARE(inspected.value("application").toString(), QString("demo.App"));
+        QCOMPARE(inspected.value("main_activities").toArray(), QJsonArray{"demo.cases.Foo"});
+        const auto entries = inspected.value("entries").toArray();
         QSet<QString> names;
         for (const auto &value : entries) {
             const auto entry = value.toObject();
             names.insert(entry.value("name").toString());
             QString error;
-            QVERIFY(!Resources::read(entry.value("sourcePath").toString(), entry.value("sourceEntry").toString(), 1024, &error).isEmpty());
+            QVERIFY(!Resources::read(entry.value("sourcePath").toString(), entry.value("sourceEntry").toString(), 1024 * 1024, &error).isEmpty());
             QVERIFY(error.isEmpty());
         }
         QVERIFY(names.contains("assets/base.txt"));
@@ -68,6 +71,42 @@ class WindowTest : public QObject {
         QVERIFY(names.contains("resources.arsc"));
         QVERIFY(names.contains("split-data/config.en/resources.arsc"));
         QVERIFY(!names.contains("base.apk"));
+    }
+    void realResourceXmlNavigation() {
+        const auto input = qEnvironmentVariable("GARLIC_TEST_LARGE_APK");
+        if (input.isEmpty()) QSKIP("Set APK for resource XML navigation regression");
+        MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
+        auto settings = window.backend()->settings(); settings.background = false; settings.deobfuscate = false;
+        window.backend()->configure(settings); window.backend()->setProperty("fastOpen", true);
+        window.show(); window.openPath(input);
+        auto tree = window.findChild<QTreeView *>("classTree");
+        auto tables = [&] { return tree->model()->match(tree->model()->index(0, 0), Qt::UserRole + 6,
+            "resources.arsc", 1, Qt::MatchExactly | Qt::MatchRecursive); };
+        QTRY_VERIFY_WITH_TIMEOUT(!tables().isEmpty(), 60000);
+        QString error; QMap<QString, QString> files;
+        Resources::describeTable(Resources::read(input, "resources.arsc", 128LL * 1048576, &error), &files, false);
+        QVERIFY(error.isEmpty()); QVERIFY(!files.isEmpty());
+        const auto name = files.firstKey();
+        window.openResource(input, "resources.arsc", name, 2);
+        QTRY_VERIFY_WITH_TIMEOUT(window.editor() && window.editor()->toPlainText().contains("<resources>"), 30000);
+        QTRY_COMPARE_WITH_TIMEOUT(tree->currentIndex().data(Qt::UserRole + 7).toString(), name, 30000);
+        QCOMPARE(window.editor()->textCursor().blockNumber(), 1);
+    }
+    void mergedManifestNavigation() {
+        MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
+        auto settings = window.backend()->settings(); settings.background = false; settings.deobfuscate = false;
+        window.backend()->configure(settings);
+        window.show();
+        window.openPath(qEnvironmentVariable("GARLIC_TEST_FIXTURES") + "/resources.apks");
+        auto tree = window.findChild<QTreeView *>("classTree");
+        auto manifests = [&] { return tree->model()->match(tree->model()->index(0, 0), Qt::UserRole + 6,
+            "AndroidManifest.xml", 1, Qt::MatchExactly | Qt::MatchRecursive); };
+        QTRY_VERIFY_WITH_TIMEOUT(!manifests().isEmpty(), 15000);
+        window.findChild<QAction *>("goManifest")->trigger();
+        QTRY_VERIFY_WITH_TIMEOUT(window.editor() && window.editor()->toPlainText().contains("android.intent.action.MAIN"), 15000);
+        QCOMPARE(tree->currentIndex().data(Qt::UserRole + 6).toString(), QString("AndroidManifest.xml"));
+        window.findChild<QAction *>("mainActivity")->trigger();
+        QTRY_VERIFY_WITH_TIMEOUT(window.editor() && window.editor()->toPlainText().contains("return 11;"), 15000);
     }
     void caseSafeExport() {
         Backend backend;
