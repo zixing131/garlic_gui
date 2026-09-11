@@ -721,7 +721,7 @@ void MainWindow::populate(const QStringList &classes) {
             sourceRoot_->appendRow(state->root->takeRow(0));
         classItems_ = state->items;
         if (backend_.project()->hasAliases()) {
-            displayedAliases_ = {};
+            displayedAliases_ = {}; pendingAliasOwners_.clear();
             refreshAliases();
         }
         if (backend_.metadataReady()) {
@@ -1074,18 +1074,39 @@ void MainWindow::renameSymbol(const QString &id) {
     }
 }
 void MainWindow::refreshAliases() {
-    const auto aliases = backend_.project()->aliases();
-    QSet<QString> changed;
-    for (auto it = aliases.begin(); it != aliases.end(); ++it)
-        if (displayedAliases_.value(it.key()) != it.value()) changed.insert(it.key());
-    for (auto it = displayedAliases_.begin(); it != displayedAliases_.end(); ++it)
-        if (!aliases.contains(it.key())) changed.insert(it.key());
+    const auto aliases = backend_.project()->aliasMap(), previous = displayedAliases_;
+    const int generation = ++aliasPlanGeneration_, treeGeneration = treeGeneration_;
+    struct Changes { QSet<QString> changed, owners, renamed; };
+    const auto canceled = backend_.project()->cancellationToken();
+    auto calculate = [aliases, previous, canceled] {
+        Changes result;
+        for (auto it = aliases.cbegin(); it != aliases.cend(); ++it) {
+            if (canceled->load()) return Changes{};
+            if (previous.value(it.key()) != it.value()) result.changed.insert(it.key());
+        }
+        for (auto it = previous.cbegin(); it != previous.cend(); ++it)
+            if (!aliases.contains(it.key())) result.changed.insert(it.key());
+        for (const auto &id : result.changed) {
+            result.owners.insert(Project::classOf(id));
+            if (!id.contains("->")) result.renamed.insert(Project::classOf(id));
+        }
+        return result;
+    };
+    if (aliases.size() + previous.size() < 4096) {
+        const auto plan = calculate(); applyAliasChanges(aliases, plan.changed, plan.owners, plan.renamed); return;
+    }
+    auto watcher = new QFutureWatcher<Changes>(this);
+    connect(watcher, &QFutureWatcher<Changes>::finished, this, [this, watcher, generation, treeGeneration, aliases, canceled] {
+        const auto plan = watcher->result(); watcher->deleteLater();
+        if (generation != aliasPlanGeneration_ || treeGeneration != treeGeneration_ || canceled->load()) return;
+        applyAliasChanges(aliases, plan.changed, plan.owners, plan.renamed);
+    });
+    const auto snapshot = backend_.project()->snapshot();
+    watcher->setFuture(QtConcurrent::run([calculate, snapshot] { snapshot->aliasVersion(); return calculate(); }));
+}
+void MainWindow::applyAliasChanges(const QHash<QString, QString> &aliases, const QSet<QString> &changed,
+                                   QSet<QString> owners, QSet<QString> renamedClasses) {
     displayedAliases_ = aliases;
-    QSet<QString> owners;
-    for (const auto &id : changed) owners.insert(Project::classOf(id));
-    QSet<QString> renamedClasses;
-    for (const auto &id : changed)
-        if (!id.contains("->")) renamedClasses.insert(Project::classOf(id));
     auto descendants = renamedClasses.values();
     while (!descendants.isEmpty()) {
         const auto owner = descendants.takeLast();
@@ -1100,9 +1121,12 @@ void MainWindow::refreshAliases() {
             }
         }
     }
-    for (const auto &owner : owners) {
+    owners.unite(pendingAliasOwners_); pendingAliasOwners_ = owners;
+    const int aliasGeneration = ++aliasRefreshGeneration_;
+    auto updateOwner = [this](const QString &owner) {
+        pendingAliasOwners_.remove(owner);
         auto item = classItems_.value(owner);
-        if (!item) continue;
+        if (!item) return;
         const auto label = backend_.project()->displayName(owner);
         if (item->text() != label) {
             item->setText(label);
@@ -1111,11 +1135,28 @@ void MainWindow::refreshAliases() {
         for (int row = 0; row < item->rowCount(); ++row) {
             auto child = item->child(row);
             const auto id = child->data(Qt::UserRole + 1).toString();
-            if (!changed.contains(id)) continue;
+            if (id.isEmpty() || !id.contains("->")) continue;
             const auto descriptor = child->data(Qt::UserRole + 5).toString();
             child->setText(backend_.project()->symbolName(id) + descriptor);
             child->setData(owner + " " + child->text(), Qt::UserRole + 2);
         }
+    };
+    if (owners.size() < 128) {
+        for (const auto &owner : owners) updateOwner(owner);
+    } else {
+        auto queue = std::make_shared<QStringList>(owners.values());
+        auto position = std::make_shared<int>(0);
+        const int treeGeneration = treeGeneration_;
+        auto step = std::make_shared<std::function<void()>>();
+        std::weak_ptr<std::function<void()>> weak = step;
+        *step = [this, queue, position, updateOwner, aliasGeneration, treeGeneration, weak] {
+            if (aliasGeneration != aliasRefreshGeneration_ || treeGeneration != treeGeneration_) return;
+            QElapsedTimer time; time.start();
+            while (*position < queue->size() && time.elapsed() < 6) updateOwner(queue->at((*position)++));
+            if (*position < queue->size()) if (auto next = weak.lock())
+                QTimer::singleShot(0, this, [next] { (*next)(); });
+        };
+        (*step)();
     }
     for (int i = 0; i < tabs_->count(); ++i) {
         auto page = qobject_cast<ClassView *>(tabs_->widget(i));
@@ -1221,6 +1262,7 @@ void MainWindow::dropEvent(QDropEvent *event) {
     }
 }
 void MainWindow::closeEvent(QCloseEvent *event) {
+    mcp_->stop();
     for (auto dialog : findChildren<ScriptDialog *>()) dialog->close();
     QSettings().setValue("geometry", saveGeometry());
     QSettings().setValue("windowState", saveState());

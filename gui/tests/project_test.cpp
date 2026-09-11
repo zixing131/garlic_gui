@@ -6,6 +6,27 @@
 class ProjectTest : public QObject {
     Q_OBJECT
   private slots:
+    void filterOnlyWarmup() {
+        auto project = std::make_shared<Project>();
+        project->addClass({{"name", "Warm"}});
+        QTemporaryDir dir;
+        QFile file(dir.path() + "/Warm.java"); QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("class Warm { String value = \"needle\"; /* commentToken */ }\n"); file.close();
+        auto index = std::make_shared<SearchIndex>();
+        auto run = [&](SearchOptions options) {
+            return searchProject(project, options, dir.path(), false,
+                std::make_shared<std::atomic_bool>(false), std::make_shared<SearchControl>(),
+                std::make_shared<SearchEvents>(), 1, index);
+        };
+        SearchOptions options; options.query = "needle"; options.indexOnly = true;
+        auto warm = run(options); QVERIFY(warm.hits.isEmpty());
+        QCOMPARE(index->filters.size(), 1); QCOMPARE(index->documents.size(), 0);
+        options.indexOnly = false;
+        QVERIFY(!run(options).hits.isEmpty());
+        options.code = false; options.comments = true; options.query = "commentToken";
+        QVERIFY(!run(options).hits.isEmpty());
+        options.query = "absentUniqueToken"; QVERIFY(run(options).hits.isEmpty());
+    }
     void multiAndLambdaLocals() {
         Project project;
         const QString method = "LUse;->run()V";

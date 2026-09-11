@@ -399,8 +399,8 @@ void Project::undoRename() {
 }
 QJsonObject Project::aliases() const {
     QJsonObject out;
-    for (auto it = aliases_.cbegin(); it != aliases_.cend(); ++it)
-        out[it.key()] = it.value();
+    auto keys = aliases_.keys(); keys.sort();
+    for (const auto &key : keys) out.insert(key, aliases_.value(key));
     return out;
 }
 QString Project::aliasVersion() const {
@@ -574,7 +574,8 @@ QByteArray Project::packedBytes(const QString &source, const QString &name, bool
     if (!file.open(QIODevice::ReadOnly) || file.read(8) != "GSMAP001") return {};
     QFile index(path + ".index");
     if (!index.open(QIODevice::ReadOnly) || index.read(8) != "GSMIDX01") return {};
-    std::lock_guard<std::mutex> guard(archive->lock);
+    std::unique_lock<std::mutex> guard(archive->lock);
+    const auto archiveSize = quint64(file.size());
     const QFileInfo indexInfo(index);
     const auto modified = indexInfo.lastModified();
     if (archive->path != path || archive->created != indexInfo.birthTime() || index.size() < archive->scanned ||
@@ -591,15 +592,18 @@ QByteArray Project::packedBytes(const QString &source, const QString &name, bool
         const auto names = qFromLittleEndian<quint32>(header);
         const auto offset = qFromLittleEndian<quint64>(header + 4);
         const auto bytes = qFromLittleEndian<quint32>(header + 12);
-        if (!names || names > 65536 || bytes > 128 * 1048576u || at + 16 + names > entries.size() || offset > quint64(file.size()) || bytes > quint64(file.size()) - offset) break;
+        if (!names || names > 65536 || bytes > 128 * 1048576u || at + 16 + names > entries.size() || offset > archiveSize || bytes > archiveSize - offset) break;
         const auto key = QString::fromUtf8(header + 16, names);
         archive->entries.insert(key, {qint64(offset), bytes});
         at += 16 + names;
     }
     archive->scanned += at;
     const auto found = archive->entries.constFind(normalize(name));
-    if (found == archive->entries.cend() || !file.seek(found->first)) return {};
-    return file.read(found->second);
+    if (found == archive->entries.cend()) return {};
+    const auto entry = *found;
+    guard.unlock(); // Each reader owns its QFile; source I/O must not block other classes.
+    if (!file.seek(entry.first)) return {};
+    return file.read(entry.second);
 }
 QByteArray Project::sourceBytes(const QString &path, const QString &name) const {
     QFile file(path);

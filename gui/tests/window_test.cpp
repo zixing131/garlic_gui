@@ -61,6 +61,37 @@ class WindowTest : public QObject {
         run->click(); QTRY_VERIFY_WITH_TIMEOUT(run->isEnabled(), 3000);
         QVERIFY(output->toPlainText().contains("RECOVERED")); QVERIFY(output->toPlainText().contains("exit=0"));
     }
+    void realLargeLifecycle() {
+        const auto input = qEnvironmentVariable("GARLIC_TEST_LIFECYCLE_APK");
+        if (input.isEmpty()) QSKIP("Set APK for lifecycle profiling");
+        auto window = std::make_unique<MainWindow>(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
+        auto settings = window->backend()->settings(); settings.background = false;
+        settings.deobfuscate = qEnvironmentVariableIsSet("GARLIC_TEST_DEOBFUSCATE");
+        window->backend()->configure(settings); window->show();
+        QElapsedTimer clock; clock.start(); qint64 last = 0, maxGap = 0; QString phase;
+        QTimer heartbeat; heartbeat.setInterval(10);
+        connect(&heartbeat, &QTimer::timeout, window.get(), [&] {
+            const auto now = clock.elapsed(), gap = now - last; maxGap = qMax(maxGap, gap); last = now;
+            if (gap > 200) qInfo() << "UI gap" << gap << "phase" << phase;
+        }); heartbeat.start();
+        connect(window->backend(), &Backend::loadProgress, window.get(), [&](const QString &stage, int percent) {
+            phase = stage + QString::number(percent); if (percent == 100) qInfo() << "Stage" << phase << clock.elapsed();
+        });
+        window->openPath(input);
+        QTRY_VERIFY_WITH_TIMEOUT(!window->backend()->busy() && window->backend()->project()->classCount() > 0, 120000);
+        qInfo() << "Directory ready ms" << clock.elapsed();
+        QTRY_VERIFY_WITH_TIMEOUT(window->backend()->metadataReady(), 120000);
+        qInfo() << "Metadata ready ms" << clock.elapsed();
+        QElapsedTimer source; source.start(); window->openClass("com/tencent/mm/ui/LauncherUI");
+        QTRY_VERIFY_WITH_TIMEOUT(window->editor() && window->editor()->toPlainText().contains("class LauncherUI"), 60000);
+        qInfo() << "Java ready ms" << source.elapsed();
+        QTest::qWait(100); heartbeat.stop();
+        QElapsedTimer closing; closing.start(); window->close(); window.reset();
+        qInfo() << "Window destruction ms" << closing.elapsed();
+        QVERIFY(QThreadPool::globalInstance()->waitForDone(30000));
+        qInfo() << "Shutdown total ms" << closing.elapsed() << "maximum UI gap" << maxGap;
+        QVERIFY2(maxGap < 500, qPrintable(QString::number(maxGap)));
+    }
     void largeSourceHighlighting() {
         CodeEditor editor(false);
         editor.setSource({QString("// padding\n").repeated(60000) + "public class Highlighted {}\n", {}});

@@ -104,6 +104,29 @@ Backend::~Backend() {
     }
 }
 
+bool Backend::prepareExit(const QString &executable) {
+    project_.cancelPendingWork(); cancel();
+    disconnect(&background_, nullptr, this, nullptr); disconnect(&process_, nullptr, this, nullptr);
+    for (auto process : {&background_, &process_}) if (process->state() != QProcess::NotRunning) {
+        process->kill(); process->waitForFinished(500);
+        if (process->state() != QProcess::NotRunning) return false;
+    }
+    // The metadata process belongs to its worker thread. Its loop observes the
+    // cancellation token and reaps the process before clearing this flag.
+    QElapsedTimer wait; wait.start();
+    const auto engineActive = [this] {
+        for (const auto &flag : metadataEngines_) if (flag->load()) return true;
+        return false;
+    };
+    while (engineActive() && wait.elapsed() < 1500) QThread::msleep(5);
+    if (engineActive()) return false;
+    if (!ownedWorkspaces_.isEmpty()) {
+        if (!QProcess::startDetached(executable, QStringList{"--cleanup-workspaces"} + ownedWorkspaces_)) return false;
+        if (workspace_) workspace_->setAutoRemove(false);
+    }
+    return true;
+}
+
 QString Backend::classInput(const QString &name) const {
     return project_.info(name).value("input").toString(input_);
 }
@@ -218,6 +241,7 @@ void Backend::openPaths(const QStringList &paths) {
     preparing_ = false;
     sourceGenerating_->store(false);
     fullReady_ = false;
+    ownedWorkspaces_ << workspace->path();
     workspace_ = std::move(workspace);
     input_ = QFileInfo(path).absoluteFilePath();
     inputs_.clear();
@@ -494,7 +518,7 @@ void Backend::finish(int code, QProcess::ExitStatus status) {
             emit failed(tr("引擎没有生成源码。导出目录：%1").arg(exportDir_));
             return;
         }
-        if (!project_.aliases().isEmpty()) {
+        if (project_.hasAliases()) {
             postprocessing_ = true;
             emit busyChanged(true);
             exportControl_ = std::make_shared<SearchControl>();
@@ -895,6 +919,9 @@ void Backend::prepareMetadata() {
     metadataPreparing_ = true;
     metadataCanceled_ = std::make_shared<std::atomic_bool>(false);
     const auto canceled = metadataCanceled_;
+    metadataEngines_.removeIf([](const auto &flag) { return !flag->load(); });
+    const auto engineRunning = std::make_shared<std::atomic_bool>(true);
+    metadataEngines_.append(engineRunning);
     const auto workspace = workspace_;
     const auto input = input_;
     const auto engine = engine_;
@@ -933,7 +960,9 @@ void Backend::prepareMetadata() {
                 prepareSources();
         });
     watcher->setFuture(QtConcurrent::run([snapshot, workspace, input, engine, settings,
-                                         environment, canceled, self, generation, totalClasses]() -> Result {
+                                         environment, canceled, self, generation, totalClasses, engineRunning]() -> Result {
+        struct EngineStopped { std::shared_ptr<std::atomic_bool> flag; ~EngineStopped() { flag->store(false); } } stopped{engineRunning};
+        if (canceled->load()) return {{}, QStringLiteral("canceled")};
         // A canceled process may still be exiting when the user retries. Never
         // reuse its output files, even within the same project workspace.
         QTemporaryDir attempt(workspace->path() + "/index/details-XXXXXX");
@@ -960,7 +989,7 @@ void Backend::prepareMetadata() {
         };
         while (true) {
             if (canceled->load()) {
-                process.kill(); process.waitForFinished();
+                process.kill(); process.waitForFinished(); engineRunning->store(false);
                 return {{}, QStringLiteral("canceled")};
             }
             if (!file.isOpen())
@@ -998,8 +1027,12 @@ void Backend::prepareMetadata() {
                 lastPercent = percent; progress(QObject::tr("成员与引用"), percent);
             }
             // Pump process state without imposing one millisecond per 256 classes.
-            if (count % 1024 == 0) process.waitForFinished(0);
+            if (count % 1024 == 0) {
+                process.waitForFinished(0);
+                if (process.state() == QProcess::NotRunning) engineRunning->store(false);
+            }
         }
+        engineRunning->store(false);
         if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0 || !count) {
             QFile errors(errorPath); errors.open(QIODevice::ReadOnly);
             return {{}, QString("Engine exit %1: %2").arg(process.exitCode())
@@ -1012,6 +1045,7 @@ void Backend::prepareMetadata() {
         // Both indexes read immutable metadata and own separate synchronization.
         auto references = std::async(std::launch::async, [snapshot] { snapshot->xrefs(QString()); });
         snapshot->symbols();
+        snapshot->aliasVersion();
         progress(QObject::tr("构建查询索引"), 66);
         references.get();
         if (canceled->load()) return {{}, QStringLiteral("canceled")};

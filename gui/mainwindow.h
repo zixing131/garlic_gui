@@ -85,7 +85,11 @@ class MainWindow : public QMainWindow {
     void searchDialog();
     void renameSymbol(const QString &id);
     void refreshAliases();
-    QJsonObject displayedAliases_;
+    void applyAliasChanges(const QHash<QString, QString> &aliases, const QSet<QString> &changed, QSet<QString> owners, QSet<QString> renamedClasses);
+    int aliasPlanGeneration_ = 0;
+    QHash<QString, QString> displayedAliases_;
+    int aliasRefreshGeneration_ = 0;
+    QSet<QString> pendingAliasOwners_;
     SourceDocument present(const SourceDocument &raw, bool smali) const;
     void saveProject();
     void openProject();

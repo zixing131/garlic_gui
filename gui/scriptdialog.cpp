@@ -94,6 +94,11 @@ ScriptDialog::~ScriptDialog() {
     saveDraft(); server_->stop();
     if (process_.state() != QProcess::NotRunning) { process_.kill(); process_.waitForFinished(1000); }
 }
+void ScriptDialog::closeEvent(QCloseEvent *event) {
+    saveDraft(); server_->stop();
+    if (process_.state() != QProcess::NotRunning) { process_.kill(); process_.waitForFinished(500); }
+    QDialog::closeEvent(event);
+}
 void ScriptDialog::saveDraft() {
     QSettings().setValue("scripts/" + draftLanguage_, code_->toPlainText().left(4 * 1048576));
     QSettings().setValue("scripts/arguments", arguments_->text());

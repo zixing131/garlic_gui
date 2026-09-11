@@ -49,6 +49,7 @@ class Project : public QObject {
     void undoRename();
     bool canUndo() const { return !undo_.isEmpty(); }
     QJsonObject aliases() const;
+    QHash<QString, QString> aliasMap() const { return aliases_; }
     bool hasAliases() const { return !aliases_.isEmpty(); }
     QString aliasVersion() const;
     bool save(const QString &path, QString *error = nullptr) const;

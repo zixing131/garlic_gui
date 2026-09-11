@@ -45,6 +45,7 @@ class Backend : public QObject {
     void request(const QString &name, bool smali);
     void exportSources(const QString &directory, bool smali);
     void cancel();
+    bool prepareExit(const QString &executable);
     static bool safeClassName(const QString &name);
   signals:
     void loadProgress(const QString &phase, int percent);
@@ -97,6 +98,8 @@ class Backend : public QObject {
     QString engine_, input_, currentName_, jobDir_, exportDir_;
     QString errorTail_;
     std::shared_ptr<QTemporaryDir> workspace_;
+    QStringList ownedWorkspaces_;
+    QList<std::shared_ptr<std::atomic_bool>> metadataEngines_;
     std::shared_ptr<std::atomic_bool> indexCanceled_;
     bool indexing_ = false, postprocessing_ = false, clearing_ = false;
     bool directoryOnly_ = false, metadataReady_ = true, metadataPreparing_ = false;

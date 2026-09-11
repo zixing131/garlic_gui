@@ -17,6 +17,8 @@ class ScriptDialog : public QDialog {
     explicit ScriptDialog(MainWindow *window, const QString &host = {});
     ~ScriptDialog() override;
     static QString interpreter(const QString &configured, bool python);
+  protected:
+    void closeEvent(QCloseEvent *event) override;
   private:
     void run();
     void stop();

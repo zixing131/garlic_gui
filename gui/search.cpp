@@ -16,6 +16,17 @@ std::shared_ptr<const SearchDocument>
 prepareDocument(const QString &text, const SearchOptions &o,
                 const std::shared_ptr<SearchControl> &control) {
     auto document = std::make_shared<SearchDocument>();
+    if (o.indexOnly) {
+        // Prewarming needs only a superset Bloom filter, not hundreds of thousands
+        // of split line lists which immediately evict each other from the LRU.
+        const auto folded = text.toCaseFolded();
+        for (qsizetype i = 0; i + 2 < folded.size(); ++i) {
+            if ((i & 4095) == 0 && control->canceled) return {};
+            const auto bit = gram(folded[i], folded[i + 1], folded[i + 2]);
+            document->grams[bit / 64] |= quint64(1) << (bit % 64);
+        }
+        return document;
+    }
     document->lines = text.split('\n');
     if (text.isEmpty() || text.endsWith('\n')) document->lines.removeLast();
     bool blockComment = false;
@@ -364,7 +375,7 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
                         filterRejects = !possibleMatch(cachedFilter.value(), bits);
                     }
                 }
-                if (hasFilter && filterRejects) {
+                if (hasFilter && (o.indexOnly || filterRejects)) {
                     ++result.indexRejected;
                     continue;
                 }
@@ -414,7 +425,7 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
                         index->filters.insert(filterKey, document->grams);
                         const auto cost = qMax<qint64>(
                             1, (text.size() * 4LL + document->lines.size() * 64LL + 1024) / 1024);
-                        if (cost <= index->documents.maxCost())
+                        if (!o.indexOnly && cost <= index->documents.maxCost())
                             index->documents.insert(
                                 key, new std::shared_ptr<const SearchDocument>(document),
                                 int(cost));
