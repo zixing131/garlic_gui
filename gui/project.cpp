@@ -13,6 +13,20 @@
 #include <QtEndian>
 #include <algorithm>
 
+static bool reservedName(const QString &name) {
+    static const QSet<QString> reserved = {
+        "class",      "interface", "enum",    "public",     "private", "protected", "static",
+        "void",       "int",       "long",    "short",      "byte",    "char",      "float",
+        "double",     "boolean",   "new",     "return",     "if",      "else",      "for",
+        "while",      "switch",    "case",    "default",    "try",     "catch",     "finally",
+        "throw",      "throws",    "extends", "implements", "import",  "package",   "this",
+        "super",      "null",      "true",    "false",      "final",   "abstract",  "synchronized",
+        "volatile",   "transient", "native",  "assert",     "break",   "continue",  "do",
+        "instanceof", "const",     "goto",    "strictfp",   "record",  "sealed",    "yield",
+        "var"};
+    return reserved.contains(name);
+}
+
 static QString referenceTarget(const QJsonArray &dictionary, const QJsonValue &value) {
     if (value.isString()) return value.toString();
     const int index = value.toInt(-1);
@@ -55,9 +69,11 @@ void Project::reset(const QString &input) {
     classNames_.clear();
     parents_.clear();
     aliases_.clear();
+    renameReasons_.clear();
     deobfuscateLocals_ = false;
     aliasIndex_ = std::make_shared<AliasIndex>();
     undo_.clear();
+    undoReasons_.clear();
 }
 void Project::addClass(const QJsonObject &entry) {
     if (referenceIndex_.use_count() > 1 || referenceIndex_->ready || !referenceIndex_->groups.isEmpty())
@@ -319,20 +335,10 @@ QString Project::symbolName(const QString &id) const {
 }
 QString Project::rename(const QString &id, const QString &newName) {
     static const QRegularExpression valid("^[\\p{L}_$][\\p{L}\\p{N}_$]*$");
-    static const QSet<QString> reserved = {
-        "class",      "interface", "enum",    "public",     "private", "protected", "static",
-        "void",       "int",       "long",    "short",      "byte",    "char",      "float",
-        "double",     "boolean",   "new",     "return",     "if",      "else",      "for",
-        "while",      "switch",    "case",    "default",    "try",     "catch",     "finally",
-        "throw",      "throws",    "extends", "implements", "import",  "package",   "this",
-        "super",      "null",      "true",    "false",      "final",   "abstract",  "synchronized",
-        "volatile",   "transient", "native",  "assert",     "break",   "continue",  "do",
-        "instanceof", "const",     "goto",    "strictfp",   "record",  "sealed",    "yield",
-        "var"};
     const bool local = id.contains("@local:") && symbols_.contains(id.section("@local:", 0, 0));
     if (!symbols_.contains(id) && !local)
         return tr("符号不存在，无法重命名。");
-    if (!valid.match(newName).hasMatch() || reserved.contains(newName))
+    if (!valid.match(newName).hasMatch() || reservedName(newName))
         return tr("请输入合法且非保留字的 Java 标识符。");
     const auto symbol = local ? QJsonObject{{"name", id.section(':', -1)}} : symbols_.value(id);
     if (symbol.value("name").toString().startsWith('<'))
@@ -367,12 +373,17 @@ QString Project::rename(const QString &id, const QString &newName) {
         if (candidate != id && symbols_.contains(candidate) && symbolName(candidate) == newName)
             return tr("同一作用域已存在该名称。");
     undo_.push_back(aliases_);
-    if (undo_.size() > 100)
+    undoReasons_.push_back(renameReasons_);
+    if (undo_.size() > 100) {
         undo_.removeFirst();
+        undoReasons_.removeFirst();
+    }
     if (newName == symbol.value("name").toString())
         aliases_.remove(id);
     else
         aliases_[id] = newName;
+    if (aliases_.contains(id)) renameReasons_[id] = "user rename";
+    else renameReasons_.remove(id);
     aliasIndex_ = std::make_shared<AliasIndex>();
     emit renamed();
     return {};
@@ -416,7 +427,7 @@ void Project::deobfuscateNames() {
         const bool method = member && id.contains('(');
         // Unicode letters can be valid Java identifiers yet deliberately
         // unreadable. Use readable aliases for class/method names in deobf mode.
-        const bool suspicious = name.size() <= 1 || !asciiIdentifier ||
+        const bool suspicious = name.size() <= 1 || name.size() > 64 || reservedName(name) || !asciiIdentifier ||
             confusable.match(name).hasMatch();
         if (aliases_.contains(id) || name.isEmpty() || name == "<init>" || name == "<clinit>" ||
             ((asciiIdentifier || identifier.match(name).hasMatch()) && !suspicious))
@@ -426,6 +437,11 @@ void Project::deobfuscateNames() {
         QString replacement;
         do { replacement = prefix + QString::number(number++); } while (used.contains(replacement));
         aliases_.insert(id, replacement);
+        renameReasons_[id] = reservedName(name) ? "Java reserved word" :
+            name.size() <= 1 ? "deobfuscation: short name" :
+            name.size() > 64 ? "deobfuscation: long name" :
+            confusable.match(name).hasMatch() ? "deobfuscation: ambiguous characters" :
+            "deobfuscation: invalid or non-ASCII identifier";
         used.insert(replacement);
     }
 }
@@ -434,6 +450,7 @@ void Project::undoRename() {
     if (undo_.isEmpty())
         return;
     aliases_ = undo_.takeLast();
+    renameReasons_ = undoReasons_.takeLast();
     aliasIndex_ = std::make_shared<AliasIndex>();
     emit renamed();
 }
@@ -451,7 +468,7 @@ QString Project::aliasVersion() const {
         auto ids = aliases_.keys();
         ids.sort();
         for (const auto &id : ids) {
-            for (const auto &part : {id.toUtf8(), aliases_.value(id).toUtf8()}) {
+            for (const auto &part : {id.toUtf8(), aliases_.value(id).toUtf8(), renameReasons_.value(id).toUtf8()}) {
                 hash.addData(QByteArray::number(part.size()) + ':');
                 hash.addData(part);
             }
@@ -482,6 +499,9 @@ bool Project::save(const QString &path, QString *error) const {
                         {"modified", QString::number(info.lastModified().toMSecsSinceEpoch())}});
     }
     data["inputs"] = inputs;
+    QJsonObject reasons;
+    for (auto it = renameReasons_.cbegin(); it != renameReasons_.cend(); ++it) reasons[it.key()] = it.value();
+    data["renameReasons"] = reasons;
     file.write(QJsonDocument(data).toJson());
     if (file.commit())
         return true;
@@ -529,15 +549,20 @@ bool Project::loadAliases(const QString &path, QString *error) {
         }
     }
     const auto previous = aliases_;
+    const auto previousReasons = renameReasons_;
+    const auto previousUndoReasons = undoReasons_;
     const auto oldUndo = undo_;
     QSignalBlocker blocker(this);
     aliases_.clear();
+    renameReasons_.clear();
     aliasIndex_ = std::make_shared<AliasIndex>();
     const auto values = data.value("aliases").toObject();
     for (auto it = values.begin(); it != values.end(); ++it) {
         const auto message = rename(it.key(), it.value().toString());
         if (!message.isEmpty()) {
             aliases_ = previous;
+            renameReasons_ = previousReasons;
+            undoReasons_ = previousUndoReasons;
             aliasIndex_ = std::make_shared<AliasIndex>();
             undo_ = oldUndo;
             if (error)
@@ -546,6 +571,11 @@ bool Project::loadAliases(const QString &path, QString *error) {
         }
     }
     undo_.clear();
+    undoReasons_.clear();
+    const auto reasons = data.value("renameReasons").toObject();
+    for (auto it = aliases_.cbegin(); it != aliases_.cend(); ++it)
+        renameReasons_[it.key()] = reasons.value(it.key()).toString("imported rename mapping");
+    aliasIndex_ = std::make_shared<AliasIndex>();
     blocker.unblock();
     emit renamed();
     return true;
@@ -1020,6 +1050,7 @@ SourceDocument Project::applyAliases(SourceDocument result, bool smali) const {
     rewritten.reserve(result.text.size());
     int cursor = 0, shift = 0;
     bool changed = false;
+    QVector<QPair<int, QString>> notes;
     for (auto &span : result.spans) {
         const int originalStart = span.start, originalEnd = span.end;
         span.start += shift;
@@ -1035,6 +1066,34 @@ SourceDocument Project::applyAliases(SourceDocument result, bool smali) const {
                     replacement = replacement.section('$', -1);
             }
         }
+        const QString original = result.text.mid(originalStart, originalEnd - originalStart);
+        QString originalName = original;
+        // The engine may already have repaired an invalid member identifier.
+        // Keep the DEX/index name rather than that intermediate spelling.
+        if (span.declaration && span.id.contains("->") && !span.id.contains(";-><")) {
+            originalName = span.id.contains("@local:") ? span.id.section(':', -1)
+                : symbols_.value(span.id).value("name").toString(original);
+        }
+        if (span.declaration && originalName != (replacement.isEmpty() ? original : replacement)) {
+            QString reason = renameReasons_.value(span.id);
+            if (reason.isEmpty() && replacement.isEmpty()) reason = "decompiler identifier normalization";
+            if (reason.isEmpty() && span.id.contains(";-><init>"))
+                reason = renameReasons_.value(classId(classOf(span.id)));
+            if (reason.isEmpty()) reason = localAliases.contains(span.id)
+                ? "deobfuscation: ambiguous or non-ASCII local name" : "renamed declaring class";
+            // Avoid line terminators, bidi controls and Java's pre-lexical Unicode escapes.
+            auto printable = [](const QString &value) {
+                QString safe;
+                for (QChar c : value) {
+                    if (!c.isPrint() || c == '\\' || c == QChar(0x2028) || c == QChar(0x2029))
+                        safe += QString("[U+%1]").arg(uint(c.unicode()), 4, 16, QLatin1Char('0'));
+                    else safe += c;
+                }
+                return safe;
+            };
+            notes.append({span.start, (smali ? "# " : "// ") + QString("renamed from: %1, reason: %2\n")
+                .arg(printable(originalName), printable(reason))});
+        }
         if (replacement.isEmpty()) continue;
         rewritten += QStringView(result.text).mid(cursor, originalStart - cursor);
         rewritten += replacement;
@@ -1047,6 +1106,29 @@ SourceDocument Project::applyAliases(SourceDocument result, bool smali) const {
     if (changed) {
         rewritten += QStringView(result.text).mid(cursor);
         result.text = std::move(rewritten);
+    }
+    if (!notes.isEmpty()) {
+        QMap<int, QString> insertions;
+        for (const auto &note : notes) {
+            const int line = note.first == 0 ? 0 : result.text.lastIndexOf('\n', note.first - 1) + 1;
+            int indent = line;
+            while (indent < result.text.size() && (result.text[indent] == ' ' || result.text[indent] == '\t')) ++indent;
+            insertions[line] += result.text.mid(line, indent - line) + note.second;
+        }
+        QString annotated; annotated.reserve(result.text.size() + notes.size() * 100);
+        int from = 0, added = 0, spanIndex = 0;
+        for (auto it = insertions.cbegin(); it != insertions.cend(); ++it) {
+            while (spanIndex < result.spans.size() && result.spans[spanIndex].start < it.key()) {
+                auto &span = result.spans[spanIndex++]; span.start += added; span.end += added;
+            }
+            annotated += QStringView(result.text).mid(from, it.key() - from);
+            annotated += it.value(); added += it.value().size(); from = it.key();
+        }
+        while (spanIndex < result.spans.size()) {
+            auto &span = result.spans[spanIndex++]; span.start += added; span.end += added;
+        }
+        annotated += QStringView(result.text).mid(from);
+        result.text = std::move(annotated);
     }
     return result;
 }
@@ -1161,6 +1243,8 @@ void Project::replaceData(const Project &other, bool keepDocuments) {
     classNames_ = other.classNames_;
     parents_ = other.parents_;
     aliases_ = other.aliases_;
+    renameReasons_ = other.renameReasons_;
+    undoReasons_ = other.undoReasons_;
     deobfuscateLocals_ = other.deobfuscateLocals_;
     aliasIndex_ = other.aliasIndex_;
     undo_ = other.undo_;

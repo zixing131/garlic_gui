@@ -286,6 +286,7 @@ void SearchDialog::startSearch(int limit) {
         history_->clear(); history_->addItems(history); history_->setEditText(o.query);
     }
     o.package = package_->text();
+    if (o.package.trimmed() == QCoreApplication::translate("MainWindow", "默认包")) o.package = "<default>";
     o.classes = classes_->isChecked();
     o.methods = methods_->isChecked();
     o.fields = fields_->isChecked();
@@ -328,7 +329,7 @@ void SearchDialog::resizeEvent(QResizeEvent *event) {
 }
 
 void SearchDialog::setPackage(const QString &name) {
-    package_->setText(QString(name).replace('/', '.'));
+    package_->setText(name.isEmpty() ? QStringLiteral("<default>") : QString(name).replace('/', '.'));
     query_->setFocus();
     query_->selectAll();
     startSearch();

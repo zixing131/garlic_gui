@@ -67,7 +67,7 @@ bool Project::writeIndexSnapshot(QIODevice *device) const {
     std::lock_guard<std::mutex> guard(referenceIndex_->lock);
     if (!referenceIndex_->ready) return false;
     if (!block([&](QDataStream &out) {
-        out << input_ << inputs_ << classNames_ << parents_ << aliases_ << deobfuscateLocals_ << aliasVersion();
+        out << input_ << inputs_ << classNames_ << parents_ << aliases_ << renameReasons_ << deobfuscateLocals_ << aliasVersion();
         out << quint32(referenceIndex_->groups.size());
         for (const auto &group : referenceIndex_->groups) out << group.owner << group.from;
         out << referenceIndex_->targets << quint32(referenceIndex_->positions.size());
@@ -84,7 +84,7 @@ bool Project::writeIndexSnapshot(QIODevice *device) const {
         return true;
     })) return false;
     QByteArray header; QDataStream out(&header, QIODevice::WriteOnly); out.setVersion(QDataStream::Qt_6_5);
-    out << QByteArray("GARLIC-INDEX-5") << quint32(blocks.size());
+    out << QByteArray("GARLIC-INDEX-6") << quint32(blocks.size());
     for (const auto &entry : blocks) out << entry.offset << entry.size << entry.hash;
     if (header.size() > HeaderSize) return false;
     header.append(QByteArray(HeaderSize - header.size(), '\0'));
@@ -96,7 +96,7 @@ std::shared_ptr<Project> Project::readIndexSnapshot(QIODevice *device, const std
     if (!device->seek(0) || device->size() < HeaderSize) return {};
     QByteArray header = device->read(HeaderSize); QDataStream table(header); table.setVersion(QDataStream::Qt_6_5);
     QByteArray magic; quint32 count = 0; table >> magic >> count;
-    if (magic != "GARLIC-INDEX-5" || count != Shards * 2 + 1) return {};
+    if (magic != "GARLIC-INDEX-6" || count != Shards * 2 + 1) return {};
     QList<Block> blocks; qint64 end = HeaderSize;
     for (quint32 i = 0; i < count; ++i) {
         Block b; table >> b.offset >> b.size >> b.hash;
@@ -144,7 +144,7 @@ std::shared_ptr<Project> Project::readIndexSnapshot(QIODevice *device, const std
             }
             if (quint32(map.size()) != n) return false;
         } else {
-            in >> project->input_ >> project->inputs_ >> project->classNames_ >> project->parents_ >> project->aliases_ >> project->deobfuscateLocals_ >> project->aliasIndex_->version;
+            in >> project->input_ >> project->inputs_ >> project->classNames_ >> project->parents_ >> project->aliases_ >> project->renameReasons_ >> project->deobfuscateLocals_ >> project->aliasIndex_->version;
             if (project->aliasIndex_->version.size() != 64) return false;
             auto index = project->referenceIndex_;
             const auto groups = count(); index->groups.reserve(groups);

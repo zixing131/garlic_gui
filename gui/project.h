@@ -90,9 +90,9 @@ class Project : public QObject {
   private:
     std::shared_ptr<std::atomic_bool> canceled_ = std::make_shared<std::atomic_bool>(false);
     ProjectMap classes_, symbols_;
-    QHash<QString, QString> aliases_;
+    QHash<QString, QString> aliases_, renameReasons_;
     QHash<QString, QStringList> classNames_, parents_;
-    QVector<QHash<QString, QString>> undo_;
+    QVector<QHash<QString, QString>> undo_, undoReasons_;
     bool deobfuscateLocals_ = false;
     QHash<QString, SourceDocument> documents_;
     struct MapArchiveIndex {

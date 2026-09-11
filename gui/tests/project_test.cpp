@@ -20,11 +20,45 @@ class ProjectTest : public QObject {
         const QString local = "Ldemo/Use;->run()V@local:0:O0oO0";
         const QString text = "int O0oO0 = 1; O0oO0++;";
         const auto result = project.applyAliases({text, {{4, 9, local, true}, {15, 20, local, false}}}, false);
-        QCOMPARE(result.text, QString("int local_1 = 1; local_1++;"));
+        QVERIFY(result.text.contains("renamed from: O0oO0, reason: deobfuscation:"));
+        QVERIFY(result.text.endsWith("int local_1 = 1; local_1++;"));
+        for (const auto &span : result.spans)
+            QCOMPARE(result.text.mid(span.start, span.end - span.start), QString("local_1"));
         QTemporaryDir dir;
         QFile source(dir.filePath("Use.java")); QVERIFY(source.open(QIODevice::WriteOnly));
         source.write(("import demo." + glyph + ";\nclass Use { " + glyph + " value; }").toUtf8()); source.close();
         QVERIFY(!project.document("demo/Use", false, source.fileName()).text.contains(glyph));
+    }
+    void engineRenamedMemberNote() {
+        Project project;
+        const QString id = "LUse;->bad-name:I";
+        project.addClass({{"name", "Use"}, {"fields", QJsonArray{
+            QJsonObject{{"id", id}, {"name", "bad-name"}, {"descriptor", "I"}}}}});
+        const auto result = project.applyAliases({"int field_1;", {{4, 11, id, true}}}, false);
+        QVERIFY(result.text.startsWith("// renamed from: bad-name, reason: decompiler identifier normalization\n"));
+        QCOMPARE(result.text.mid(result.spans[0].start, 7), QString("field_1"));
+    }
+    void renameNotesAndUndo() {
+        Project project;
+        project.addClass({{"name", "a"}});
+        project.deobfuscateNames();
+        SourceDocument raw{"a\na\n", {{0, 1, "La;", true}, {2, 3, "La;", false}}};
+        const auto automatic = project.applyAliases(raw, false);
+        QVERIFY(automatic.text.startsWith("// renamed from: a, reason: deobfuscation: short name\n"));
+        QVERIFY(project.rename("La;", "Readable").isEmpty());
+        const auto manual = project.applyAliases(raw, false);
+        QVERIFY(manual.text.contains("reason: user rename"));
+        for (const auto &span : manual.spans)
+            QCOMPARE(manual.text.mid(span.start, span.end - span.start), QString("Readable"));
+        project.undoRename();
+        QCOMPARE(project.applyAliases(raw, false).text, automatic.text);
+        QVERIFY(project.applyAliases(raw, true).text.startsWith("# renamed from:"));
+        QTemporaryDir dir;
+        const auto path = dir.filePath("aliases.json");
+        QVERIFY(project.save(path));
+        QVERIFY(project.rename("La;", "Changed").isEmpty());
+        QVERIFY(project.loadAliases(path));
+        QCOMPARE(project.applyAliases(raw, false).text, automatic.text);
     }
     void qualifiedAnnotationSymbols() {
         Project project; project.addClass({{"name", "demo/Use"}});

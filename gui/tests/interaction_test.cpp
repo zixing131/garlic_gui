@@ -187,6 +187,23 @@ class InteractionTest : public QObject {
         QCOMPARE(Resources::launcherActivities(manifest), QStringList{"demo.Main"});
         QVERIFY(Resources::launcherActivities(manifest.left(40)).isEmpty());
     }
+    void defaultPackageSearch() {
+        auto project = std::make_shared<Project>();
+        project->addClass({{"name", "Root"}});
+        project->addClass({{"name", "demo/Root"}});
+        SearchOptions options; options.query = "Root"; options.classes = true; options.code = false;
+        auto run = [&] {
+            return searchProject(project, options, {}, false, std::make_shared<std::atomic_bool>(false),
+                std::make_shared<SearchControl>(), std::make_shared<SearchEvents>(), 1);
+        };
+        QCOMPARE(run().hits.size(), 2);
+        for (const auto &name : {QString("<default>"), QString("默认包")}) {
+            options.package = name;
+            const auto result = run();
+            QCOMPARE(result.hits.size(), 1);
+            QCOMPARE(result.hits.first().toObject().value("class").toString(), QString("Root"));
+        }
+    }
     void searchIndexCache() {
         QTemporaryDir dir;
         QDir().mkpath(dir.path() + "/demo");

@@ -137,11 +137,13 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
                                                                : Qt::CaseInsensitive);
     };
     QString package = o.package.trimmed();
+    const bool defaultPackage = package == "<default>" || package == "默认包" ||
+        package == "預設套件" || package == "默認包" || package == "(default package)";
     package.replace('.', '/');
     while (package.endsWith('/'))
         package.chop(1);
     auto inPackage = [&](const QString &name) {
-        return package.isEmpty() || name.startsWith(package + '/');
+        return defaultPackage ? !name.contains('/') : package.isEmpty() || name.startsWith(package + '/');
     };
     QJsonArray batch;
     QElapsedTimer elapsed;
