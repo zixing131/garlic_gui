@@ -1,10 +1,9 @@
 #include "search.h"
-#include <QCryptographicHash>
 #include <QDateTime>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
-#include <QJsonDocument>
+#include <QSaveFile>
 #include <QSet>
 #include <QThread>
 #include <deque>
@@ -25,19 +24,19 @@ prepareDocument(const QString &text, const SearchOptions &o,
         QString searchable = line;
         bool inString = false, escaped = false;
         QChar quote;
-        for (int n = 0; n < line.size(); n++) {
+        for (int n = 0; !(o.code && o.comments) && n < line.size(); n++) {
             bool comment = blockComment;
-            if (!blockComment && !inString && line.mid(n, 2) == "//") {
+            if (!blockComment && !inString && line[n] == '/' && n + 1 < line.size() && line[n + 1] == '/') {
                 if (!o.comments)
                     for (int j = n; j < line.size(); j++)
                         searchable[j] = ' ';
                 break;
             }
-            if (!blockComment && !inString && line.mid(n, 2) == "/*") {
+            if (!blockComment && !inString && line[n] == '/' && n + 1 < line.size() && line[n + 1] == '*') {
                 blockComment = true;
                 comment = true;
             }
-            if (blockComment && line.mid(n, 2) == "*/") {
+            if (blockComment && line[n] == '*' && n + 1 < line.size() && line[n + 1] == '/') {
                 if (!o.comments) {
                     searchable[n] = ' ';
                     if (n + 1 < line.size())
@@ -70,7 +69,8 @@ prepareDocument(const QString &text, const SearchOptions &o,
         }
 
         document->searchable << searchable;
-        const auto folded = searchable.toCaseFolded();
+        // A superset filter can be shared by code-only, comment-only and combined queries.
+        const auto folded = line.toCaseFolded();
         for (int i = 0; i + 2 < folded.size(); i++) {
             auto bit = gram(folded[i], folded[i + 1], folded[i + 2]);
             document->grams[bit / 64] |= quint64(1) << (bit % 64);
@@ -78,15 +78,20 @@ prepareDocument(const QString &text, const SearchOptions &o,
     }
     return document;
 }
-bool possibleMatch(const std::array<quint64, 128> &grams, const SearchOptions &o) {
-    if (o.regex || o.query.size() < 3)
-        return true;
+QVector<quint32> queryGrams(const SearchOptions &o) {
+    QVector<quint32> bits;
+    if (o.regex) return bits;
     const auto query = o.query.toCaseFolded();
-    for (int i = 0; i + 2 < query.size(); i++) {
-        auto bit = gram(query[i], query[i + 1], query[i + 2]);
-        if (!(grams[bit / 64] & (quint64(1) << (bit % 64))))
-            return false;
-    }
+    // Scope masking introduces spaces that need not occur in the raw source.
+    // Only use grams unaffected by those synthetic spaces.
+    for (int i = 0; i + 2 < query.size(); ++i)
+        if (!query[i].isSpace() && !query[i + 1].isSpace() && !query[i + 2].isSpace())
+            bits.append(gram(query[i], query[i + 1], query[i + 2]));
+    return bits;
+}
+bool possibleMatch(const std::array<quint64, 128> &grams, const QVector<quint32> &bits) {
+    for (auto bit : bits)
+        if (!(grams[bit / 64] & (quint64(1) << (bit % 64)))) return false;
     return true;
 }
 } // namespace
@@ -103,10 +108,10 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
                            const std::shared_ptr<SearchEvents> &events, int request,
                            const std::shared_ptr<SearchIndex> &index, bool immutableSources) {
     SearchResult result;
-    const auto aliasVersion = QString::fromLatin1(
-        QCryptographicHash::hash(QJsonDocument(project->aliases()).toJson(QJsonDocument::Compact),
-                                 QCryptographicHash::Sha256)
-            .toHex());
+    const bool safePaths = QFileInfo::exists(directory + "/.garlic-safe-paths");
+    const bool hasAliases = project->hasAliases();
+    const auto bits = queryGrams(o);
+    const auto aliasVersion = project->aliasVersion();
     const auto re = searchExpression(o);
     if (!re.isValid()) {
         result.error = re.errorString();
@@ -165,9 +170,11 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
             const bool nameEnabled = kind == "method"  ? o.methods
                                      : kind == "field" ? o.fields
                                                        : o.classes;
+            if (!nameEnabled) continue;
             QString text = kind == "method" || kind == "field"
-                               ? project->symbolName(id)
-                               : QString(project->renamedClass(owner)).replace('/', '.');
+                               ? (hasAliases && !project->alias(id).isEmpty()
+                                      ? project->alias(id) : symbol.value("name").toString())
+                               : QString(hasAliases ? project->renamedClass(owner) : owner).replace('/', '.');
             if (nameEnabled && contains(text))
                 append({{"class", owner},
                         {"id", id},
@@ -182,7 +189,7 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
                         {"line", 0},
                         {"text", text + symbol.value("descriptor").toString()}});
         }
-    if ((o.code || o.comments) && !stopped())
+    if ((o.code || o.comments) && !o.indexOnly && !stopped())
         for (const auto &v : project->overrideAnnotations()) {
             if (stopped())
                 break;
@@ -228,10 +235,10 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
             for (int i = 0; i < checks && !stopped(); ++i) {
                 auto name = std::move(pending.front());
                 pending.pop_front();
-                const QString base = directory + '/' + (singleClass ? "source" : name),
+                const QString base = directory + '/' + (singleClass ? "source" : safePaths ? Project::sourceStem(name) : name),
                               path = base + ".java";
                 const QString map =
-                    singleClass ? directory + '/' + name + ".map.json" : base + ".map.json";
+                    singleClass ? directory + '/' + (safePaths ? Project::sourceStem(name) : name) + ".map.json" : base + ".map.json";
                 // The engine publishes a map after flushing a complete class, so in-flight files
                 // are not searched.
                 if (inFlight && !QFileInfo::exists(map)) {
@@ -240,8 +247,7 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
                 }
                 ++result.scanned;
                 QFileInfo info(path);
-                QString key = path + ":" + aliasVersion + ":" + QString::number(o.code) +
-                              QString::number(o.comments);
+                QString filterKey = path + ":" + aliasVersion;
                 if (!immutableSources) {
                     if (!info.exists()) {
                         ++result.missing;
@@ -251,9 +257,10 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
                         ++result.skipped;
                         continue;
                     }
-                    key += ":" + QString::number(info.size()) + ":" +
+                    filterKey += ":" + QString::number(info.size()) + ":" +
                            QString::number(info.lastModified().toMSecsSinceEpoch());
                 }
+                const QString key = filterKey + ":" + QString::number(o.code) + QString::number(o.comments);
                 std::shared_ptr<const SearchDocument> document;
                 bool hasFilter = false;
                 bool filterRejects = false;
@@ -263,13 +270,13 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
                         document = *cached;
                         ++result.cachedFiles;
                     }
-                    const auto cachedFilter = index->filters.constFind(key);
+                    const auto cachedFilter = index->filters.constFind(filterKey);
                     if (cachedFilter != index->filters.cend()) {
                         hasFilter = true;
-                        filterRejects = !possibleMatch(cachedFilter.value(), o);
+                        filterRejects = !possibleMatch(cachedFilter.value(), bits);
                     }
                 }
-                if (!document && hasFilter && filterRejects) {
+                if (hasFilter && filterRejects) {
                     ++result.indexRejected;
                     continue;
                 }
@@ -289,15 +296,33 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
                         ++result.missing;
                         continue;
                     }
-                    const auto text = project->aliases().isEmpty()
-                                          ? QString::fromUtf8(file.readAll())
-                                          : project->document(name, false, path).text;
+                    QString text;
+                    if (!hasAliases) {
+                        text = QString::fromUtf8(file.readAll());
+                    } else {
+                        // Reuse the renamed text across scopes and LRU eviction.
+                        // The workspace owns these files; aliases are part of the key.
+                        const QString preparedPath = path + ".search-" + aliasVersion;
+                        QFile prepared(preparedPath);
+                        if (immutableSources && prepared.open(QIODevice::ReadOnly)) {
+                            text = QString::fromUtf8(prepared.readAll());
+                        } else {
+                            text = project->document(name, false, path).text;
+                            if (immutableSources) {
+                                QSaveFile saved(preparedPath);
+                                if (saved.open(QIODevice::WriteOnly)) {
+                                    const auto bytes = text.toUtf8();
+                                    if (saved.write(bytes) == bytes.size()) saved.commit();
+                                }
+                            }
+                        }
+                    }
                     document = prepareDocument(text, o, control);
                     if (!document)
                         break;
                     if (index) {
                         std::lock_guard<std::mutex> lock(index->mutex);
-                        index->filters.insert(key, document->grams);
+                        index->filters.insert(filterKey, document->grams);
                         const auto cost = qMax<qint64>(
                             1, (text.size() * 4LL + document->lines.size() * 64LL + 1024) / 1024);
                         if (cost <= index->documents.maxCost())
@@ -306,7 +331,7 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
                                 int(cost));
                     }
                 }
-                if (!possibleMatch(document->grams, o)) {
+                if (o.indexOnly || !possibleMatch(document->grams, bits)) {
                     ++result.indexRejected;
                     continue;
                 }

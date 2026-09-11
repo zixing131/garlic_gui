@@ -461,6 +461,7 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     qApp->installEventFilter(this);
     mcp_ = new McpServer(this, this);
     connect(&backend_, &Backend::indexed, this, [this](const QStringList &classes) {
+        pendingMemberClasses_.clear();
         populate(classes);
         if (!pendingProject_.isEmpty()) {
             QString error;
@@ -470,6 +471,10 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
         }
     });
     connect(&backend_, &Backend::sourceReady, this, &MainWindow::showSource);
+    connect(&backend_, &Backend::metadataCompleted, this, [this] {
+        refreshAliases();
+        updateBusy();
+    });
     connect(&backend_, &Backend::cacheCleared, this, [this] {
         for (int i = 0; i < tabs_->count(); ++i)
             if (auto page = qobject_cast<ClassView *>(tabs_->widget(i)))
@@ -487,7 +492,9 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
             editor()->setPlainText(text);
     });
     connect(&backend_, &Backend::projectSourcesReady, this,
-            [this] { status_->setText(tr("项目源码已就绪，可以全文搜索。")); });
+            [this] { status_->setText(tr("项目源码已生成，正在准备搜索索引…")); });
+    connect(&backend_, &Backend::searchIndexReady, this,
+            [this] { status_->setText(tr("搜索索引已就绪。")); });
     connect(backend_.project(), &Project::renamed, this, &MainWindow::refreshAliases);
     connect(&backend_, &Backend::exported, this, [this](const QString &path) {
         // Export aliases with the source so edits are reviewable and recoverable.
@@ -603,6 +610,9 @@ void MainWindow::populate(const QStringList &classes) {
     struct State {
         QStringList names;
         int offset = 0;
+        // Build detached: notifying the proxy/view for every class is quadratic
+        // in large packages. Publish complete top-level branches once ready.
+        std::unique_ptr<QStandardItem> root = std::make_unique<QStandardItem>();
         QHash<QString, QStandardItem *> packages, items;
         QSet<QString> leafPackages;
     };
@@ -622,7 +632,7 @@ void MainWindow::populate(const QStringList &classes) {
                                     : tr("默认包");
             state->leafPackages.insert(pkg);
             if (!state->packages.contains(pkg)) {
-                auto parent = sourceRoot_;
+                auto parent = state->root.get();
                 QString full;
                 const auto parts = flatPackages_ ? QStringList{pkg} : pkg.split('.');
                 for (const auto &part : parts) {
@@ -650,7 +660,7 @@ void MainWindow::populate(const QStringList &classes) {
                 state->items[parent]->appendRow(item);
             else
                 state->packages[pkg]->appendRow(item);
-            if (!info.value("methods").toArray().isEmpty() ||
+            if (!backend_.metadataReady() || !info.value("methods").toArray().isEmpty() ||
                 !info.value("fields").toArray().isEmpty()) {
                 auto placeholder = new QStandardItem(tr("展开加载成员…"));
                 placeholder->setData(true, Qt::UserRole + 3);
@@ -662,12 +672,21 @@ void MainWindow::populate(const QStringList &classes) {
                 QTimer::singleShot(0, this, [next] { (*next)(); });
             return;
         }
+        while (state->root->rowCount())
+            sourceRoot_->appendRow(state->root->takeRow(0));
+        if (backend_.metadataReady()) {
+            const auto pending = std::exchange(pendingMemberClasses_, {});
+            for (const auto &name : pending)
+                if (auto item = state->items.value(name))
+                    tree_->expand(proxy_->mapFromSource(item->index()));
+        }
         if (state->packages.size() <= 12)
             tree_->expand(proxy_->mapFromSource(sourceRoot_->index()));
         countLabel_->setText(tr("%1 个包 / %2 个类与接口  ")
                                  .arg(state->leafPackages.size())
                                  .arg(state->names.size()));
-        status_->setText(tr("目录就绪，展开类加载成员。"));
+        status_->setText(backend_.metadataReady() ? tr("目录就绪，展开类加载成员。")
+            : tr("类目录已就绪，可打开源码；成员与引用索引正在后台准备…"));
     };
     (*tick)();
 }
@@ -687,6 +706,12 @@ void MainWindow::populateMembers(const QModelIndex &index) {
         }
     if (placeholder < 0)
         return;
+    if (!backend_.metadataReady()) {
+        pendingMemberClasses_.insert(Project::classOf(item->data(Qt::UserRole + 1).toString()));
+        item->child(placeholder)->setText(tr("成员索引准备中…"));
+        backend_.prepareMetadata();
+        return;
+    }
     item->removeRow(placeholder);
     const auto name = Project::classOf(item->data(Qt::UserRole + 1).toString());
     auto info = backend_.project()->info(name);
@@ -878,12 +903,29 @@ void MainWindow::refreshFindHighlights() {
 void MainWindow::updateBusy() {
     const bool busy = backend_.busy();
     openAction_->setEnabled(!busy);
-    settingsAction_->setEnabled(!busy && !backend_.preparing());
-    exportAction_->setEnabled(!busy && !backend_.input().isEmpty());
-    stopAction_->setEnabled(busy || backend_.preparing());
+    settingsAction_->setEnabled(!busy && !backend_.preparing() && !backend_.metadataPreparing());
+    exportAction_->setEnabled(!busy && backend_.metadataReady() && !backend_.input().isEmpty());
+    stopAction_->setEnabled(busy || backend_.preparing() || backend_.metadataPreparing());
     tree_->setEnabled(true);
     progress_->setRange(0, 0);
-    progress_->setVisible(busy || backend_.preparing());
+    progress_->setVisible(busy || backend_.preparing() || backend_.metadataPreparing());
+}
+bool MainWindow::waitForMetadata(std::function<void()> action) {
+    if (backend_.metadataReady()) return false;
+    status_->setText(tr("正在准备成员与引用索引，完成后将自动执行…"));
+    backend_.prepareMetadata();
+    const auto workspace = backend_.workspacePath();
+    auto timer = new QTimer(this);
+    connect(timer, &QTimer::timeout, this, [this, timer, workspace, action] {
+        if (workspace != backend_.workspacePath()) { timer->deleteLater(); return; }
+        if (backend_.metadataReady()) { timer->deleteLater(); action(); }
+        else if (!backend_.metadataPreparing()) {
+            timer->deleteLater();
+            status_->setText(tr("索引准备已停止，可重新执行操作以重试。"));
+        }
+    });
+    timer->start(50);
+    return true;
 }
 void MainWindow::recordHistory() {
     if (restoringHistory_ || !view())
@@ -904,6 +946,8 @@ void MainWindow::navigateTo(const QString &id, int line) {
         status_->setText(tr("此位置没有可定位的符号。"));
         return;
     }
+    if (id.contains("->") && waitForMetadata([this, id, line] { navigateTo(id, line); }))
+        return;
     pendingId_ = backend_.project()->canonicalId(id);
     pendingLine_ = line;
     openClass(Project::classOf(pendingId_));
@@ -911,10 +955,12 @@ void MainWindow::navigateTo(const QString &id, int line) {
 void MainWindow::showReferences(const QString &id) {
     if (id.isEmpty())
         return;
+    if (waitForMetadata([this, id] { showReferences(id); })) return;
     auto dialog = new ReferencesDialog(this, id);
     dialog->show();
 }
 void MainWindow::showCallGraph(const QString &id) {
+    if (waitForMetadata([this, id] { showCallGraph(id); })) return;
     const auto method = backend_.project()->canonicalId(id);
     if (!method.contains("->") || !method.contains('(')) {
         status_->setText(tr("请先选择一个方法，再查看函数调用图。"));
@@ -934,6 +980,7 @@ void MainWindow::showNativeAnalysis(const QString &path, const QString &entry) {
 void MainWindow::renameSymbol(const QString &id) {
     if (id.isEmpty())
         return;
+    if (waitForMetadata([this, id] { renameSymbol(id); })) return;
     bool ok = false;
     const auto name =
         QInputDialog::getText(this, tr("重命名符号"), id + tr("\n新的项目名称（保留原始字节码）："),

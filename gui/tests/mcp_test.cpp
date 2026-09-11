@@ -40,6 +40,30 @@ class McpTest : public QObject {
         return result;
     }
   private slots:
+    void progressiveMembers() {
+        QCoreApplication::setOrganizationName("GarlicTests");
+        QCoreApplication::setApplicationName("McpTest");
+        QSettings().clear();
+        MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
+        auto settings = window.backend()->settings();
+        settings.mcpEnabled = true; settings.background = false;
+        window.applySettings(settings);
+        window.backend()->setProperty("fastOpen", true);
+        QLocalSocket socket;
+        socket.connectToServer(window.mcpEndpoint());
+        QVERIFY(socket.waitForConnected(3000));
+        bool completed = false;
+        connect(window.backend(), &Backend::indexed, &window, [&] {
+            QVERIFY(!window.backend()->metadataReady());
+            const auto result = tool(socket, "get_methods_of_class", {{"class_name", "demo/cases/foo"}});
+            QVERIFY(!result.value("isError").toBool());
+            QCOMPARE(result.value("members").toArray().size(), 1);
+            QVERIFY(window.backend()->metadataReady());
+            completed = true;
+        });
+        window.openPath(qEnvironmentVariable("GARLIC_TEST_FIXTURES") + "/cases.dex");
+        QTRY_VERIFY_WITH_TIMEOUT(completed, 15000);
+    }
     void httpTransport() {
         QCoreApplication::setOrganizationName("GarlicTests");
         QCoreApplication::setApplicationName("McpTest");

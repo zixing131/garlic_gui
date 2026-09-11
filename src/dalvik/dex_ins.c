@@ -180,7 +180,7 @@ static inline u8 dex_ins_parameter_11n(jd_dex_ins *ins, int number)
 {
     u2 item = ins->param[0];
     u1 v_a = (item >> 8) & 0x0F;
-    s1 v_b = (s1)(item >> 12);
+    s1 v_b = (s1)((int)(item >> 12) - ((item & 0x8000) ? 16 : 0));
     switch (number) {
         case 0:
             return v_a;

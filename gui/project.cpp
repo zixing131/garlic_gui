@@ -1,6 +1,8 @@
 #include "project.h"
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QFile>
+#include <QDir>
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QMap>
@@ -10,10 +12,27 @@
 #include <QSignalBlocker>
 #include <algorithm>
 
+static QString referenceTarget(const QJsonArray &dictionary, const QJsonValue &value) {
+    if (value.isString()) return value.toString();
+    const int index = value.toInt(-1);
+    return value.isDouble() && value.toDouble() == index && index >= 0 && index < dictionary.size()
+        ? dictionary.at(index).toString() : QString();
+}
+
 QString Project::normalize(QString name) {
     if (name.startsWith('L') && name.endsWith(';'))
         name = name.mid(1, name.size() - 2);
     return name.replace('.', '/');
+}
+QString Project::sourceStem(const QString &name) {
+    const auto hex = normalize(name).toUtf8().toHex();
+    QStringList parts;
+    for (int i = 0; i < hex.size(); i += 64) parts.append(QString::fromLatin1(hex.mid(i, 64)));
+    return "_classes/" + parts.join('/');
+}
+QString Project::sourcePath(const QString &directory, const QString &name, const QString &suffix) {
+    return QDir(directory).filePath((QFileInfo::exists(QDir(directory).filePath(".garlic-safe-paths"))
+        ? sourceStem(name) : normalize(name)) + suffix);
 }
 QString Project::classOf(const QString &id) {
     const int end = id.indexOf(';');
@@ -31,6 +50,7 @@ void Project::reset(const QString &input) {
     classNames_.clear();
     parents_.clear();
     aliases_.clear();
+    aliasIndex_ = std::make_shared<AliasIndex>();
     undo_.clear();
 }
 void Project::addClass(const QJsonObject &entry) {
@@ -54,7 +74,7 @@ void Project::addClass(const QJsonObject &entry) {
             const auto row = v.toArray();
             const auto kind = row.size() > 2 ? row.at(2).toString() : QString();
             if ((kind == "extends" || kind == "implements") && !row.isEmpty())
-                parents_[name] << classOf(row.at(0).toString());
+                parents_[name] << classOf(referenceTarget(entry.value("ref_targets").toArray(), row.at(0)));
         }
     } else
         for (const auto &v : refs.toArray()) {
@@ -100,66 +120,94 @@ QJsonArray Project::members(const QString &name, bool methods) const {
 QJsonArray Project::xrefs(const QString &id) const {
     std::lock_guard<std::mutex> guard(referenceIndex_->lock);
     if (!referenceIndex_->ready) {
-        QHash<QString, QString> canonical;
+        QHash<QString, QPair<int, int>> canonical;
+        auto intern = [&](const QString &id) {
+            auto found = referenceIndex_->targets.constFind(id);
+            if (found != referenceIndex_->targets.cend()) return found.value();
+            const int index = referenceIndex_->positions.size();
+            referenceIndex_->targets.insert(id, index);
+            referenceIndex_->positions.append(QList<ReferencePosition>{});
+            return index;
+        };
+        auto resolveTarget = [&](const QString &raw) -> QPair<int, int> {
+            if (raw.isEmpty()) return {-1, -1};
+            const auto found = canonical.constFind(raw);
+            if (found != canonical.cend()) return found.value();
+            const auto id = canonicalId(raw);
+            const QPair<int, int> result{intern(id), intern(classId(classOf(id)))};
+            canonical.insert(raw, result);
+            return result;
+        };
+        auto add = [&](const QPair<int, int> &target, int offset, const ReferencePosition &position,
+                       QSet<quint64> &seen) {
+            if (target.first < 0) return;
+            const quint64 key = (quint64(quint32(target.first)) << 32) | quint32(offset);
+            if (seen.contains(key)) return;
+            seen.insert(key);
+            referenceIndex_->positions[target.first].append(position);
+            if (target.second != target.first)
+                referenceIndex_->positions[target.second].append(position);
+        };
         for (auto it = classes_.cbegin(); it != classes_.cend(); ++it) {
-            QSet<QString> seen;
-            auto add = [&](const QString &from, const QString &raw, int offset,
-                           const ReferencePosition &position) {
-                if (!canonical.contains(raw))
-                    canonical[raw] = canonicalId(raw);
-                const auto target = canonical.value(raw);
-                const auto key = from + ":" + QString::number(offset) + target;
-                if (seen.contains(key))
-                    return;
-                seen.insert(key);
-                referenceIndex_->targets[target].append(position);
-                const auto clazz = classId(classOf(target));
-                if (clazz != target)
-                    referenceIndex_->targets[clazz].append(position);
-            };
             const auto refs = it.value().value("refs");
+            const auto dictionary = it.value().value("ref_targets").toArray();
+            QVector<QPair<int, int>> resolved;
+            resolved.reserve(dictionary.size());
+            for (const auto &raw : dictionary) resolved.append(resolveTarget(raw.toString()));
             if (refs.isObject()) {
                 const auto groups = refs.toObject();
-                const auto groupNames = groups.keys();
-                for (const auto &from : groupNames) {
-                    const auto rows = groups.value(from).toArray();
-                    for (int i = 0; i < rows.size(); i++) {
+                for (auto g = groups.begin(); g != groups.end(); ++g) {
+                    const auto from = g.key();
+                    const int group = referenceIndex_->groups.size();
+                    referenceIndex_->groups.append({it.key(), from});
+                    QSet<quint64> seen;
+                    const auto rows = g.value().toArray();
+                    for (int i = 0; i < rows.size(); ++i) {
                         const auto row = rows[i].toArray();
-                        if (row.size() < 2 || !row.at(0).isString())
-                            continue;
-                        add(from, row.at(0).toString(), row.at(1).toInt(),
-                            {it.key(), from, i});
+                        if (row.size() < 2) continue;
+                        const auto raw = row.at(0);
+                        const int number = raw.toInt(-1);
+                        const auto target = raw.isDouble() && raw.toDouble() == number &&
+                            number >= 0 && number < resolved.size() ? resolved[number] : resolveTarget(raw.toString());
+                        add(target, row.at(1).toInt(), {group, i}, seen);
                     }
                 }
             } else {
+                const int group = referenceIndex_->groups.size();
+                referenceIndex_->groups.append({it.key(), {}});
+                QHash<QString, QSet<quint64>> seen;
                 const auto rows = refs.toArray();
-                for (int i = 0; i < rows.size(); i++) {
+                for (int i = 0; i < rows.size(); ++i) {
                     const auto ref = rows[i].toObject();
-                    add(ref.value("from").toString(), ref.value("target").toString(),
-                        ref.value("offset").toInt(), {it.key(), {}, i});
+                    add(resolveTarget(ref.value("target").toString()), ref.value("offset").toInt(),
+                        {group, i}, seen[ref.value("from").toString()]);
                 }
             }
         }
         referenceIndex_->ready = true;
     }
     QJsonArray result;
-    for (const auto &position : referenceIndex_->targets.value(canonicalId(id))) {
-        const auto refs = classes_.value(position.owner).value("refs");
+    const int targetIndex = referenceIndex_->targets.value(canonicalId(id), -1);
+    if (targetIndex < 0) return result;
+    for (const auto &position : referenceIndex_->positions.at(targetIndex)) {
+        const auto &group = referenceIndex_->groups.at(position.group);
+        const auto entry = classes_.value(group.owner);
+        const auto refs = entry.value("refs");
         QJsonObject ref;
         if (refs.isObject()) {
-            const auto rows = refs.toObject().value(position.from).toArray();
+            const auto rows = refs.toObject().value(group.from).toArray();
             if (position.index < 0 || position.index >= rows.size())
                 continue;
             const auto row = rows.at(position.index).toArray();
             if (row.size() < 2)
                 continue;
-            ref = {{"from", position.from},
-                   {"target", row.at(0)},
+            ref = {{"from", group.from},
+                   {"target", referenceTarget(entry.value("ref_targets").toArray(), row.at(0))},
                    {"offset", row.at(1)},
                    {"kind", row.size() > 2 ? row.at(2) : QJsonValue("bytecode")}};
         } else
             ref = refs.toArray().at(position.index).toObject();
-        ref["class"] = position.owner;
+        ref["class"] = group.owner;
         result.append(ref);
     }
     return result;
@@ -191,7 +239,7 @@ QJsonArray Project::callees(const QString &id) const {
         for (const auto &value : rows) {
             const auto row = value.toArray();
             if (row.size() >= 2)
-                append(row.at(0).toString(), row.at(1).toInt(),
+                append(referenceTarget(classes_.value(ownerName).value("ref_targets").toArray(), row.at(0)), row.at(1).toInt(),
                        row.size() > 2 ? row.at(2).toString() : QStringLiteral("bytecode"));
         }
     } else {
@@ -278,10 +326,12 @@ QString Project::rename(const QString &id, const QString &newName) {
         aliases_.remove(id);
     else
         aliases_[id] = newName;
+    aliasIndex_ = std::make_shared<AliasIndex>();
     emit renamed();
     return {};
 }
 void Project::deobfuscateNames() {
+    aliasIndex_ = std::make_shared<AliasIndex>();
     static const QRegularExpression identifier("^[\\p{L}_$][\\p{L}\\p{N}_$]*$");
     static const QRegularExpression noisy("[\\p{Cc}\\p{Cf}\\p{Co}\\p{Cs}\\p{Cn}\\p{Mn}\\p{Mc}]");
     QSet<QString> used;
@@ -313,6 +363,7 @@ void Project::undoRename() {
     if (undo_.isEmpty())
         return;
     aliases_ = undo_.takeLast();
+    aliasIndex_ = std::make_shared<AliasIndex>();
     emit renamed();
 }
 QJsonObject Project::aliases() const {
@@ -320,6 +371,22 @@ QJsonObject Project::aliases() const {
     for (auto it = aliases_.cbegin(); it != aliases_.cend(); ++it)
         out[it.key()] = it.value();
     return out;
+}
+QString Project::aliasVersion() const {
+    std::lock_guard<std::mutex> guard(aliasIndex_->lock);
+    if (aliasIndex_->version.isEmpty()) {
+        QCryptographicHash hash(QCryptographicHash::Sha256);
+        auto ids = aliases_.keys();
+        ids.sort();
+        for (const auto &id : ids) {
+            for (const auto &part : {id.toUtf8(), aliases_.value(id).toUtf8()}) {
+                hash.addData(QByteArray::number(part.size()) + ':');
+                hash.addData(part);
+            }
+        }
+        aliasIndex_->version = QString::fromLatin1(hash.result().toHex());
+    }
+    return aliasIndex_->version;
 }
 bool Project::save(const QString &path, QString *error) const {
     QSaveFile file(path);
@@ -393,11 +460,13 @@ bool Project::loadAliases(const QString &path, QString *error) {
     const auto oldUndo = undo_;
     QSignalBlocker blocker(this);
     aliases_.clear();
+    aliasIndex_ = std::make_shared<AliasIndex>();
     const auto values = data.value("aliases").toObject();
     for (auto it = values.begin(); it != values.end(); ++it) {
         const auto message = rename(it.key(), it.value().toString());
         if (!message.isEmpty()) {
             aliases_ = previous;
+            aliasIndex_ = std::make_shared<AliasIndex>();
             undo_ = oldUndo;
             if (error)
                 *error = message;
@@ -409,11 +478,19 @@ bool Project::loadAliases(const QString &path, QString *error) {
     emit renamed();
     return true;
 }
+QHash<QString, QStringList> Project::classAliases() const {
+    std::lock_guard<std::mutex> guard(aliasIndex_->lock);
+    if (!aliasIndex_->ready) {
+        for (auto it = aliases_.cbegin(); it != aliases_.cend(); ++it)
+            if (!it.key().contains("->")) aliasIndex_->classes[it.value()].append(it.key());
+        aliasIndex_->ready = true;
+    }
+    return aliasIndex_->classes;
+}
 QString Project::resolve(const QString &token, const QString &context) const {
     QStringList candidates = classNames_.value(token);
-    for (auto it = aliases_.cbegin(); it != aliases_.cend(); ++it)
-        if (!it.key().contains("->") && it.value() == token && !candidates.contains(it.key()))
-            candidates << it.key();
+    for (const auto &id : classAliases().value(token))
+        if (!candidates.contains(id)) candidates << id;
     if (candidates.size() == 1)
         return candidates.first();
     const auto pkg = normalize(context).section('/', 0, -2);
@@ -429,10 +506,10 @@ static QString codeMask(QString text, bool smali) {
     int i = 0;
     while (i < text.size()) {
         int start = i;
-        if ((!smali && text.mid(i, 2) == "//") || (smali && text[i] == '#')) {
+        if ((!smali && text[i] == '/' && i + 1 < text.size() && text[i + 1] == '/') || (smali && text[i] == '#')) {
             while (i < text.size() && text[i] != '\n')
                 ++i;
-        } else if (!smali && text.mid(i, 2) == "/*") {
+        } else if (!smali && text[i] == '/' && i + 1 < text.size() && text[i + 1] == '*') {
             int end = text.indexOf("*/", i + 2);
             i = end < 0 ? text.size() : end + 2;
         } else if (text[i] == '"' || text[i] == '\'') {
@@ -470,6 +547,7 @@ SourceDocument Project::document(const QString &name, bool smali, const QString 
     result.text = QString::fromUtf8(bytes);
     const QString mask = codeMask(result.text, smali);
     QMap<int, int> occupied;
+    QHash<QString, QString> canonical;
     auto overlaps = [&](int start, int end) {
         auto it = occupied.lowerBound(start);
         if (it != occupied.end() && it.key() < end)
@@ -482,14 +560,15 @@ SourceDocument Project::document(const QString &name, bool smali, const QString 
         if (start < 0 || end <= start || end > result.text.size() || overlaps(start, end))
             return;
         occupied.insert(start, end);
-        result.spans.push_back({start, end, canonicalId(id), declaration});
+        if (!canonical.contains(id)) canonical.insert(id, canonicalId(id));
+        result.spans.push_back({start, end, canonical.value(id), declaration});
     };
     if (!smali) {
         QString mapPath = path;
         mapPath.chop(5);
         mapPath += ".map.json";
         if (QFileInfo(path).fileName() == "source.java")
-            mapPath = QFileInfo(path).absolutePath() + "/" + owner(name) + ".map.json";
+            mapPath = sourcePath(QFileInfo(path).absolutePath(), owner(name), ".map.json");
         QFile map(mapPath);
         QJsonArray records;
         if (map.open(QIODevice::ReadOnly))
@@ -572,27 +651,36 @@ SourceDocument Project::document(const QString &name, bool smali, const QString 
             const auto n = normalize(m.captured(1));
             imports[n.section('/', -1)] = classId(n);
         }
+        const auto aliasClasses = classAliases();
+        auto resolveType = [&](const QString &word) -> QString {
+            auto candidates = classNames_.value(word);
+            for (const auto &id : aliasClasses.value(word))
+                if (!candidates.contains(id)) candidates.append(id);
+            if (candidates.size() == 1) return candidates.first();
+            QStringList local;
+            const auto package = normalize(name).section('/', 0, -2);
+            for (const auto &id : candidates)
+                if (classOf(id).section('/', 0, -2) == package) local.append(id);
+            return local.size() == 1 ? local.first() : QString();
+        };
+        const QRegularExpression typeBefore("(?:\\b(?:new|instanceof|extends|implements|class|interface|"
+                                            "enum|import)\\s+|@)$");
+        const QRegularExpression typeAfter("^\\s*(?:[.<\\[]|[\\p{L}_$][\\p{L}\\p{N}_$]*\\s*[,;=()])");
         const QRegularExpression words("[\\p{L}_$][\\p{L}\\p{N}_$]*");
         auto wordsIt = words.globalMatch(mask);
         while (wordsIt.hasNext()) {
             const auto m = wordsIt.next();
+            if (overlaps(m.capturedStart(), m.capturedEnd())) continue;
             const QString word = m.captured();
             const QString before = mask.mid(qMax(0, int(m.capturedStart()) - 32),
                                             qMin(32, int(m.capturedStart()))),
                           after = mask.mid(m.capturedEnd(), 80);
-            const bool typeContext =
-                QRegularExpression("(?:\\b(?:new|instanceof|extends|implements|class|interface|"
-                                   "enum|import)\\s+|@)$")
-                    .match(before)
-                    .hasMatch() ||
-                QRegularExpression("^\\s*(?:[.<\\[]|[\\p{L}_$][\\p{L}\\p{N}_$]*\\s*[,;=()])")
-                    .match(after)
-                    .hasMatch();
+            const bool typeContext = typeBefore.match(before).hasMatch() || typeAfter.match(after).hasMatch();
             if (!typeContext)
                 continue;
             QString id = imports.value(word);
             if (id.isEmpty())
-                id = resolve(word, name);
+                id = resolveType(word);
             if (!id.isEmpty())
                 add(m.capturedStart(), m.capturedEnd(), id, false);
         }
@@ -625,30 +713,39 @@ SourceDocument Project::document(const QString &name, bool smali, const QString 
 }
 
 SourceDocument Project::applyAliases(SourceDocument result, bool smali) const {
-    {
-        int shift = 0;
-        for (auto &span : result.spans) {
-            const int originalStart = span.start, originalEnd = span.end;
-            span.start += shift;
-            span.end += shift;
-            QString replacement = aliases_.value(span.id);
-            if ((!span.id.contains("->") && span.id.endsWith(';')) ||
-                (!smali && span.id.contains(";-><init>"))) {
-                const QString old = classOf(span.id), renamed = renamedClass(old);
-                replacement.clear();
-                if (old != renamed) {
-                    replacement = smali ? classId(renamed) : renamed.section('/', -1);
-                    if (!smali && !result.text.mid(span.start, span.end - span.start).contains('$'))
-                        replacement = replacement.section('$', -1);
-                }
+    // Append unchanged ranges and replacements once. Replacing every token in a
+    // large QString repeatedly shifts the rest of the file for each alias.
+    QString rewritten;
+    rewritten.reserve(result.text.size());
+    int cursor = 0, shift = 0;
+    bool changed = false;
+    for (auto &span : result.spans) {
+        const int originalStart = span.start, originalEnd = span.end;
+        span.start += shift;
+        span.end += shift;
+        QString replacement = aliases_.value(span.id);
+        if ((!span.id.contains("->") && span.id.endsWith(';')) ||
+            (!smali && span.id.contains(";-><init>"))) {
+            const QString old = classOf(span.id), renamed = renamedClass(old);
+            replacement.clear();
+            if (old != renamed) {
+                replacement = smali ? classId(renamed) : renamed.section('/', -1);
+                if (!smali && !QStringView(result.text).mid(originalStart, originalEnd - originalStart).contains('$'))
+                    replacement = replacement.section('$', -1);
             }
-            if (replacement.isEmpty())
-                continue;
-            result.text.replace(span.start, span.end - span.start, replacement);
-            const int delta = replacement.size() - (originalEnd - originalStart);
-            span.end += delta;
-            shift += delta;
         }
+        if (replacement.isEmpty()) continue;
+        rewritten += QStringView(result.text).mid(cursor, originalStart - cursor);
+        rewritten += replacement;
+        cursor = originalEnd;
+        changed = true;
+        const int delta = replacement.size() - (originalEnd - originalStart);
+        span.end += delta;
+        shift += delta;
+    }
+    if (changed) {
+        rewritten += QStringView(result.text).mid(cursor);
+        result.text = std::move(rewritten);
     }
     return result;
 }
@@ -744,8 +841,9 @@ std::shared_ptr<Project> Project::snapshot() const {
     copy->replaceData(*this);
     return copy;
 }
-void Project::replaceData(const Project &other) {
-    documents_ = other.documents_;
+void Project::replaceData(const Project &other, bool keepDocuments) {
+    if (!keepDocuments)
+        documents_ = other.documents_;
     referenceIndex_ = other.referenceIndex_;
     overrideIndex_ = other.overrideIndex_;
     symbolIndex_ = other.symbolIndex_;
@@ -756,6 +854,7 @@ void Project::replaceData(const Project &other) {
     classNames_ = other.classNames_;
     parents_ = other.parents_;
     aliases_ = other.aliases_;
+    aliasIndex_ = other.aliasIndex_;
     undo_ = other.undo_;
 }
 

@@ -1,4 +1,6 @@
 #include "java_string.h"
+#include <math.h>
+#include <stdint.h>
 #include "common/str_tools.h"
 #include "decompiler/transformer/transformer.h"
 #include "decompiler/klass.h"
@@ -42,11 +44,17 @@ static string get_const_value(jd_exp *expression)
                 return str_create("%d", primitive->int_val);
         }
         case JD_VAR_LONG_T:
-            return str_create("%ldL", primitive->long_val);
-        case JD_VAR_FLOAT_T:
-            return str_create("%f", primitive->float_val);
-        case JD_VAR_DOUBLE_T:
-            return str_create("%lf", primitive->double_val);
+            return str_create("%lldL", (long long)primitive->long_val);
+        case JD_VAR_FLOAT_T: {
+            if (isfinite(primitive->float_val)) return str_create("%.9gF", primitive->float_val);
+            uint32_t bits; memcpy(&bits, &primitive->float_val, sizeof(bits));
+            return str_create("Float.intBitsToFloat(0x%08x)", bits);
+        }
+        case JD_VAR_DOUBLE_T: {
+            if (isfinite(primitive->double_val)) return str_create("%.17gD", primitive->double_val);
+            uint64_t bits; memcpy(&bits, &primitive->double_val, sizeof(bits));
+            return str_create("Double.longBitsToDouble(0x%016llxL)", (unsigned long long)bits);
+        }
         case JD_VAR_NULL_T:
             return str_dup("null");
         case JD_VAR_REFERENCE_T: {

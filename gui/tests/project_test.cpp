@@ -37,6 +37,33 @@ class ProjectTest : public QObject {
         QCOMPARE(compact.xrefs("Ldemo/Base;").size(), legacy.xrefs("Ldemo/Base;").size());
         QCOMPARE(compact.callees(from), legacy.callees(from));
         QCOMPARE(compact.callees(from).size(), 1);
+        Project dictionary;
+        entry["ref_targets"] = QJsonArray{"Ldemo/Base;", target};
+        entry["refs"] = QJsonObject{{"Ldemo/Main;", QJsonArray{QJsonArray{0, -1, "extends"}}},
+                                    {from, QJsonArray{QJsonArray{1, 3}, QJsonArray{1, 3}, QJsonArray{99, 4}}}};
+        dictionary.addClass(entry);
+        QCOMPARE(dictionary.xrefs(target), compact.xrefs(target));
+        QCOMPARE(dictionary.xrefs("Ldemo/Base;"), compact.xrefs("Ldemo/Base;"));
+        QCOMPARE(dictionary.callees(from), compact.callees(from));
+    }
+    void aliasLookupSnapshots() {
+        Project project;
+        project.addClass({{"name", "demo/Original"}, {"kind", "class"}});
+        const auto id = Project::classId("demo/Original");
+        QVERIFY(project.rename(id, "Alpha").isEmpty());
+        QCOMPARE(project.resolve("Alpha", "demo/Use"), id);
+        const auto version = project.aliasVersion();
+        auto snapshot = project.snapshot();
+        QVERIFY(project.rename(id, "Beta").isEmpty());
+        QVERIFY(project.resolve("Alpha", "demo/Use").isEmpty());
+        QCOMPARE(project.resolve("Beta", "demo/Use"), id);
+        QVERIFY(project.aliasVersion() != version);
+        QCOMPARE(snapshot->aliasVersion(), version);
+        QCOMPARE(snapshot->resolve("Alpha", "demo/Use"), id);
+        project.undoRename();
+        QCOMPARE(project.aliasVersion(), version);
+        QCOMPARE(project.resolve("Alpha", "demo/Use"), id);
+        QVERIFY(project.resolve("Beta", "demo/Use").isEmpty());
     }
     void applicationInheritance() {
         Project p;

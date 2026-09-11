@@ -342,7 +342,7 @@ void McpServer::dispatch(QLocalSocket *socket, const QJsonObject &request) {
         return;
     }
     if (name == "set_settings") {
-        if (backend->busy() || backend->preparing()) {
+        if (backend->busy() || backend->preparing() || backend->metadataPreparing()) {
             fail("Engine busy; retry after completion");
             return;
         }
@@ -370,7 +370,7 @@ void McpServer::dispatch(QLocalSocket *socket, const QJsonObject &request) {
         return;
     }
     if (name == "clear_cache") {
-        if (backend->busy() || backend->preparing()) {
+        if (backend->busy() || backend->preparing() || backend->metadataPreparing()) {
             fail("Engine busy");
             return;
         }
@@ -394,6 +394,24 @@ void McpServer::dispatch(QLocalSocket *socket, const QJsonObject &request) {
     }
     if (project->classes().isEmpty()) {
         fail("Open an input file in Garlic GUI first");
+        return;
+    }
+    if (!backend->metadataReady() && name != "get_all_classes" && name != "get_package_tree" &&
+        name != "get_class_source") {
+        backend->prepareMetadata();
+        const auto workspace = backend->workspacePath();
+        auto timer = new QTimer(socket);
+        connect(timer, &QTimer::timeout, this, [this, timer, client, request, backend, workspace, fail] {
+            if (!client) { timer->deleteLater(); return; }
+            if (workspace != backend->workspacePath()) {
+                timer->deleteLater(); fail("Project changed while waiting for metadata");
+            } else if (backend->metadataReady()) {
+                timer->deleteLater(); dispatch(client, request);
+            } else if (!backend->metadataPreparing()) {
+                timer->deleteLater(); fail("Metadata preparation stopped; retry the request");
+            }
+        });
+        timer->start(50);
         return;
     }
     if (name == "get_all_classes") {

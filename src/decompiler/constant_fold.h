@@ -153,8 +153,10 @@ static bool common_text_codepoint(uint32_t cp) {
 }
 static char *decode_short_text(jd_exp_new_array *array, uint32_t start,
                                uint32_t length, uint32_t key, int *score) {
-    if (!array || !array->list || start > (uint32_t)array->list->len ||
-        length > 65536 || start + length > (uint32_t)array->list->len)
+    unsigned first = array && array->values_only ? 0 : 1;
+    if (!array || !array->list || array->list->len < first ||
+        start > (uint32_t)array->list->len - first || length > 65536 ||
+        length > (uint32_t)array->list->len - first - start)
         return NULL;
     size_t capacity = (size_t)length * 4 + 1;
     char *out = x_alloc(capacity);
@@ -164,7 +166,7 @@ static char *decode_short_text(jd_exp_new_array *array, uint32_t start,
     bool has_ascii_word = false;
     for (uint32_t i = 0; i < length; ++i) {
         uint32_t encoded, cp;
-        if (!fold_int(&array->list->args[start + i], &encoded))
+        if (!fold_int(&array->list->args[first + start + i], &encoded))
             return NULL;
         cp = (encoded ^ key) & 0xffffu;
         if (cp == 0 || cp == 0xfffd || cp == 0xfffe || cp == 0xffff ||
@@ -204,6 +206,8 @@ static char *decode_short_text(jd_exp_new_array *array, uint32_t start,
 }
 static jd_exp_new_array *fold_short_array(jd_exp *e) {
     for (int depth = 0; e && depth < 16; ++depth) {
+        if (e->type == JD_EXPRESSION_GET_STATIC && e->data)
+            return ((jd_exp_get_static *)e->data)->constant_array;
         if (e->type == JD_EXPRESSION_NEW_ARRAY && e->data) {
             jd_exp_new_array *array = e->data;
             return array->class_name &&

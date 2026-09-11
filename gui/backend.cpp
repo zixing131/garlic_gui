@@ -2,6 +2,8 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QDirIterator>
+#include <QElapsedTimer>
+#include <QDebug>
 #include <QFile>
 #include <QFileInfo>
 #include <QFutureWatcher>
@@ -18,6 +20,14 @@
 
 Backend::Backend(QObject *parent)
     : QObject(parent), project_(this), settings_(AppSettings::load()) {
+    connect(&project_, &Project::renamed, this, [this] {
+        cancelSearch();
+        if (searchWarmControl_)
+            searchWarmControl_->canceled = true;
+        searchIndex_ = std::make_shared<SearchIndex>();
+        if (fullReady_ || preparing_)
+            warmSearchIndex();
+    });
     connect(this, &Backend::failed, this,
             [this] { setProperty("errorCount", property("errorCount").toInt() + 1); });
     connect(this, &Backend::log, this, [this](const QString &text) {
@@ -30,7 +40,9 @@ Backend::Backend(QObject *parent)
     connect(&background_, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this,
             &Backend::prepareFinished);
     connect(&background_, &QProcess::readyReadStandardError, this, [this] {
-        emit log(QString::fromUtf8(background_.readAllStandardError()).right(4000));
+        const auto text = QString::fromUtf8(background_.readAllStandardError());
+        backgroundErrorTail_ = (backgroundErrorTail_ + text).right(4000);
+        emit log(text.right(4000));
     });
     connect(&background_, &QProcess::readyReadStandardOutput, this,
             [this] { background_.readAllStandardOutput(); });
@@ -59,6 +71,8 @@ Backend::Backend(QObject *parent)
 }
 
 Backend::~Backend() {
+    if (metadataCanceled_)
+        metadataCanceled_->store(true);
     if (indexCanceled_)
         indexCanceled_->store(true);
     if (exportControl_)
@@ -110,7 +124,9 @@ void Backend::start(Job job, const QStringList &arguments) {
     applyEnvironment(process_, jobDir_);
     if (job == Job::Index) {
         auto environment = process_.processEnvironment();
-        environment.insert("GARLIC_COMPACT_INDEX", "1");
+        environment.insert("GARLIC_COMPACT_INDEX", "2");
+        if (directoryOnly_)
+            environment.insert("GARLIC_DIRECTORY_INDEX", "names");
         process_.setProcessEnvironment(environment);
     }
     process_.setStandardOutputFile(
@@ -158,6 +174,14 @@ void Backend::openPaths(const QStringList &paths) {
         return;
     }
     cancelSearch();
+    if (metadataCanceled_)
+        metadataCanceled_->store(true);
+    metadataPreparing_ = false;
+    directoryOnly_ = paths.size() == 1 &&
+        (property("fastOpen").toBool() ||
+         (ext == "apks" && QFileInfo(path).size() >= 128LL * 1048576));
+    metadataReady_ = !directoryOnly_;
+    sourcesAfterMetadata_ = false;
     if (searchWarmControl_)
         searchWarmControl_->canceled = true;
     searchControl_.reset();
@@ -257,6 +281,10 @@ void Backend::exportSources(const QString &directory, bool smali) {
 }
 
 void Backend::cancel() {
+    if (metadataCanceled_)
+        metadataCanceled_->store(true);
+    metadataPreparing_ = false;
+    sourcesAfterMetadata_ = false;
     if (indexCanceled_)
         indexCanceled_->store(true);
     if (exportControl_)
@@ -276,6 +304,7 @@ void Backend::cancel() {
     }
     ++searchGeneration_;
     searchPending_ = false;
+    emit preparationChanged(false);
     if (preparing_) {
         cancelPreparing_ = true;
         background_.kill();
@@ -494,7 +523,11 @@ void Backend::finish(int code, QProcess::ExitStatus status) {
 
 void Backend::applyEnvironment(QProcess &process, const QString &directory) {
     auto env = QProcessEnvironment::systemEnvironment();
+    env.remove("GARLIC_DIRECTORY_INDEX");
     env.insert("GARLIC_SOURCE_MAP_DIR", directory);
+    if (workspace_)
+        env.insert("GARLIC_APK_CACHE_DIR", workspace_->path() + "/apk-cache");
+    env.insert("GARLIC_SAFE_SOURCE_PATHS", workspace_ && directory == workspace_->path() + "/all-java" ? "1" : "0");
     env.insert("GARLIC_ESCAPE_UNICODE", settings_.escapeUnicode ? "1" : "0");
     env.insert("GARLIC_SIMPLIFY_CONTROL_FLOW", settings_.simplifyControlFlow ? "1" : "0");
     env.insert("GARLIC_UNFLATTEN", settings_.unflatten ? "1" : "0");
@@ -510,7 +543,7 @@ void Backend::configure(const AppSettings &settings) {
                               settings_.deobfuscate != settings.deobfuscate ||
                               settings_.cacheMode != settings.cacheMode;
     settings_ = settings;
-    if (engineChange && !busy() && !preparing_)
+    if (engineChange && !busy() && !preparing_ && !metadataPreparing_)
         clearCache();
 }
 QString Backend::cachedPath(const QString &name, bool smali) const {
@@ -518,11 +551,9 @@ QString Backend::cachedPath(const QString &name, bool smali) const {
     if (direct.startsWith("memory:") || QFileInfo::exists(direct))
         return direct;
     if (fullReady_ && !smali && workspace_) {
-        const auto path =
-            workspace_->path() + "/all-java/" +
-            (inputs_.size() == 1 && QFileInfo(input_).suffix() == "class" ? QString("source")
-                                                                          : project_.owner(name)) +
-            ".java";
+        const auto directory = workspace_->path() + "/all-java";
+        const auto path = inputs_.size() == 1 && QFileInfo(input_).suffix() == "class"
+            ? directory + "/source.java" : Project::sourcePath(directory, project_.owner(name), ".java");
         if (QFileInfo::exists(path))
             return path;
     }
@@ -540,7 +571,7 @@ QJsonObject Backend::cacheStats() const {
             {"preparing", preparing_}};
 }
 void Backend::clearCache() {
-    if (busy() || preparing_) {
+    if (busy() || preparing_ || metadataPreparing_) {
         emit log(tr("请先停止正在运行的任务，再清理源码缓存。"));
         return;
     }
@@ -580,6 +611,11 @@ void Backend::clearCache() {
     }));
 }
 void Backend::prepareSources() {
+    if (!metadataReady_) {
+        sourcesAfterMetadata_ = true;
+        prepareMetadata();
+        return;
+    }
     if (clearing_ || preparing_ || fullReady_ || !workspace_ || project_.classes().isEmpty())
         return;
     if (background_.state() != QProcess::NotRunning) {
@@ -598,6 +634,12 @@ void Backend::prepareSources() {
             [workspace, previous] { QDir(previous).removeRecursively(); });
     }
     QDir().mkpath(directory);
+    QFile marker(directory + "/.garlic-safe-paths");
+    if (!marker.open(QIODevice::WriteOnly)) {
+        emit failed(tr("无法创建源码缓存标记：%1").arg(marker.errorString()));
+        return;
+    }
+    marker.write("1\n"); marker.close();
     cancelPreparing_ = false;
     preparing_ = true;
     sourceGenerating_->store(true);
@@ -612,6 +654,7 @@ void Backend::prepareSources() {
         warmSearchIndex();
 }
 void Backend::nextBackground() {
+    backgroundErrorTail_.clear();
     const auto input = backgroundQueue_.takeFirst();
     const auto directory = workspace_->path() + "/all-java";
     background_.setStandardOutputFile(
@@ -626,7 +669,7 @@ void Backend::prepareFinished(int code, QProcess::ExitStatus status) {
         const auto input = background_.arguments().value(0);
         for (const auto &name : project_.classes())
             if (classInput(name) == input) {
-                QString dest = workspace_->path() + "/all-java/" + name + ".java";
+                QString dest = Project::sourcePath(workspace_->path() + "/all-java", name, ".java");
                 QDir().mkpath(QFileInfo(dest).absolutePath());
                 QFile::remove(dest);
                 QFile::rename(workspace_->path() + "/all-java/source.java", dest);
@@ -648,7 +691,16 @@ void Backend::prepareFinished(int code, QProcess::ExitStatus status) {
     }
     if (code != 0 || status != QProcess::NormalExit) {
         searchPending_ = false;
-        emit failed(tr("后台源码生成失败；可停止后重新搜索，已打开的代码仍可浏览。"));
+        const auto details = (backgroundErrorTail_ +
+                              QString::fromUtf8(background_.readAllStandardError())).right(4000).trimmed();
+        const auto reason = status == QProcess::CrashExit
+            ? tr("引擎异常退出（代码 %1）").arg(code)
+            : tr("引擎退出码 %1").arg(code);
+        emit log(tr("后台反编译失败：%1\n引擎：%2\n输入：%3\n%4")
+                     .arg(reason, engine_, background_.arguments().value(0),
+                          details.isEmpty() ? background_.errorString() : details));
+        emit failed(tr("后台源码生成失败：%1。已生成的源码仍可搜索，重新搜索可重试。%2")
+                        .arg(reason, details.isEmpty() ? QString() : "\n" + details));
         return;
     }
     fullReady_ = true;
@@ -672,15 +724,30 @@ void Backend::warmSearchIndex() {
     SearchOptions options;
     options.query = "__garlic_background_search_index_probe__";
     options.code = options.comments = true;
+    options.indexOnly = true;
     options.limit = 1;
     options.sourceMiB = settings_.sourceMiB;
     auto generating = sourceGenerating_;
     auto events = std::make_shared<SearchEvents>();
-    QThreadPool::globalInstance()->start(
+    auto watcher = new QFutureWatcher<SearchResult>(this);
+    connect(watcher, &QFutureWatcher<SearchResult>::finished, this, [this, watcher, index, control] {
+        const auto result = watcher->result();
+        watcher->deleteLater();
+        if (searchWarmControl_ == control)
+            searchWarmControl_.reset();
+        if (index != searchIndex_ || control->canceled || result.canceled || !result.error.isEmpty())
+            return;
+        if (fullReady_) {
+            index->ready = true;
+            emit searchIndexReady();
+        }
+    });
+    watcher->setFuture(QtConcurrent::run(
         [snapshot, options, directory, single, control, generating, events, index] {
-            searchProject(snapshot, options, directory, single, generating, control, events, 0,
+            snapshot->overrideAnnotations();
+            return searchProject(snapshot, options, directory, single, generating, control, events, 0,
                           index, true);
-        });
+        }));
 }
 
 void Backend::cancelSearch(int request) {
@@ -713,11 +780,35 @@ int Backend::search(const SearchOptions &options) {
         searchWarmControl_->canceled = true;
     const int request = ++searchGeneration_;
     searchControl_ = std::make_shared<SearchControl>();
+    const auto control = searchControl_;
+    if (!metadataReady_) {
+        prepareMetadata();
+        const auto workspace = workspace_;
+        auto timer = new QTimer(this);
+        connect(timer, &QTimer::timeout, this, [this, timer, options, request, control, workspace] {
+            if (control->canceled || workspace != workspace_) {
+                timer->deleteLater();
+                SearchResult result; result.canceled = true;
+                emit searchCompleted(request, result);
+            } else if (metadataReady_) {
+                timer->deleteLater();
+                runSearch(options, request, control);
+            } else if (!metadataPreparing_) {
+                timer->deleteLater();
+                SearchResult result; result.error = tr("成员与引用索引准备未完成，可重试。");
+                emit searchCompleted(request, result);
+            }
+        });
+        timer->start(50);
+    } else runSearch(options, request, control);
+    return request;
+}
+void Backend::runSearch(const SearchOptions &options, int request,
+                        const std::shared_ptr<SearchControl> &control) {
     if ((options.code || options.comments) && !fullReady_ && !options.query.isEmpty() &&
         searchExpression(options).isValid())
         prepareSources();
     auto snapshot = project_.snapshot();
-    auto control = searchControl_;
     auto index = searchIndex_;
     auto generating = sourceGenerating_;
     auto workspace = workspace_;
@@ -729,8 +820,12 @@ int Backend::search(const SearchOptions &options) {
         auto result = watcher->result();
         watcher->deleteLater();
         emit searchCompleted(request, result);
-        if (request == searchGeneration_)
+        if (request == searchGeneration_) {
             searchControl_.reset();
+            if (fullReady_ && !searchIndex_->ready &&
+                (!searchWarmControl_ || searchWarmControl_->canceled))
+                warmSearchIndex();
+        }
     });
     auto settings = options;
     settings.sourceMiB = settings_.sourceMiB;
@@ -741,7 +836,115 @@ int Backend::search(const SearchOptions &options) {
                                  workspace ? workspace->path() + "/all-java" : QString(), single,
                                  generating, control, events, request, index, true);
         }));
-    return request;
+}
+
+void Backend::prepareMetadata() {
+    if (metadataReady_ || metadataPreparing_ || !workspace_ || indexing_)
+        return;
+    metadataPreparing_ = true;
+    metadataCanceled_ = std::make_shared<std::atomic_bool>(false);
+    const auto canceled = metadataCanceled_;
+    const auto workspace = workspace_;
+    const auto input = input_;
+    const auto engine = engine_;
+    const auto settings = settings_;
+    const int generation = projectGeneration_;
+    auto snapshot = project_.snapshot();
+    QProcess environmentSource;
+    applyEnvironment(environmentSource, workspace->path() + "/index");
+    auto environment = environmentSource.processEnvironment();
+    environment.insert("GARLIC_COMPACT_INDEX", "2");
+    emit preparationChanged(true);
+    emit log(tr("类目录已打开，正在后台准备成员与引用索引…"));
+    using Result = QPair<std::shared_ptr<Project>, QString>;
+    auto watcher = new QFutureWatcher<Result>(this);
+    connect(watcher, &QFutureWatcher<Result>::finished, this,
+        [this, watcher, generation, canceled] {
+            auto result = watcher->result();
+            watcher->deleteLater();
+            if (generation != projectGeneration_ || canceled->load())
+                return;
+            metadataPreparing_ = false;
+            emit preparationChanged(false);
+            if (!result.second.isEmpty()) {
+                emit failed(tr("成员与引用索引准备失败：%1；可重新查询以重试。").arg(result.second));
+                return;
+            }
+            project_.replaceData(*result.first, true);
+            metadataReady_ = true;
+            emit metadataCompleted();
+            emit log(tr("成员与引用索引已就绪。"));
+            if (settings_.background || sourcesAfterMetadata_)
+                prepareSources();
+        });
+    watcher->setFuture(QtConcurrent::run([snapshot, workspace, input, engine, settings,
+                                         environment, canceled]() -> Result {
+        // A canceled process may still be exiting when the user retries. Never
+        // reuse its output files, even within the same project workspace.
+        QTemporaryDir attempt(workspace->path() + "/index/details-XXXXXX");
+        if (!attempt.isValid()) return {{}, QStringLiteral("Cannot create metadata workspace")};
+        const auto path = attempt.path() + "/metadata.jsonl";
+        const auto errorPath = attempt.path() + "/metadata.stderr";
+        QProcess process;
+        process.setProcessEnvironment(environment);
+        process.setWorkingDirectory(workspace->path());
+        process.setStandardOutputFile(QProcess::nullDevice());
+        process.setStandardErrorFile(errorPath);
+        process.start(engine, {input, "-I", path, "-o", attempt.path(),
+                               "-t", QString::number(settings.threads)});
+        if (!process.waitForStarted())
+            return {{}, process.errorString()};
+        QFile file(path);
+        QByteArray pending;
+        int count = 0;
+        while (true) {
+            if (canceled->load()) {
+                process.kill(); process.waitForFinished();
+                return {{}, QStringLiteral("canceled")};
+            }
+            if (!file.isOpen())
+                file.open(QIODevice::ReadOnly);
+            if (!file.isOpen() || file.atEnd()) {
+                process.waitForFinished(5);
+                // A small input may create and finish its index during the wait.
+                if (!file.isOpen()) file.open(QIODevice::ReadOnly);
+                if (process.state() != QProcess::NotRunning)
+                    continue;
+                if (file.isOpen() && !file.atEnd())
+                    continue;
+                if (pending.isEmpty())
+                    break;
+            } else {
+                pending += file.readLine();
+                if (!pending.endsWith('\n'))
+                    continue;
+            }
+            QJsonParseError error;
+            const auto doc = QJsonDocument::fromJson(pending, &error);
+            pending.clear();
+            if (error.error != QJsonParseError::NoError || !doc.isObject() ||
+                !Backend::safeClassName(doc.object().value("name").toString())) {
+                process.kill(); process.waitForFinished();
+                return {{}, QStringLiteral("Invalid metadata index")};
+            }
+            auto entry = doc.object();
+            entry["input"] = input;
+            if (!entry.contains("origin")) entry["origin"] = QFileInfo(input).fileName();
+            snapshot->addClass(entry);
+            if (++count % 256 == 0)
+                process.waitForFinished(1);
+        }
+        if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0 || !count) {
+            QFile errors(errorPath); errors.open(QIODevice::ReadOnly);
+            return {{}, QString("Engine exit %1: %2").arg(process.exitCode())
+                .arg(QString::fromUtf8(errors.readAll().right(4000)))};
+        }
+        if (canceled->load()) return {{}, QStringLiteral("canceled")};
+        if (settings.deobfuscate) snapshot->deobfuscateNames();
+        snapshot->xrefs(QString());
+        snapshot->symbols();
+        return {snapshot, {}};
+    }));
 }
 
 void Backend::readIndex() {
@@ -775,22 +978,23 @@ void Backend::readIndex() {
                     nextIndex();
                     return;
                 }
-                const auto referenceSnapshot = project_.snapshot();
-                QThreadPool::globalInstance()->start([referenceSnapshot] {
-                    referenceSnapshot->xrefs(QString());
-                    referenceSnapshot->symbols();
-                    referenceSnapshot->overrideAnnotations();
-                });
                 emit indexed(project_.classes());
+                if (generation != projectGeneration_)
+                    return;
                 emit busyChanged(false);
-                if (settings_.background)
+                if (directoryOnly_)
+                    QTimer::singleShot(0, this, &Backend::prepareMetadata);
+                else if (settings_.background)
                     QTimer::singleShot(0, this, &Backend::prepareSources);
             });
     auto project = project_.snapshot();
     indexCanceled_ = std::make_shared<std::atomic_bool>(false);
     const auto canceled = indexCanceled_;
-    const bool deobfuscate = settings_.deobfuscate;
-    watcher->setFuture(QtConcurrent::run([workspace, input, project, canceled, producer, deobfuscate] {
+    const bool deobfuscate = settings_.deobfuscate && !directoryOnly_;
+    const bool finalInput = indexQueue_.isEmpty();
+    watcher->setFuture(QtConcurrent::run([workspace, input, project, canceled, producer, deobfuscate, finalInput] {
+        QElapsedTimer timings;
+        timings.start();
         QFile file(workspace->path() + "/classes.jsonl");
         while (!file.open(QIODevice::ReadOnly)) {
             if (canceled->load() || producer->load() != 0)
@@ -838,8 +1042,18 @@ void Backend::readIndex() {
         }
         if (project->classes().isEmpty())
             return IndexResult{{}, QStringLiteral("无类被加载，没有什么可以反编译。")};
+        const auto parseMs = timings.restart();
         if (deobfuscate)
             project->deobfuscateNames();
+        // Publish a queryable project: the first X query must not wait behind a
+        // whole-project warm-up lock after the UI has announced indexing complete.
+        if (finalInput && !canceled->load()) {
+            project->xrefs(QString());
+            const auto refsMs = timings.restart();
+            project->symbols();
+            if (qEnvironmentVariableIsSet("GARLIC_PROFILE_LOAD"))
+                qInfo() << "Index stream / references / symbols ms:" << parseMs << refsMs << timings.elapsed();
+        }
         return IndexResult{project, {}};
     }));
 }

@@ -10,6 +10,7 @@ struct SearchOptions {
     QString query, package;
     bool classes = false, methods = false, fields = false, code = true, comments = false;
     bool regex = false, caseSensitive = false;
+    bool indexOnly = false; // Internal background preparation; never stop at a query hit.
     int limit = 1000, sourceMiB = 8;
 };
 struct SearchControl {
@@ -28,6 +29,7 @@ struct SearchDocument {
 // Shared across requests within one project. KiB costs bound prepared source memory.
 struct SearchIndex {
     std::mutex mutex;
+    std::atomic_bool ready{false};
     QCache<QString, std::shared_ptr<const SearchDocument>> documents{64 * 1024};
     // Compact per-file Bloom filters survive document-cache eviction. They let later queries
     // reject most immutable project sources without opening or stat'ing every file again.

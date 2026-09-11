@@ -9,6 +9,10 @@ int main(int argc, char **argv) {
     if (args.value(1).contains("slow")) QThread::sleep(30);
     if (args.value(1).contains("crash")) std::abort();
     const int index = args.indexOf("-I");
+    if (args.value(1).contains("background-failure") && index < 0) {
+        fprintf(stderr, "fixture: source generation failed\n");
+        return 23;
+    }
     if (index > 0) {
         QFile file(args.value(index + 1));
         if (!file.open(QIODevice::WriteOnly)) return 2;
@@ -21,6 +25,8 @@ int main(int argc, char **argv) {
             }
         } else if (args.value(1).contains("truncated-index")) {
             file.write("{\"name\":\"demo/Valid\"}\n{\"name\":");
+        } else if (args.value(1).contains("background-failure")) {
+            file.write("{\"name\":\"demo/Valid\"}\n");
         } else file.write("{\"name\":\"../outside\"}\n");
     }
     return 0;

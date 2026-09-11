@@ -14,6 +14,7 @@ args = parser.parse_args()
 out = args.output.resolve()
 out.mkdir(parents=True, exist_ok=True)
 shutil.copyfile(Path(__file__).parent / 'fixtures/flattened.dex', out / 'flattened.dex')
+shutil.copyfile(Path(__file__).parent / 'fixtures/cases.dex', out / 'cases.dex')
 classes = out / "classes"
 classes.mkdir(exist_ok=True)
 sources = sorted((Path(__file__).parent / "fixtures").rglob("*.java"))

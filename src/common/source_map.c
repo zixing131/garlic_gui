@@ -44,7 +44,9 @@ void source_map_end(jsource_file *jf) {
         name++;
         name[strlen(name) - 1] = 0;
     }
-    string path = str_create("%s/%s.map.json", dir, name);
+    char *stored = source_storage_name(name);
+    string path = str_create("%s/%s.map.json", dir, stored);
+    free(stored);
     string parent = str_dup(path);
     char *slash = strrchr(parent, '/');
     if (slash) {

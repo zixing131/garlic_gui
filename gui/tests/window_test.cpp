@@ -8,6 +8,50 @@
 class WindowTest : public QObject {
     Q_OBJECT
   private slots:
+    void progressiveNavigation() {
+        MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
+        window.backend()->setProperty("fastOpen", true);
+        auto settings = window.backend()->settings();
+        settings.background = false; settings.deobfuscate = false;
+        window.backend()->configure(settings);
+        connect(window.backend(), &Backend::indexed, &window, [&] {
+            QVERIFY(!window.backend()->metadataReady());
+            auto tree = window.findChild<QTreeView *>("classTree");
+            auto matches = tree->model()->match(tree->model()->index(0, 0), Qt::UserRole + 1,
+                "Ldemo/cases/foo;", 1, Qt::MatchExactly | Qt::MatchRecursive);
+            QVERIFY(!matches.isEmpty());
+            tree->expand(matches.first());
+            window.navigateTo("Ldemo/cases/foo;->identify()I");
+        });
+        window.show();
+        window.openPath(qEnvironmentVariable("GARLIC_TEST_FIXTURES") + "/cases.dex");
+        QTRY_VERIFY_WITH_TIMEOUT(window.editor() && window.editor()->toPlainText().contains("return 22;"), 15000);
+        QTRY_COMPARE(window.editor()->textCursor().selectedText(), QString("identify"));
+        QVERIFY(window.backend()->metadataReady());
+        auto tree = window.findChild<QTreeView *>("classTree");
+        auto methods = tree->model()->match(tree->model()->index(0, 0), Qt::UserRole + 1,
+            "Ldemo/cases/foo;->identify()I", 1, Qt::MatchExactly | Qt::MatchRecursive);
+        QVERIFY(!methods.isEmpty());
+    }
+    void caseSensitiveNavigation() {
+        MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
+        auto settings = window.backend()->settings();
+        settings.background = true;
+        settings.deobfuscate = false;
+        window.backend()->configure(settings);
+        window.show();
+        window.openPath(qEnvironmentVariable("GARLIC_TEST_FIXTURES") + "/cases.dex");
+        QTRY_VERIFY_WITH_TIMEOUT(window.backend()->projectReady(), 15000);
+        window.navigateTo("Ldemo/cases/Foo;->identify()I");
+        QTRY_VERIFY_WITH_TIMEOUT(window.editor() && window.editor()->toPlainText().contains("return 11;"), 15000);
+        QTRY_COMPARE(window.editor()->textCursor().selectedText(), QString("identify"));
+        window.navigateTo("Ldemo/cases/foo;->identify()I");
+        QTRY_VERIFY_WITH_TIMEOUT(window.editor()->toPlainText().contains("return 22;"), 15000);
+        QTRY_COMPARE(window.editor()->textCursor().selectedText(), QString("identify"));
+        window.navigateTo("Ldemo/cases/Foo;->identify()I");
+        QTRY_VERIFY_WITH_TIMEOUT(window.editor()->toPlainText().contains("return 11;"), 15000);
+    }
+
     void savePreferencesWithoutInput() {
         MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
         auto tree = window.findChild<QTreeView *>("classTree");
@@ -239,6 +283,14 @@ class WindowTest : public QObject {
                                  30000);
         qInfo() << "Index ready ms:" << indexedMs << "Full directory ready ms:" << elapsed.elapsed()
                 << "classes:" << count;
+        const auto limit = qEnvironmentVariableIntValue("GARLIC_TEST_OPEN_LIMIT_MS");
+        if (limit > 0) QVERIFY(elapsed.elapsed() < limit);
+        if (qEnvironmentVariableIsSet("GARLIC_TEST_WAIT_METADATA")) {
+            QTRY_VERIFY_WITH_TIMEOUT(window.backend()->metadataReady(), 120000);
+            qInfo() << "Full metadata ready ms:" << elapsed.elapsed();
+            QVERIFY(!window.backend()->project()->xrefs(
+                "Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I").isEmpty());
+        }
         if (!qEnvironmentVariable("GARLIC_SCREENSHOTS").isEmpty())
             window.grab().save(qEnvironmentVariable("GARLIC_SCREENSHOTS") + "/large-project.png");
     }

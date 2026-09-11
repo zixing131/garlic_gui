@@ -7,6 +7,38 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* GUI cache paths are UTF-8 hex, split into bounded components. This is
+ * reversible and injective even on case-insensitive / Unicode-normalizing volumes. */
+static inline char *hex_storage_name(const char *name)
+{
+    size_t len = strlen(name);
+    char *result = malloc(16 + len * 2 + len / 32);
+    if (!result) return NULL;
+    memcpy(result, "_classes/", 9);
+    size_t at = 9;
+    const char *hex = "0123456789abcdef";
+    for (size_t i = 0; i < len; ++i) {
+        if (i && i % 32 == 0) result[at++] = '/';
+        unsigned char c = (unsigned char)name[i];
+        result[at++] = hex[c >> 4]; result[at++] = hex[c & 15];
+    }
+    result[at] = 0;
+    return result;
+}
+static inline char *source_storage_name(const char *name)
+{
+    const char *enabled = getenv("GARLIC_SAFE_SOURCE_PATHS");
+    if (!enabled || strcmp(enabled, "1")) return strdup(name);
+    size_t len = strlen(name);
+    if (len > 2 && name[0] == 'L' && name[len - 1] == ';') {
+        char *plain = strndup(name + 1, len - 2);
+        char *result = hex_storage_name(plain);
+        free(plain);
+        return result;
+    }
+    return hex_storage_name(name);
+}
+
 static bool inline file_exist(const char *path)
 {
     return access(path, F_OK) == 0;

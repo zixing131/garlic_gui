@@ -158,6 +158,13 @@ static void jar_entry_source_file(jclass_file *jc, string dir, string name)
     string full = get_class_name(jc, info);
     string class_name = class_simple_name(full);
     string path = str_create("%s/%s.java", full_dir, class_name);
+    if (getenv("GARLIC_SAFE_SOURCE_PATHS") && !strcmp(getenv("GARLIC_SAFE_SOURCE_PATHS"), "1")) {
+        char *stem = source_storage_name(full);
+        path = str_create("%s/%s.java", dir, stem);
+        free(stem);
+        char *parent = str_dup(path), *slash = strrchr(parent, '/');
+        if (slash) { *slash = 0; mkdir_p(parent); }
+    }
     FILE *stream = fopen(path, "w");
     if (stream == NULL)
         printf("[error]: path: %s, error: %s\n", path, strerror(errno));

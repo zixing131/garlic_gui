@@ -21,18 +21,69 @@ with tempfile.TemporaryDirectory(prefix='garlic-cli-test-') as temp:
                    check=True, capture_output=True, timeout=20, env=env)
     source = flattened / 'demo/Flattened.java'
     code = source.read_text(encoding='utf-8')
-    assert code.count('switch(') == 1, code  # Only the unknown parameter dispatcher remains.
+    assert code.count('switch(') == 3, code  # Unknown input joins and custom helpers remain.
     assert 'return -2147483572;' in code, code
     runner = flattened / 'Check.java'
     runner.write_text('''import demo.Flattened;
 public class Check {
     public static void main(String[] args) {
         if (Flattened.literal() != -2147483572 || Flattened.run() != 7 || Flattened.sparse() != 5 || Flattened.fallback() != 3
-            || Flattened.unknown(0) != 5 || Flattened.unknown(8) != 3)
+            || Flattened.unknown(0) != 5 || Flattened.unknown(8) != 3
+            || Flattened.joinedState(true) != 61 || Flattened.joinedState(false) != 61
+            || Flattened.compareDispatcher() != 37
+            || Flattened.hashLoop() != 42 || Flattened.movedState() != 23
+            || Flattened.negativeState() != 31 || Flattened.customHash() != 5
+            || Flattened.branchHash(true) != 42 || Flattened.branchHash(false) != 23 || Flattened.unicodeHash() != 19
+            || Flattened.sharedInput(1) != 5 || Flattened.sharedInput(8) != 3)
             throw new AssertionError("Dispatcher specialization changed behavior");
     }
 }''', encoding='utf-8')
     subprocess.run(['javac', '-d', str(flattened), str(source), str(runner)], check=True,
+                   capture_output=True, timeout=30)
+    subprocess.run(['java', '-cp', str(flattened), 'Check'], check=True,
+                   capture_output=True, timeout=20)
+    arrays = flattened / 'demo/PrimitiveArrays.java'
+    array_code = arrays.read_text(encoding='utf-8')
+    assert 'new short[][]' not in array_code and '(null)' not in array_code, array_code
+    runner.write_text('''import demo.PrimitiveArrays;
+import java.util.Arrays;
+public class Check {
+    public static void main(String[] args) {
+        if (!Arrays.equals(PrimitiveArrays.shorts(), new short[]{-32768,-1,0,32767})
+            || !Arrays.equals(PrimitiveArrays.bytes(), new byte[]{-128,-1,127})
+            || !Arrays.equals(PrimitiveArrays.chars(), new char[]{0,65,65535})
+            || !Arrays.equals(PrimitiveArrays.ints(), new int[]{Integer.MIN_VALUE,0,Integer.MAX_VALUE})
+            || !Arrays.equals(PrimitiveArrays.longs(), new long[]{Long.MIN_VALUE,-1,Long.MAX_VALUE})
+            || !Arrays.equals(PrimitiveArrays.floats(), new float[]{1F,-2.5F})
+            || !Arrays.equals(PrimitiveArrays.doubles(), new double[]{1D,-2.5D})
+            || !Arrays.equals(PrimitiveArrays.bools(), new boolean[]{false,true})
+            || !Arrays.equals(PrimitiveArrays.filled(), new int[]{3,-2})
+            || !Arrays.equals(PrimitiveArrays.filledRange(), new int[]{3,-2})
+            || PrimitiveArrays.sized(7).length != 7 || PrimitiveArrays.empty().length != 0)
+            throw new AssertionError("Primitive array payload changed");
+        short[] shared = PrimitiveArrays.shared();
+        shared[0] = 91;
+        if (PrimitiveArrays.shared() != shared || PrimitiveArrays.shared()[0] != 91)
+            throw new AssertionError("Static arrays must retain identity and mutation");
+        float[] fb = PrimitiveArrays.floatBits();
+        double[] db = PrimitiveArrays.doubleBits();
+        int[] fi = {0x80000000, 1, 0x7f800000, 0x7fc00123};
+        long[] di = {0x8000000000000000L, 1L, 0x7ff0000000000000L, 0x7ff8000000000123L};
+        for (int i = 0; i < 4; ++i)
+            if (Float.floatToRawIntBits(fb[i]) != fi[i] || Double.doubleToRawLongBits(db[i]) != di[i])
+                throw new AssertionError("Floating array bits changed");
+        short[] target = {0,0,99};
+        if (PrimitiveArrays.fill(target) != target || !Arrays.equals(target,new short[]{4,-7,99}))
+            throw new AssertionError("fill-array-data must preserve aliases and remaining elements");
+        try { PrimitiveArrays.sized(-1); throw new AssertionError(); }
+        catch (NegativeArraySizeException expected) { }
+        try { PrimitiveArrays.fill(null); throw new AssertionError(); }
+        catch (NullPointerException expected) { }
+        try { PrimitiveArrays.fill(new short[1]); throw new AssertionError(); }
+        catch (IndexOutOfBoundsException expected) { }
+    }
+}''', encoding='utf-8')
+    subprocess.run(['javac', '-d', str(flattened), str(arrays), str(runner)], check=True,
                    capture_output=True, timeout=30)
     subprocess.run(['java', '-cp', str(flattened), 'Check'], check=True,
                    capture_output=True, timeout=20)

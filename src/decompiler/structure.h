@@ -551,7 +551,9 @@ typedef struct {
 
 typedef struct {
     jd_exp_list *list;
-    string          class_name;
+    string          class_name; // Component type, with any remaining dimensions.
+    bool values_only;           // List contains elements rather than length + elements.
+    bool fill_existing;         // List[0] is the existing destination array.
 } jd_exp_new_array;
 
 typedef struct {
@@ -588,6 +590,7 @@ typedef struct {
     string          class_name;
     string          name;
     string          owner_class_name;
+    jd_exp_new_array *constant_array; // Analysis metadata; never replaces the field read.
 } jd_exp_get_static;
 
 typedef struct {

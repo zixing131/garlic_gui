@@ -22,6 +22,10 @@ class Backend : public QObject {
     void prepareSources();
     bool preparing() const { return preparing_; }
     bool projectReady() const { return fullReady_; }
+    bool searchReady() const { return searchIndex_->ready.load(); }
+    bool metadataReady() const { return metadataReady_; }
+    bool metadataPreparing() const { return metadataPreparing_; }
+    void prepareMetadata();
     void search(const QString &query, bool regex = false, bool caseSensitive = false);
     int search(const SearchOptions &options);
     void cancelSearch(int request = -1);
@@ -47,10 +51,12 @@ class Backend : public QObject {
     void searchProgress(int request, int scanned, int total);
     void searchCompleted(int request, const SearchResult &result);
     void projectSourcesReady();
+    void searchIndexReady();
     void cacheCleared();
     void preparationChanged(bool active);
     void searchFinished(const QJsonArray &results, bool truncated);
     void indexed(const QStringList &classes);
+    void metadataCompleted();
     void sourceReady(const QString &name, bool smali, const QString &path);
     void busyChanged(bool busy);
     void log(const QString &text);
@@ -66,6 +72,8 @@ class Backend : public QObject {
     void readOutput();
     void prepareFinished(int code, QProcess::ExitStatus status);
     void warmSearchIndex();
+    void runSearch(const SearchOptions &options, int request,
+                   const std::shared_ptr<SearchControl> &control);
     std::shared_ptr<SearchControl> searchControl_;
     std::shared_ptr<SearchControl> searchWarmControl_;
     std::shared_ptr<SearchIndex> searchIndex_ = std::make_shared<SearchIndex>();
@@ -78,6 +86,7 @@ class Backend : public QObject {
     Project project_;
     AppSettings settings_;
     QProcess background_;
+    QString backgroundErrorTail_;
     bool preparing_ = false, fullReady_ = false, cancelPreparing_ = false;
     QString query_;
     bool searchPending_ = false, regex_ = false, caseSensitive_ = false;
@@ -89,6 +98,9 @@ class Backend : public QObject {
     std::shared_ptr<QTemporaryDir> workspace_;
     std::shared_ptr<std::atomic_bool> indexCanceled_;
     bool indexing_ = false, postprocessing_ = false, clearing_ = false;
+    bool directoryOnly_ = false, metadataReady_ = true, metadataPreparing_ = false;
+    bool sourcesAfterMetadata_ = false;
+    std::shared_ptr<std::atomic_bool> metadataCanceled_;
     std::shared_ptr<SearchControl> exportControl_;
     int projectGeneration_ = 0;
     QHash<QString, QString> cache_;

@@ -6,6 +6,11 @@
 #include "dalvik/dex_meta_helper.h"
 #include "parser/class/class_tools.h"
 #include "parser/dex/dex_tools.h"
+#include "libs/hashmap/hashmap_tools.h"
+
+static __thread hashmap *reference_ids, *reference_groups;
+static __thread cJSON *reference_dictionary;
+static __thread int reference_count;
 
 static cJSON *class_json(const char *name, unsigned flags, int inner) {
     cJSON *entry = cJSON_CreateObject();
@@ -22,6 +27,15 @@ static cJSON *class_json(const char *name, unsigned flags, int inner) {
     cJSON_AddItemToObject(entry, "methods", cJSON_CreateArray());
     cJSON_AddItemToObject(entry, "fields", cJSON_CreateArray());
     cJSON_AddItemToObject(entry, "refs", getenv("GARLIC_COMPACT_INDEX") ? cJSON_CreateObject() : cJSON_CreateArray());
+    reference_groups = getenv("GARLIC_COMPACT_INDEX") ? hashmap_init((hcmp_fn)s2o_cmp, 32) : NULL;
+    const char *version = getenv("GARLIC_COMPACT_INDEX");
+    reference_ids = version && !strcmp(version, "2") ? hashmap_init((hcmp_fn)s2i_cmp, 128) : NULL;
+    reference_dictionary = NULL;
+    reference_count = 0;
+    if (reference_ids) {
+        reference_dictionary = cJSON_CreateArray();
+        cJSON_AddItemToObject(entry, "ref_targets", reference_dictionary);
+    }
     return entry;
 }
 static void member(cJSON *array, const char *owner, const char *name, const char *desc,
@@ -37,10 +51,21 @@ static void member(cJSON *array, const char *owner, const char *name, const char
 static void reference(cJSON *array, const char *from, const char *target, int offset,
                       const char *kind) {
     if (cJSON_IsObject(array)) {
-        cJSON *group = cJSON_GetObjectItemCaseSensitive(array, from);
-        if (!group) { group = cJSON_CreateArray(); cJSON_AddItemToObject(array, from, group); }
+        cJSON *group = hget_s2o(reference_groups, (string)from);
+        if (!group) {
+            group = cJSON_CreateArray(); cJSON_AddItemToObject(array, from, group);
+            hset_s2o(reference_groups, (string)from, group);
+        }
         cJSON *row = cJSON_CreateArray();
-        cJSON_AddItemToArray(row, cJSON_CreateString(target));
+        if (reference_ids) {
+            int id = hget_s2i(reference_ids, (string)target);
+            if (id < 0) {
+                id = reference_count++;
+                hset_s2i(reference_ids, (string)target, id);
+                cJSON_AddItemToArray(reference_dictionary, cJSON_CreateString(target));
+            }
+            cJSON_AddItemToArray(row, cJSON_CreateNumber(id));
+        } else cJSON_AddItemToArray(row, cJSON_CreateString(target));
         cJSON_AddItemToArray(row, cJSON_CreateNumber(offset));
         if (strcmp(kind, "bytecode")) cJSON_AddItemToArray(row, cJSON_CreateString(kind));
         cJSON_AddItemToArray(group, row);
@@ -157,6 +182,14 @@ void browse_index_dex(jd_meta_dex *meta, dex_class_def *cf) {
     string name = str_dup(desc + 1);
     name[strlen(name) - 1] = 0;
     cJSON *entry = class_json(name, cf->access_flags, cf->is_inner || cf->is_anonymous);
+    const char *directory_mode = getenv("GARLIC_DIRECTORY_INDEX");
+    if (directory_mode && !strcmp(directory_mode, "names")) {
+        class_selection_write(entry);
+        cJSON_Delete(entry);
+        mem_free_pool();
+        global_pool = previous_pool;
+        return;
+    }
     if (cf->superclass_idx < meta->header->type_ids_size)
         reference(cJSON_GetObjectItem(entry, "refs"), desc,
                   dex_str_of_type_id(meta, cf->superclass_idx), -1, "extends");

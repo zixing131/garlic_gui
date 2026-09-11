@@ -8,6 +8,7 @@
 #include "metadata.h"
 #include "dex_meta_helper.h"
 #include "decompiler/klass.h"
+#include "class_selection.h"
 
 /*
  *  android 9.0 libdex/Leb128.h
@@ -683,6 +684,10 @@ static void parse_dex_code_item(jd_meta_dex *dex, encoded_method *em)
     code->insns = dex->bin->buffer + dex->bin->cur_off;
     setup_current_offset(dex, dex->bin->cur_off + sizeof(u2)*code->insns_size);
 
+    /* Browsing only needs the instruction stream, never debug locals or catches. */
+    if (class_selection_indexing())
+        return;
+
     parse_dex_code_try_item(dex, code);
 
     DEBUG_PRINT("[code_item]: %s registers_size: %d "
@@ -876,8 +881,11 @@ static void parse_dex_class_defs(jd_meta_dex *dex)
         dex_class_def *class_def = &dex->class_defs[i];
         parse_dex_class_interfaces(dex, class_def);
         parse_dex_class_defs_anos(dex, class_def);
-        parse_dex_class_data_items(dex, class_def);
-        parse_dex_static_values(dex, class_def);
+        const char *directory_mode = getenv("GARLIC_DIRECTORY_INDEX");
+        if (!class_selection_indexing() || !directory_mode || strcmp(directory_mode, "names"))
+            parse_dex_class_data_items(dex, class_def);
+        if (!class_selection_indexing())
+            parse_dex_static_values(dex, class_def);
 
         if (dex_class_is_anonymous_class(dex, class_def))
             class_def->is_anonymous = true;

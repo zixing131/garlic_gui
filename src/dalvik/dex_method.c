@@ -8,15 +8,14 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-// Specialize a dispatcher edge only when its state assignment is the unique
-// predecessor. No instruction with side effects is skipped. Inspired by the
-// constant-state edge specialization described by eShard's D810 (not copied).
+// Constant-state edge specialization inspired by eShard's D810 (not copied).
+// State is inferred from reachable CFG predecessors, never textual adjacency.
 static int java_string_hash(const char *text)
 {
     // DEX strings use UTF-8 while String.hashCode() iterates UTF-16 code units.
     // Decode conservatively so malformed input can never make the optimizer read
     // past the string terminator.
-    int32_t hash = 0;
+    uint32_t hash = 0;
     const unsigned char *p = (const unsigned char *)text;
     while (*p) {
         uint32_t cp = 0;
@@ -71,23 +70,21 @@ static encoded_method *find_encoded_method(jd_meta_dex *meta, unsigned method_in
 static bool is_hash_wrapper(jd_meta_dex *meta, unsigned method_index)
 {
     encoded_method *wrapper = find_encoded_method(meta, method_index);
-    if (!wrapper || !wrapper->code)
+    if (!wrapper || !wrapper->code || wrapper->code->tries_size ||
+        wrapper->code->insns_size != 5 || !(wrapper->access_flags & ACC_DEX_STATIC)) return false;
+    const u2 *w = wrapper->code->insns;
+    if ((w[0] & 0xff) != DEX_INS_INVOKE_VIRTUAL || (w[0] >> 12) != 1 ||
+        (w[3] & 0xff) != DEX_INS_MOVE_RESULT || (w[4] & 0xff) != DEX_INS_RETURN ||
+        (w[3] >> 8) != (w[4] >> 8) || w[1] >= meta->header->method_ids_size ||
+        wrapper->code->ins_size != 1 || (w[2] & 15) != wrapper->code->registers_size - 1)
         return false;
-    const u2 *insns = wrapper->code->insns;
-    for (u4 i = 0; i < wrapper->code->insns_size;) {
-        const u1 opcode = insns[i] & 0xff;
-        const u4 length = dex_opcode_len(opcode);
-        if (!length || length > wrapper->code->insns_size - i)
-            break;
-        if (opcode == DEX_INS_INVOKE_VIRTUAL || opcode == DEX_INS_INVOKE_VIRTUAL_RANGE) {
-            const unsigned target_index = insns[i + 1];
-            if (target_index < meta->header->method_ids_size &&
-                strcmp(dex_str_of_method_id(meta, target_index), "hashCode") == 0)
-                return true;
-        }
-        i += length;
-    }
-    return false;
+    dex_method_id *target = &meta->method_ids[w[1]];
+    dex_proto_id *proto = &meta->proto_ids[target->proto_idx];
+    const char *owner = dex_str_of_type_id(meta, target->class_idx);
+    return (!strcmp(owner, "Ljava/lang/Object;") || !strcmp(owner, "Ljava/lang/String;")) &&
+        !strcmp(dex_str_of_method_id(meta, w[1]), "hashCode") &&
+        !strcmp(dex_str_of_type_id(meta, proto->return_type_idx), "I") &&
+        (!proto->type_list || !proto->type_list->size);
 }
 
 /* A common anti-analysis trick is to hide an opaque predicate behind a tiny
@@ -155,87 +152,6 @@ static bool eval_constant_static_method(jd_meta_dex *meta, unsigned method_index
     return true;
 }
 
-static bool encoded_integer_value(const encoded_value *value, uint32_t *out)
-{
-    if (!value)
-        return false;
-    if (value->value_type == kDexAnnotationBoolean) {
-        *out = value->value_arg ? 1u : 0u;
-        return true;
-    }
-    if (value->value_type != kDexAnnotationByte && value->value_type != kDexAnnotationShort &&
-        value->value_type != kDexAnnotationChar && value->value_type != kDexAnnotationInt &&
-        value->value_type != kDexAnnotationLong)
-        return false;
-    const unsigned width = value->value_length > 4 ? 4 : (unsigned)value->value_length;
-    uint32_t bits = 0;
-    for (unsigned i = 0; i < width; ++i)
-        bits |= (uint32_t)value->value[i] << (i * 8);
-    if (value->value_type != kDexAnnotationChar && width < 4 && (bits & (1u << (width * 8 - 1))))
-        bits |= UINT32_MAX << (width * 8);
-    *out = bits;
-    return true;
-}
-
-static bool eval_static_field(jd_meta_dex *meta, unsigned field_index, uint32_t *value)
-{
-    if (field_index >= meta->header->field_ids_size)
-        return false;
-    const unsigned class_index = meta->field_ids[field_index].class_idx;
-    for (u4 i = 0; i < meta->header->class_defs_size; ++i) {
-        dex_class_def *klass = &meta->class_defs[i];
-        dex_class_data_item *data = klass->class_data;
-        encoded_array *initializers = klass->static_values;
-        if (klass->class_idx != class_index || !data || !initializers)
-            continue;
-        for (u4 j = 0; j < data->static_fields_size && j < initializers->size; ++j) {
-            if (data->static_fields[j].field_id == field_index)
-                return encoded_integer_value(&initializers->values[j], value);
-        }
-    }
-    return false;
-}
-
-static bool eval_constant_predicate(jd_method *m, jd_dex_ins *jump,
-                                    uint32_t *value, unsigned *reg)
-{
-    jd_dex_ins *move = jump->prev;
-    if (!move || !dex_ins_is_move_result(move))
-        return false;
-    jd_dex_ins *invoke = move->prev;
-    if (!invoke || !dex_ins_is_invokestatic(invoke))
-        return false;
-    jd_meta_dex *meta = ((jd_dex *)m->meta)->meta;
-    const unsigned method_index = dex_ins_parameter(invoke, 1);
-    if (method_index >= meta->header->method_ids_size)
-        return false;
-    dex_method_id *method = &meta->method_ids[method_index];
-    dex_proto_id *proto = &meta->proto_ids[method->proto_idx];
-    const char *return_type = dex_str_of_type_id(meta, proto->return_type_idx);
-    if (!return_type || (strcmp(return_type, "I") != 0 && strcmp(return_type, "Z") != 0))
-        return false;
-    if (!eval_constant_static_method(meta, method_index, value))
-        return false;
-    *reg = dex_ins_parameter(move, 0);
-    return true;
-}
-
-static bool eval_predicate_value(jd_method *m, jd_dex_ins *jump,
-                                 uint32_t *value, unsigned *reg)
-{
-    if (eval_constant_predicate(m, jump, value, reg))
-        return true;
-    jd_dex_ins *source = jump->prev;
-    if (!source || (source->code != DEX_INS_SGET && source->code != DEX_INS_SGET_BOOLEAN &&
-                    source->code != DEX_INS_SGET_BYTE && source->code != DEX_INS_SGET_CHAR &&
-                    source->code != DEX_INS_SGET_SHORT))
-        return false;
-    *reg = dex_ins_parameter(source, 0);
-    if (dex_ins_parameter(jump, 0) != *reg)
-        return false;
-    return eval_static_field(((jd_dex *)m->meta)->meta, dex_ins_parameter(source, 1), value);
-}
-
 static bool predicate_taken(jd_dex_ins *ins, uint32_t value)
 {
     const int32_t v = (int32_t)value;
@@ -248,87 +164,6 @@ static bool predicate_taken(jd_dex_ins *ins, uint32_t value)
         case DEX_INS_IF_LEZ: return v <= 0;
         default: return false;
     }
-}
-
-static int simplify_constant_predicates(jd_method *m)
-{
-    int changed = 0;
-    for (int i = 0; i < m->instructions->size; ++i) {
-        jd_dex_ins *jump = lget_obj(m->instructions, i);
-        if (!dex_ins_is_if(jump) || jump->code < DEX_INS_IF_EQZ)
-            continue;
-        uint32_t value;
-        unsigned reg;
-        if (!eval_predicate_value(m, jump, &value, &reg) ||
-            dex_ins_parameter(jump, 0) != reg)
-            continue;
-        jd_dex_ins *taken = dex_ins_of_offset(m, dex_ins_if_jump_offset(jump));
-        jd_dex_ins *fallthrough = jump->next;
-        jd_dex_ins *target = predicate_taken(jump, value) ? taken : fallthrough;
-        if (!target)
-            continue;
-        if (target == fallthrough) {
-            jump->code = 0;
-            jump->name = "nop";
-            jump->param_length = 1;
-            jump->param[0] = 0;
-        } else {
-            jump->code = DEX_INS_GOTO;
-            jump->name = "goto";
-            jump->param_length = 1;
-            dex_setup_goto_offset(jump, target->offset);
-        }
-        ++changed;
-    }
-    return changed;
-}
-
-static bool eval_hash_dispatcher_state(jd_method *m, jd_dex_ins *jump,
-                                       uint32_t *value, unsigned *reg)
-{
-    jd_dex_ins *move = jump->prev;
-    unsigned moved = 0;
-    while (move && dex_ins_is_move_to(move) && moved++ < 8)
-        move = move->prev;
-    if (!move || !dex_ins_is_move_result(move))
-        return false;
-    jd_dex_ins *invoke = move->prev;
-    if (!invoke || dex_ins_parameter(invoke, 0) != 1)
-        return false;
-    jd_dex *dex = m->meta;
-    jd_meta_dex *meta = dex->meta;
-    const unsigned method_index = dex_ins_parameter(invoke, 1);
-    if (method_index >= meta->header->method_ids_size)
-        return false;
-    dex_method_id *method = &meta->method_ids[method_index];
-    const char *method_name = dex_str_of_idx(meta, method->name_idx);
-    dex_proto_id *proto = &meta->proto_ids[method->proto_idx];
-    const char *return_type = dex_str_of_type_id(meta, proto->return_type_idx);
-    const bool direct_hash = dex_ins_is_invokevirtual(invoke) && method_name &&
-                             strcmp(method_name, "hashCode") == 0;
-    const bool wrapped_hash = dex_ins_is_invokestatic(invoke) && is_hash_wrapper(meta, method_index);
-    const bool no_params = !proto->type_list || proto->type_list->size == 0;
-    const bool one_object_param = proto->type_list && proto->type_list->size == 1;
-    if ((!direct_hash && !wrapped_hash) || !return_type || strcmp(return_type, "I") != 0 ||
-        (direct_hash && !no_params) || (wrapped_hash && !one_object_param))
-        return false;
-    const unsigned source_reg = dex_ins_parameter(invoke, 2);
-    jd_dex_ins *constant = invoke->prev;
-    if (!constant || (constant->code != DEX_INS_CONST_STRING &&
-                      constant->code != DEX_INS_CONST_STRING_JUMBO) ||
-        dex_ins_parameter(constant, 0) != source_reg)
-        return false;
-    uint32_t string_index = constant->param[1];
-    if (constant->code == DEX_INS_CONST_STRING_JUMBO)
-        string_index |= (uint32_t)constant->param[2] << 16;
-    if (string_index >= meta->header->string_ids_size)
-        return false;
-    const char *text = dex_str_of_idx(meta, string_index);
-    if (!text)
-        return false;
-    *value = (uint32_t)java_string_hash(text);
-    *reg = dex_ins_parameter(move, 0);
-    return true;
 }
 
 static jd_dex_ins *switch_target_for_value(jd_method *m, jd_dex_ins *dispatcher,
@@ -363,80 +198,397 @@ static jd_dex_ins *switch_target_for_value(jd_method *m, jd_dex_ins *dispatcher,
     return dispatcher->next;
 }
 
-static int specialize_hash_dispatchers(jd_method *m)
+/* Bounded backward path tracking, following D810's approach on Dalvik IR.
+ * A join is constant only when all reachable predecessors agree; distinct
+ * states and cycles remain unknown rather than choosing an arbitrary path. */
+typedef struct {
+    jd_method *method;
+    int *pred;
+    bool *reachable;
+    unsigned budget;
+    int *first_pred, *edge_source, *edge_next;
+    unsigned char *invariant_kind;
+    uint32_t *invariant_bits;
+} state_graph;
+typedef struct { uint32_t bits; bool string; } state_value;
+
+static bool state_before(state_graph *g, jd_dex_ins *at, unsigned reg,
+                         state_value *out, unsigned depth);
+
+static bool hash_call(jd_meta_dex *meta, jd_dex_ins *ins)
 {
-    int changed = 0;
-    for (int i = 0; i < m->instructions->size; ++i) {
-        jd_dex_ins *dispatcher = lget_obj(m->instructions, i);
-        if (!dex_ins_is_switch(dispatcher))
-            continue;
-        uint32_t value;
-        unsigned reg;
-        if (!eval_hash_dispatcher_state(m, dispatcher, &value, &reg)) {
-            continue;
+    if ((!dex_ins_is_invokevirtual(ins) && !dex_ins_is_invokestatic(ins)) ||
+        dex_ins_parameter(ins, 0) != 1) return false;
+    unsigned index = dex_ins_parameter(ins, 1);
+    if (index >= meta->header->method_ids_size) return false;
+    dex_method_id *id = &meta->method_ids[index];
+    dex_proto_id *proto = &meta->proto_ids[id->proto_idx];
+    if (strcmp(dex_str_of_type_id(meta, proto->return_type_idx), "I")) return false;
+    if (dex_ins_is_invokestatic(ins)) return is_hash_wrapper(meta, index);
+    const char *owner = dex_str_of_type_id(meta, id->class_idx);
+    return (!strcmp(owner, "Ljava/lang/String;") || !strcmp(owner, "Ljava/lang/Object;")) &&
+        !strcmp(dex_str_of_method_id(meta, index), "hashCode") &&
+        (!proto->type_list || !proto->type_list->size);
+}
+
+static bool state_writes_wide(unsigned op)
+{
+    return (op >= 0x04 && op <= 0x06) || op == 0x0b ||
+        (op >= 0x16 && op <= 0x19) || op == 0x45 || op == 0x53 || op == 0x61 ||
+        op == 0x7d || op == 0x7e || op == 0x80 || op == 0x81 || op == 0x83 ||
+        op == 0x86 || op == 0x88 || op == 0x89 || op == 0x8b ||
+        (op >= 0x9b && op <= 0xa5) || (op >= 0xab && op <= 0xaf) ||
+        (op >= 0xbb && op <= 0xc5) || (op >= 0xcb && op <= 0xcf);
+}
+
+static bool state_after(state_graph *g, jd_dex_ins *p, unsigned reg,
+                        state_value *out, unsigned depth);
+
+static bool state_before(state_graph *g, jd_dex_ins *at, unsigned reg,
+                         state_value *out, unsigned depth)
+{
+    if (!g->budget || !at || depth > 192 || reg >= g->method->max_locals) return false;
+    if (g->invariant_kind[reg] == 1 || g->invariant_kind[reg] == 2) {
+        out->bits = g->invariant_bits[reg]; out->string = g->invariant_kind[reg] == 2; return true;
+    }
+    if (at->idx == 0) return false;
+    --g->budget;
+    bool found = false;
+    unsigned paths = 0;
+    for (int e = g->first_pred[at->idx]; e >= 0; e = g->edge_next[e]) {
+        if (++paths > 16) return false;
+        state_value candidate;
+        jd_dex_ins *p = lget_obj(g->method->instructions, g->edge_source[e]);
+        if (!state_after(g, p, reg, &candidate, depth + 1)) return false;
+        if (found && (candidate.bits != out->bits || candidate.string != out->string)) return false;
+        *out = candidate; found = true;
+    }
+    return found;
+}
+
+static bool state_after(state_graph *g, jd_dex_ins *p, unsigned reg,
+                        state_value *out, unsigned depth)
+{
+    if (!g->budget || depth > 192) return false;
+    --g->budget;
+    jd_meta_dex *meta = ((jd_dex *)g->method->meta)->meta;
+    unsigned op = p->code;
+    bool wide_def = state_writes_wide(op);
+    if (wide_def && reg == dex_ins_parameter(p, 0) + 1) return false;
+    if (!bitset_get(p->defs, reg)) return state_before(g, p, reg, out, depth + 1);
+    out->string = false;
+    switch (p->code) {
+        case DEX_INS_CONST_4:
+            out->bits = (uint32_t)((int32_t)(p->param[0] >> 12) - ((p->param[0] & 0x8000) ? 16 : 0)); return true;
+        case DEX_INS_CONST_16:
+            out->bits = (uint32_t)(int32_t)(int16_t)dex_ins_parameter(p, 1); return true;
+        case DEX_INS_CONST:
+            out->bits = dex_ins_parameter(p, 1); return true;
+        case DEX_INS_CONST_HIGH16:
+            out->bits = (uint32_t)dex_ins_parameter(p, 1) << 16; return true;
+        case DEX_INS_CONST_STRING: case DEX_INS_CONST_STRING_JUMBO:
+            out->bits = dex_ins_parameter(p, 1); out->string = true;
+            return out->bits < meta->header->string_ids_size;
+        case DEX_INS_MOVE: case DEX_INS_MOVE_FROM16: case DEX_INS_MOVE_16:
+        case DEX_INS_MOVE_OBJECT: case DEX_INS_MOVE_OBJECT_FROM16: case DEX_INS_MOVE_OBJECT_16:
+            return state_before(g, p, dex_ins_parameter(p, 1), out, depth + 1);
+        case DEX_INS_MOVE_RESULT: {
+            jd_dex_ins *invoke = p->prev;
+            if (!invoke || g->pred[p->idx] != (int)invoke->idx) return false;
+            if (dex_ins_is_invokestatic(invoke) &&
+                eval_constant_static_method(meta, dex_ins_parameter(invoke, 1), &out->bits))
+                return true;
+            state_value text;
+            if (!hash_call(meta, invoke) ||
+                !state_before(g, invoke, dex_ins_parameter(invoke, 2), &text, depth + 1) ||
+                !text.string) return false;
+            out->bits = (uint32_t)java_string_hash(dex_str_of_idx(meta, text.bits)); return true;
         }
-        jd_dex_ins *target = switch_target_for_value(m, dispatcher, value, reg);
-        if (!target || target == dispatcher || dex_ins_is_switch(target))
-            continue;
-        dispatcher->code = DEX_INS_GOTO;
-        dispatcher->name = "goto";
-        dispatcher->param_length = 1;
-        dex_setup_goto_offset(dispatcher, target->offset);
+        default: break;
+    }
+    /* Integer arithmetic uses unsigned bits for Java's wrapping operations. */
+    op = p->code;
+    state_value a, b;
+    if (op >= 0x90 && op <= 0x9a) {
+        if (!state_before(g, p, dex_ins_parameter(p, 1), &a, depth + 1) ||
+            !state_before(g, p, dex_ins_parameter(p, 2), &b, depth + 1)) return false;
+        op -= 0x90;
+    } else if (op >= 0xb0 && op <= 0xba) {
+        if (!state_before(g, p, reg, &a, depth + 1) ||
+            !state_before(g, p, dex_ins_parameter(p, 1), &b, depth + 1)) return false;
+        op -= 0xb0;
+    } else if (op >= 0xd0 && op <= 0xe2) {
+        if (!state_before(g, p, dex_ins_parameter(p, 1), &a, depth + 1)) return false;
+        b.string = false;
+        b.bits = op < 0xd8 ? (uint32_t)(int32_t)(int16_t)dex_ins_parameter(p, 2) :
+                           (uint32_t)(int32_t)(int8_t)dex_ins_parameter(p, 2);
+        op -= op < 0xd8 ? 0xd0 : 0xd8;
+        if (op == 1) { state_value tmp = a; a = b; b = tmp; }
+    } else return false;
+    if (a.string || b.string) return false;
+    switch (op) {
+        case 0: out->bits = a.bits + b.bits; break;
+        case 1: out->bits = a.bits - b.bits; break;
+        case 2: out->bits = a.bits * b.bits; break;
+        case 3: case 4:
+            if (!b.bits) return false;
+            if (a.bits == 0x80000000u && b.bits == 0xffffffffu)
+                out->bits = op == 3 ? a.bits : 0;
+            else out->bits = op == 3 ? (uint32_t)((int32_t)a.bits / (int32_t)b.bits) :
+                                      (uint32_t)((int32_t)a.bits % (int32_t)b.bits);
+            break;
+        case 5: out->bits = a.bits & b.bits; break;
+        case 6: out->bits = a.bits | b.bits; break;
+        case 7: out->bits = a.bits ^ b.bits; break;
+        case 8: out->bits = a.bits << (b.bits & 31); break;
+        case 9: out->bits = (uint32_t)((int32_t)a.bits >> (b.bits & 31)); break;
+        case 10: out->bits = a.bits >> (b.bits & 31); break;
+        default: return false;
+    }
+    return true;
+}
+
+static void state_make_goto(jd_dex_ins *ins, jd_dex_ins *target)
+{
+    ins->code = DEX_INS_GOTO;
+    ins->name = "goto";
+    ins->format = kFmt10t;
+    ins->param_length = 1;
+    ins->param = x_alloc(sizeof(u2) * 2);
+    dex_setup_goto_offset(ins, target->offset);
+    if (target == ins->next) {
+        ins->code = 0; ins->name = "nop"; ins->format = kFmt10x; ins->param[0] = 0;
+    }
+    bitset_clear(ins->defs);
+    bitset_clear(ins->uses);
+}
+
+/* Replacing a proven String hash is safe only when no user class initializer
+ * can run. Other helper calls are retained, even if their return is constant. */
+static bool hash_has_no_initializer(jd_meta_dex *meta, jd_dex_ins *invoke)
+{
+    if (dex_ins_is_invokevirtual(invoke)) return true;
+    unsigned type = meta->method_ids[dex_ins_parameter(invoke, 1)].class_idx;
+    for (u4 i = 0; i < meta->header->class_defs_size; ++i) {
+        dex_class_def *c = &meta->class_defs[i];
+        if (c->class_idx != type || !c->class_data) continue;
+        if (strcmp(dex_str_of_type_id(meta, c->superclass_idx), "Ljava/lang/Object;")) return false;
+        for (u4 j = 0; j < c->class_data->direct_methods_size; ++j)
+            if (!strcmp(dex_str_of_method_id(meta, c->class_data->direct_methods[j].method_id), "<clinit>"))
+                return false;
+        return true;
+    }
+    return false;
+}
+
+/* Emulate compare-only dispatcher chains on the incoming edge. Stop before
+ * every write or call: no state update or observable operation is skipped. */
+static jd_dex_ins *trace_comparison_dispatcher(state_graph *g, jd_dex_ins *origin,
+                                              jd_dex_ins *at)
+{
+    bool compared = false;
+    jd_dex_ins *visited[64];
+    for (int step = 0; at && step < 64; ++step) {
+        for (int j = 0; j < step; ++j) if (visited[j] == at) return NULL;
+        visited[step] = at;
+        if (dex_ins_is_goto_jump(at)) {
+            at = dex_ins_of_offset(g->method, dex_goto_offset(at)); continue;
+        }
+        if (!dex_ins_is_if(at)) return compared ? at : NULL;
+        state_value a, b = {0, false};
+        if (!state_before(g, origin, dex_ins_parameter(at, 0), &a, 0) || a.string)
+            return compared ? at : NULL;
+        if (at->code < DEX_INS_IF_EQZ &&
+            (!state_before(g, origin, dex_ins_parameter(at, 1), &b, 0) || b.string))
+            return compared ? at : NULL;
+        unsigned op = at->code >= DEX_INS_IF_EQZ ? at->code - DEX_INS_IF_EQZ : at->code - DEX_INS_IF_EQ;
+        bool taken;
+        switch (op) {
+            case 0: taken = a.bits == b.bits; break;
+            case 1: taken = a.bits != b.bits; break;
+            case 2: taken = (int32_t)a.bits < (int32_t)b.bits; break;
+            case 3: taken = (int32_t)a.bits >= (int32_t)b.bits; break;
+            case 4: taken = (int32_t)a.bits > (int32_t)b.bits; break;
+            case 5: taken = (int32_t)a.bits <= (int32_t)b.bits; break;
+            default: return NULL;
+        }
+        compared = true;
+        at = taken ? dex_ins_of_offset(g->method, dex_ins_if_jump_offset(at)) : at->next;
+    }
+    return NULL;
+}
+
+static int specialize_state_edges(jd_method *m)
+{
+    int count = m->instructions->size, changed = 0;
+    state_graph g = {m, calloc(count, sizeof(int)), calloc(count, sizeof(bool))};
+    int *queue = calloc(count, sizeof(int));
+    size_t edges = 0;
+    for (int i = 0; i < count; ++i) edges += ((jd_dex_ins *)lget_obj(m->instructions, i))->targets->size;
+    g.first_pred = malloc(count * sizeof(int));
+    g.edge_source = malloc((edges + 1) * sizeof(int));
+    g.edge_next = malloc((edges + 1) * sizeof(int));
+    size_t edge = 0;
+    for (int i = 0; i < count; ++i) g.first_pred[i] = g.pred[i] = -1;
+    int head = 0, tail = 1; g.reachable[0] = true;
+    while (head < tail) {
+        jd_dex_ins *p = lget_obj(m->instructions, queue[head++]);
+        for (int j = 0; j < p->targets->size; ++j) {
+            jd_dex_ins *t = lget_obj(p->targets, j);
+            if (!t) continue;
+            g.edge_source[edge] = p->idx;
+            g.edge_next[edge] = g.first_pred[t->idx];
+            g.first_pred[t->idx] = edge++;
+            if (!g.reachable[t->idx]) { g.reachable[t->idx] = true; queue[tail++] = t->idx; }
+            if (g.pred[t->idx] == -1) g.pred[t->idx] = p->idx;
+            else if (g.pred[t->idx] != (int)p->idx) g.pred[t->idx] = -2;
+        }
+    }
+    /* Constants assigned identically at every definition are loop invariant.
+     * Input registers are excluded because their initial value is unknown. */
+    g.invariant_kind = calloc(m->max_locals, 1);
+    g.invariant_bits = calloc(m->max_locals, sizeof(uint32_t));
+    encoded_method *encoded = m->meta_method;
+    for (int r = m->max_locals - encoded->code->ins_size; r < m->max_locals; ++r)
+        g.invariant_kind[r] = 3;
+    for (int i = 0; i < count; ++i) if (g.reachable[i]) {
+        jd_dex_ins *ins = lget_obj(m->instructions, i);
+        size_t reg = 0;
+        while (bitset_next_set_bit(ins->defs, &reg)) {
+            unsigned char kind = 3;
+            uint32_t bits = 0;
+            switch (ins->code) {
+                case DEX_INS_CONST_4: case DEX_INS_CONST_16: case DEX_INS_CONST:
+                    kind = 1; bits = (uint32_t)dex_ins_parameter(ins, 1);
+                    if (ins->code == DEX_INS_CONST_16) bits = (uint32_t)(int32_t)(int16_t)bits;
+                    break;
+                case DEX_INS_CONST_HIGH16: kind = 1; bits = (uint32_t)dex_ins_parameter(ins, 1) << 16; break;
+                case DEX_INS_CONST_STRING: case DEX_INS_CONST_STRING_JUMBO:
+                    kind = 2; bits = dex_ins_parameter(ins, 1); break;
+            }
+            if (reg < m->max_locals) {
+                unsigned char old = g.invariant_kind[reg];
+                if (old && (old != kind || g.invariant_bits[reg] != bits)) kind = 3;
+                g.invariant_kind[reg] = kind; g.invariant_bits[reg] = bits;
+                /* Be conservative about overlapping wide register writes. */
+                if (state_writes_wide(ins->code) && reg + 1 < m->max_locals) g.invariant_kind[reg + 1] = 3;
+            }
+            ++reg;
+        }
+    }
+    g.pred[0] = -2; /* Method entry also has an external predecessor. */
+    /* Plan against an immutable graph. Apply rewrites only after evaluation. */
+    jd_dex_ins **targets = calloc(count, sizeof(*targets));
+    jd_dex_ins **constants = calloc(count, sizeof(*constants));
+    uint32_t *hashes = calloc(count, sizeof(*hashes));
+    for (int i = 0; i < count; ++i) {
+        jd_dex_ins *ins = lget_obj(m->instructions, i);
+        if (!g.reachable[i]) continue;
+        g.budget = 2048;
+        state_value value;
+        jd_dex_ins *target = NULL;
+        if (dex_ins_is_switch(ins)) {
+            if (state_before(&g, ins, dex_ins_parameter(ins, 0), &value, 0) && !value.string)
+                target = switch_target_for_value(m, ins, value.bits, dex_ins_parameter(ins, 0));
+        } else if (dex_ins_is_if(ins) && ins->code >= DEX_INS_IF_EQZ) {
+            if (state_before(&g, ins, dex_ins_parameter(ins, 0), &value, 0) && !value.string)
+                target = predicate_taken(ins, value.bits) ? dex_ins_of_offset(m, dex_ins_if_jump_offset(ins)) : ins->next;
+        } else if (dex_ins_is_goto_jump(ins)) {
+            jd_dex_ins *dispatch = dex_ins_of_offset(m, dex_goto_offset(ins));
+            for (int step = 0; dispatch && dex_ins_is_goto_jump(dispatch) && step < 16; ++step)
+                dispatch = dex_ins_of_offset(m, dex_goto_offset(dispatch));
+            jd_meta_dex *meta = ((jd_dex *)m->meta)->meta;
+            if (dispatch && hash_call(meta, dispatch) && dispatch->next &&
+                dispatch->next->code == DEX_INS_MOVE_RESULT && dispatch->next->next) {
+                jd_dex_ins *sw = dispatch->next->next;
+                for (int step = 0; sw && dex_ins_is_goto_jump(sw) && step < 16; ++step)
+                    sw = dex_ins_of_offset(m, dex_goto_offset(sw));
+                unsigned dest = dex_ins_parameter(dispatch->next, 0);
+                if (state_before(&g, ins, dex_ins_parameter(dispatch, 2), &value, 0) && value.string) {
+                    target = switch_target_for_value(m, sw,
+                        (uint32_t)java_string_hash(dex_str_of_idx(meta, value.bits)), dest);
+                    jd_dex_ins *assignment = ins->prev;
+                    jd_dex_ins *after = ins;
+                    for (int step = 0; assignment && step < 32 &&
+                         g.pred[after->idx] == (int)assignment->idx &&
+                         !bitset_get(assignment->uses, dest) && !bitset_get(assignment->defs, dest) &&
+                         !dex_ins_is_goto_jump(assignment) && !dex_ins_is_if(assignment); ++step) {
+                        after = assignment; assignment = assignment->prev;
+                    }
+                    if (!assignment || g.pred[after->idx] != (int)assignment->idx ||
+                        (assignment->code != DEX_INS_CONST_STRING && assignment->code != DEX_INS_CONST_STRING_JUMBO) ||
+                        dex_ins_parameter(assignment, 0) != dest ||
+                        dex_ins_parameter(dispatch, 2) != dest ||
+                        !hash_has_no_initializer(meta, dispatch)) target = NULL;
+                    if (target) {
+                        constants[i] = assignment;
+                        hashes[i] = (uint32_t)java_string_hash(dex_str_of_idx(meta, value.bits));
+                    }
+                }
+            } else if (dispatch && dex_ins_is_if(dispatch)) {
+                target = trace_comparison_dispatcher(&g, ins, dispatch);
+            } else if (dispatch && dex_ins_is_switch(dispatch) &&
+                       state_before(&g, ins, dex_ins_parameter(dispatch, 0), &value, 0) && !value.string) {
+                target = switch_target_for_value(m, dispatch, value.bits, dex_ins_parameter(dispatch, 0));
+            }
+        }
+        if (target && target != ins && (!dex_ins_is_goto_jump(ins) ||
+            target->offset != dex_goto_offset(ins))) targets[i] = target;
+    }
+    for (int i = 0; i < count; ++i) if (targets[i]) {
+        if (constants[i]) {
+            jd_dex_ins *c = constants[i];
+            unsigned reg = dex_ins_parameter(c, 0);
+            c->code = DEX_INS_CONST; c->name = "const"; c->format = kFmt31i;
+            c->param_length = 3; c->param = x_alloc(sizeof(u2) * 3);
+            c->param[0] = (reg << 8) | DEX_INS_CONST;
+            c->param[1] = hashes[i]; c->param[2] = hashes[i] >> 16;
+        }
+        state_make_goto(lget_obj(m->instructions, i), targets[i]);
         ++changed;
     }
+    free(constants); free(hashes); free(targets); free(queue); free(g.pred); free(g.reachable);
+    free(g.first_pred); free(g.edge_source); free(g.edge_next);
+    free(g.invariant_kind); free(g.invariant_bits);
     return changed;
 }
 
-static int unflatten_constant_dispatchers(jd_method *m)
+/* Drop dead executable instructions after rewriting, but keep DEX payloads.
+ * Otherwise dead predecessors still become basic blocks and the structurer can
+ * emit duplicate returns or weave discarded dispatcher arms into live code. */
+static void prune_state_graph(jd_method *m)
 {
-    int changed = 0;
-    for (int i = 1; i < m->instructions->size; ++i) {
-        jd_dex_ins *jump = lget_obj(m->instructions, i);
-        if (!dex_ins_is_goto_jump(jump) || jump->comings->size != 0)
-            continue;
-        jd_dex_ins *assignment = jump->prev;
-        if (!assignment || assignment->next != jump)
-            continue;
-        uint32_t value;
-        unsigned reg;
-        bool evaluated = eval_hash_dispatcher_state(m, jump, &value, &reg);
-        if (!evaluated) switch (assignment->code) {
-            case 0x12: // const/4
-                reg = (assignment->param[0] >> 8) & 15;
-                value = (uint32_t)((int32_t)(assignment->param[0] >> 12) -
-                                  ((assignment->param[0] & 0x8000) ? 16 : 0));
-                break;
-            case 0x13: // const/16
-                reg = assignment->param[0] >> 8;
-                value = (uint32_t)(int32_t)(int16_t)assignment->param[1];
-                break;
-            case 0x14: // const
-                reg = assignment->param[0] >> 8;
-                value = (uint32_t)assignment->param[1] | ((uint32_t)assignment->param[2] << 16);
-                break;
-            case 0x15: // const/high16
-                reg = assignment->param[0] >> 8;
-                value = (uint32_t)assignment->param[1] << 16;
-                break;
-            default: continue;
+    int count = m->instructions->size;
+    bool *live = calloc(count, sizeof(bool));
+    int *queue = calloc(count, sizeof(int));
+    int head = 0, tail = 1; live[0] = true;
+    while (head < tail) {
+        jd_dex_ins *p = lget_obj(m->instructions, queue[head++]);
+        for (int j = 0; j < p->targets->size; ++j) {
+            jd_dex_ins *t = lget_obj(p->targets, j);
+            if (t && !live[t->idx]) { live[t->idx] = true; queue[tail++] = t->idx; }
         }
-        jd_dex_ins *dispatcher = dex_ins_of_offset(m, dex_goto_offset(jump));
-        if (!dispatcher || !dex_ins_is_switch(dispatcher) ||
-            (dispatcher->param[0] >> 8) != reg)
-            continue;
-        jd_dex_ins *target = switch_target_for_value(m, dispatcher, value, reg);
-        if (!target || target == dispatcher || target->param[0] == 0x0100 ||
-            target->param[0] == 0x0200 || target->param[0] == 0x0300)
-            continue;
-        dex_setup_goto_offset(jump, target->offset);
-        if (target == jump->next) {
-            jump->code = 0;
-            jump->name = "nop";
-            jump->param[0] = 0;
-        }
-        ++changed;
     }
-    return changed;
+    list_object *kept = linit_object();
+    jd_dex_ins *prev = NULL;
+    m->offset2id_map = hashmap_init((hcmp_fn)i2i_cmp, 0);
+    for (int i = 0; i < count; ++i) {
+        jd_dex_ins *ins = lget_obj(m->instructions, i);
+        bool payload = ins->code == 0 && ins->param[0] != 0;
+        if (!live[i] && !payload) continue;
+        ins->idx = kept->size; ladd_obj(kept, ins);
+        hset_i2i(m->offset2id_map, ins->offset, ins->idx);
+        ins->prev = prev; ins->next = NULL;
+        if (prev) prev->next = ins;
+        prev = ins;
+    }
+    m->instructions = kept;
+    for (int i = 0; i < kept->size; ++i) {
+        jd_dex_ins *ins = lget_obj(kept, i);
+        if (dex_ins_is_goto_jump(ins) && ins->next && dex_goto_offset(ins) == ins->next->offset)
+            state_make_goto(ins, ins->next);
+    }
+    free(queue); free(live);
 }
 
 void dex_method_access_flag_with_flags(u4 flags, str_list *list)
@@ -631,8 +783,8 @@ static void dex_code_item_instruction(jd_method *m, dex_code_item *code)
             }
             else if (item == 0x0300) {
                 u2 element_size = code->insns[i+1];
-                u2 size = code->insns[i+2];
-                ins->param_length = (size * element_size + 1) / 2 + 4;
+                u4 size = (u4)code->insns[i+2] | ((u4)code->insns[i+3] << 16);
+                ins->param_length = ((uint64_t)size * element_size + 1) / 2 + 4;
             }
             else {
                 ins->param_length = 1;
@@ -681,20 +833,27 @@ void dex_method_init(jsource_file *jf, jd_method *m, encoded_method *em)
     const char *unflatten = getenv("GARLIC_UNFLATTEN");
     // Exception handlers introduce implicit predecessors: leave such methods intact.
     if (unflatten && strcmp(unflatten, "1") == 0 && em->code->tries_size == 0) {
-        bool changed = specialize_hash_dispatchers(m);
-        changed |= unflatten_constant_dispatchers(m);
-        changed |= simplify_constant_predicates(m);
-        if (!changed)
-            goto dex_method_graph_done;
-        for (int i = 0; i < m->instructions->size; ++i) {
-            jd_dex_ins *ins = lget_obj(m->instructions, i);
-            lclear_object(ins->targets);
-            lclear_object(ins->jumps);
-            lclear_object(ins->comings);
+        bool changed = false;
+        for (int pass = 0; pass < 16; ++pass) {
+            if (!specialize_state_edges(m)) break;
+            changed = true;
+            for (int i = 0; i < m->instructions->size; ++i) {
+                jd_dex_ins *ins = lget_obj(m->instructions, i);
+                lclear_object(ins->targets);
+                lclear_object(ins->jumps);
+                lclear_object(ins->comings);
+            }
+            init_dex_instruction_graph(m);
         }
-        init_dex_instruction_graph(m);
+        if (changed) {
+            prune_state_graph(m);
+            for (int i = 0; i < m->instructions->size; ++i) {
+                jd_dex_ins *ins = lget_obj(m->instructions, i);
+                lclear_object(ins->targets); lclear_object(ins->jumps); lclear_object(ins->comings);
+            }
+            init_dex_instruction_graph(m);
+        }
     }
-dex_method_graph_done:
 
     dex_method_exception_init(m, em);
 }

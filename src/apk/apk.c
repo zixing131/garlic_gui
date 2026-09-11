@@ -9,6 +9,7 @@
 #include "decompiler/expression_writter.h"
 #include "dex_smali.h"
 #include "apk_manifest.h"
+#include "file_tools.h"
 
 static int apk_progress_len = 0;
 
@@ -79,7 +80,7 @@ void apk_smali_thread_task(jd_dex_task *task)
     apk_status(apk);
 }
 
-static void apk_process_dex_from_zip(jd_apk *apk, struct zip_t *zip)
+static void apk_process_dex_from_zip(jd_apk *apk, struct zip_t *zip, const char *chain)
 {
     if (zip == NULL) return;
     int total = zip_entries_total(zip);
@@ -89,12 +90,35 @@ static void apk_process_dex_from_zip(jd_apk *apk, struct zip_t *zip)
 
         if (str_end_with(path_in_zip, ".apk")) {
             size_t buf_size = zip_entry_size(zip);
+            string key = str_create("%s|%zu:%s:%u:%zu", chain, strlen(path_in_zip), path_in_zip,
+                                    zip_entry_crc32(zip), buf_size);
+            const char *cache = getenv("GARLIC_APK_CACHE_DIR");
+            if (cache && *cache) {
+                char *stored = hex_storage_name(key);
+                string path = str_create("%s/%s.apk", cache, stored);
+                free(stored);
+                if (!file_exist(path)) {
+                    char *parent = str_dup(path), *slash = strrchr(parent, '/');
+                    if (slash) { *slash = 0; mkdir_p(parent); }
+                    string temporary = str_create("%s.%ld.tmp", path, (long)getpid());
+                    if (zip_entry_fread(zip, temporary) == 0)
+                        rename(temporary, path);
+                    remove(temporary);
+                }
+                struct zip_t *nested = zip_open(path, 0, 'r');
+                if (nested) {
+                    apk_process_dex_from_zip(apk, nested, key);
+                    zip_close(nested);
+                    zip_entry_close(zip);
+                    continue;
+                }
+            }
             char *buf = malloc(buf_size);
             if (buf) {
                 zip_entry_noallocread(zip, (void *)buf, buf_size);
                 struct zip_t *nested = zip_stream_open(buf, buf_size, 0, 'r');
                 if (nested) {
-                    apk_process_dex_from_zip(apk, nested);
+                    apk_process_dex_from_zip(apk, nested, key);
                     zip_stream_close(nested);
                 }
                 free(buf);
@@ -196,7 +220,12 @@ static void apk_decompile_task_start(jd_apk *apk)
         zip_entry_close(zip);
     }
 
-    apk_process_dex_from_zip(apk, zip);
+    struct stat input_stat;
+    string chain = stat(apk->path, &input_stat) == 0
+        ? str_create("%zu:%s:%lld:%lld", strlen(apk->path), apk->path,
+                     (long long)input_stat.st_size, (long long)input_stat.st_mtime)
+        : apk->path;
+    apk_process_dex_from_zip(apk, zip, chain);
     zip_close(zip);
     apk->zip = NULL;
 }

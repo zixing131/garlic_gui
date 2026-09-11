@@ -170,6 +170,7 @@ class InteractionTest : public QObject {
         options.code = false;
         options.comments = true;
         QCOMPARE(run(true).hits.size(), 1);
+        QCOMPARE(index->filters.size(), 1); // Scope switches reuse the same superset filter.
         options.code = true;
         options.comments = false;
         options.regex = true;
@@ -181,6 +182,9 @@ class InteractionTest : public QObject {
         auto changed = run(true);
         QCOMPARE(changed.hits.size(), 1);
         QCOMPARE(changed.cachedFiles, 0);
+        write("abc/**/def\n");
+        options.query = "abc    def";
+        QCOMPARE(run(true).hits.size(), 1); // Masked spaces must not cause false rejection.
     }
     void referencesAndInputsTree() {
         MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
@@ -408,6 +412,34 @@ class InteractionTest : public QObject {
         qInfo() << "Launcher activities:" << info.value("main_activities");
         QVERIFY2(!table.contains("解析失败"), qPrintable(table.left(500)));
         QVERIFY(table.contains("string/"));
+    }
+    void realReferenceLatency() {
+        const auto path = qEnvironmentVariable("GARLIC_TEST_REAL_APK");
+        if (path.isEmpty()) QSKIP("Set GARLIC_TEST_REAL_APK for large reference latency");
+        MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
+        auto settings = window.backend()->settings();
+        settings.background = false;
+        window.backend()->configure(settings);
+        window.show();
+        window.openPath(path);
+        QTRY_VERIFY_WITH_TIMEOUT(!window.backend()->busy() &&
+            !window.backend()->project()->classes().isEmpty(), 120000);
+        const QString target = "Landroidx/activity/OnBackPressedCallback;";
+        QElapsedTimer elapsed;
+        elapsed.start();
+        window.showReferences(target);
+        auto dialog = window.findChild<ReferencesDialog *>();
+        QVERIFY(dialog);
+        auto table = dialog->findChild<QTableView *>("referenceResults");
+        QTRY_VERIFY_WITH_TIMEOUT(table->model()->rowCount() > 0, 10000);
+        const auto firstMs = elapsed.elapsed();
+        elapsed.restart();
+        QVERIFY(!window.backend()->project()->xrefs(target).isEmpty());
+        const auto warmMs = elapsed.elapsed();
+        qInfo() << "First displayed reference / warm lookup ms:" << firstMs << warmMs;
+        QVERIFY2(firstMs < 1000, qPrintable(QString("First references took %1 ms").arg(firstMs)));
+        QVERIFY(warmMs < 1000);
+        dialog->close();
     }
     void realApkResponsiveness() {
         const auto path = qEnvironmentVariable("GARLIC_TEST_REAL_APK");

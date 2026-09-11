@@ -4,6 +4,7 @@
 #include <QMainWindow>
 #include <QSet>
 #include <QPersistentModelIndex>
+#include <functional>
 class QMenu;
 class QStandardItem;
 class QTreeView;
@@ -44,6 +45,8 @@ class MainWindow : public QMainWindow {
     void closeEvent(QCloseEvent *event) override;
 
   private:
+    bool waitForMetadata(std::function<void()> action);
+    QSet<QString> pendingMemberClasses_;
     ClassView *view() const;
     void chooseFile();
     void filterTree(const QString &text);

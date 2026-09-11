@@ -199,6 +199,7 @@ static jd_node* goto_target_node(jd_method *m, jd_node *node)
     jd_exp *last_exp = get_exp(m, node->end_idx);
     jd_exp_goto *goto_exp = last_exp->data;
     jd_exp* target_exp = exp_of_offset(m, goto_exp->goto_offset);
+    if (!target_exp) return NULL;
     jd_bblock *target = target_exp->block;
 //    jd_edge *edge = lget_obj(bblock->out, 0);
 //    jd_bblock *target = edge->target_block;
@@ -231,6 +232,13 @@ static bool optimize_goto_core(jd_method *m, jd_node *node)
     jd_node *target = goto_target_node(m, node);
     if (target == NULL)
         return false;
+    // Edge specialization often places the destination immediately after the
+    // source in the same structured arm. That jump is now a fallthrough.
+    jd_node *next = parent_next_node(node);
+    if (next == target) {
+        exp_mark_nopped(exp);
+        return true;
+    }
     jd_node *parent = get_parent(node);
     jd_node *parent_next = parent_next_node(parent);
 

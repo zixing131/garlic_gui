@@ -324,7 +324,7 @@ void MainWindow::showOverview(const QString &path, bool signature) {
         for (const auto &name : owners) {
             const auto cached = cache.value(name + ":java");
             if (cached.startsWith("memory:") || QFileInfo::exists(cached) ||
-                QFileInfo::exists(work + "/all-java/" + name + ".java"))
+                QFileInfo::exists(Project::sourcePath(work + "/all-java", name, ".java")))
                 generated++;
         }
         auto ratio = [owners](int n) { return owners.isEmpty() ? 0. : n * 100. / owners.size(); };

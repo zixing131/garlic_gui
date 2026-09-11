@@ -22,7 +22,7 @@ class Project : public QObject {
   public:
     using QObject::QObject;
     std::shared_ptr<Project> snapshot() const;
-    void replaceData(const Project &other);
+    void replaceData(const Project &other, bool keepDocuments = false);
     void reset(const QString &input);
     void addClass(const QJsonObject &entry);
     QStringList classes() const;
@@ -41,6 +41,8 @@ class Project : public QObject {
     void undoRename();
     bool canUndo() const { return !undo_.isEmpty(); }
     QJsonObject aliases() const;
+    bool hasAliases() const { return !aliases_.isEmpty(); }
+    QString aliasVersion() const;
     bool save(const QString &path, QString *error = nullptr) const;
     bool loadAliases(const QString &path, QString *error = nullptr);
     SourceDocument document(const QString &name, bool smali, const QString &sourcePath,
@@ -54,6 +56,8 @@ class Project : public QObject {
     QJsonArray overrideAnnotations() const;
     QString resolve(const QString &token, const QString &context) const;
     static QString normalize(QString name);
+    static QString sourceStem(const QString &name);
+    static QString sourcePath(const QString &directory, const QString &name, const QString &suffix);
     static QString classId(const QString &name) { return "L" + normalize(name) + ";"; }
     static QString classOf(const QString &id);
     void cacheDocument(const QString &key, const SourceDocument &doc) { documents_[key] = doc; }
@@ -73,13 +77,23 @@ class Project : public QObject {
     QHash<QString, QStringList> classNames_, parents_;
     QVector<QHash<QString, QString>> undo_;
     QHash<QString, SourceDocument> documents_;
-    struct ReferencePosition { QString owner, from; int index; };
-    struct ReferenceIndex { std::mutex lock; bool ready = false; QHash<QString, QList<ReferencePosition>> targets; };
+    struct ReferencePosition { int group, index; };
+    struct ReferenceGroup { QString owner, from; };
+    struct ReferenceIndex {
+        std::mutex lock;
+        bool ready = false;
+        QVector<ReferenceGroup> groups;
+        QHash<QString, int> targets;
+        QVector<QList<ReferencePosition>> positions;
+    };
     std::shared_ptr<ReferenceIndex> referenceIndex_ = std::make_shared<ReferenceIndex>();
     struct OverrideIndex { std::mutex lock; bool ready = false; QJsonArray entries; };
     std::shared_ptr<OverrideIndex> overrideIndex_ = std::make_shared<OverrideIndex>();
     struct SymbolIndex { std::mutex lock; bool ready = false; QJsonArray entries; };
     std::shared_ptr<SymbolIndex> symbolIndex_ = std::make_shared<SymbolIndex>();
+    struct AliasIndex { std::mutex lock; bool ready = false; QString version; QHash<QString, QStringList> classes; };
+    std::shared_ptr<AliasIndex> aliasIndex_ = std::make_shared<AliasIndex>();
+    QHash<QString, QStringList> classAliases() const;
     QString input_;
     QStringList inputs_;
 };
