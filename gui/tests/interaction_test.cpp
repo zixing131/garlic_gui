@@ -28,6 +28,32 @@ class InteractionTest : public QObject {
         if (previous.isValid()) settings.setValue("search/smali", previous);
         else settings.remove("search/smali");
     }
+    void branchTabMapping() {
+        Backend backend; backend.setEngine(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
+        auto settings = backend.settings(); settings.unflatten = true; backend.configure(settings);
+        backend.open(qEnvironmentVariable("GARLIC_TEST_FIXTURES") + "/flattened.dex");
+        QTRY_VERIFY_WITH_TIMEOUT(!backend.busy(), 15000);
+        backend.prepareMetadata();
+        QTRY_VERIFY_WITH_TIMEOUT(backend.metadataReady(), 15000);
+        QSignalSpy sources(&backend, &Backend::sourceReady);
+        backend.request("demo/Flattened", false);
+        QTRY_COMPARE_WITH_TIMEOUT(sources.count(), 1, 15000);
+        const auto java = backend.project()->document("demo/Flattened", false, sources.last()[2].toString());
+        backend.request("demo/Flattened", true);
+        QTRY_COMPARE_WITH_TIMEOUT(sources.count(), 2, 15000);
+        const auto smali = backend.project()->document("demo/Flattened", true, sources.last()[2].toString());
+        QVERIFY(!java.locations.isEmpty()); QVERIFY(!smali.locations.isEmpty());
+        ClassView view("demo/Flattened", true, settings);
+        view.setSource(false, java); view.setSource(true, smali);
+        const int condition = java.text.indexOf("if ("); QVERIFY(condition >= 0);
+        auto cursor = view.editor()->textCursor(); cursor.setPosition(condition); view.editor()->setTextCursor(cursor);
+        const auto origin = view.editor()->locationAtCursor(); QVERIFY(!origin.isEmpty());
+        QTest::keyClick(view.editor(), Qt::Key_Tab); QVERIFY(view.smali());
+        QCOMPARE(view.editor()->locationAtCursor().value("offset"), origin.value("offset"));
+        QCOMPARE(view.editor()->locationAtCursor().value("scope"), origin.value("scope"));
+        QTest::keyClick(view.editor(), Qt::Key_Tab); QVERIFY(!view.smali());
+        QCOMPARE(view.editor()->locationAtCursor().value("offset"), origin.value("offset"));
+    }
     void tabSwitchPosition() {
         ClassView view("Use", true, AppSettings{});
         const QString method = "LUse;->run()V", field = "LUse;->value:I";

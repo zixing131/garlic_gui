@@ -169,6 +169,7 @@ IndexCache::Ticket IndexCache::resolveTicket(const AppSettings &settings, Ticket
 namespace {
 QString sourceKey(const AppSettings &settings, const IndexCache::Ticket &ticket) {
     const auto config = QJsonDocument(QJsonObject{{"escapeUnicode", settings.escapeUnicode},
+        {"deobfuscateStrings", settings.deobfuscateStrings}, {"numberFormat", settings.numberFormat},
         {"simplifyControlFlow", settings.simplifyControlFlow}, {"unflatten", settings.unflatten}}).toJson(QJsonDocument::Compact);
     return QString::fromLatin1(QCryptographicHash::hash(ticket.key.toUtf8() + config, QCryptographicHash::Sha256).toHex());
 }

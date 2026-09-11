@@ -10,15 +10,30 @@
 #include <memory>
 #include <mutex>
 #include <atomic>
+#include <algorithm>
 
 struct SourceSpan {
     int start = 0, end = 0;
     QString id;
     bool declaration = false;
 };
+struct SourceLocation {
+    int start = 0, end = 0, offset = -1;
+    QString scope;
+};
 struct SourceDocument {
     QString text;
     QVector<SourceSpan> spans;
+    QVector<SourceLocation> locations;
+    // Sorted edit boundaries with cumulative size changes, measured before edits.
+    void shiftLocations(const QVector<QPair<int, int>> &changes) {
+        auto shift = [&](int position) {
+            auto it = std::upper_bound(changes.cbegin(), changes.cend(), position,
+                [](int p, const auto &entry) { return p < entry.first; });
+            return it == changes.cbegin() ? position : position + std::prev(it)->second;
+        };
+        for (auto &location : locations) { location.start = shift(location.start); location.end = shift(location.end); }
+    }
 };
 
 class Project : public QObject {

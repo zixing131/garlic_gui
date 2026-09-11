@@ -7,6 +7,8 @@
 
 static __thread char *spans;
 static __thread size_t spans_length, spans_capacity;
+static __thread jd_method *location_method;
+static __thread const char *location_scope;
 static pthread_mutex_t pack_lock = PTHREAD_MUTEX_INITIALIZER;
 typedef struct { FILE *file, *index; unsigned long long offset; char *path; } SourceArchive;
 static SourceArchive map_archive, java_archive;
@@ -151,6 +153,7 @@ int source_java_pack(jsource_file *jf, const char *data, size_t length) {
 void source_map_begin(void) {
     if (!getenv("GARLIC_SOURCE_MAP_DIR"))
         return;
+    location_method = NULL; location_scope = NULL;
     spans_length = 0;
     append_bytes("[", 1);
 }
@@ -230,6 +233,26 @@ void source_map_method(FILE *stream, long start, jsource_file *jf, jd_method *m)
     }
     source_map_definition(stream, start, jf->fname, m->name, desc,
                           m->name[0] == '<' ? jf->sname : m->name, 1);
+}
+void source_map_location(FILE *stream, long start, jd_ins *ins) {
+    if (!spans || start < 0 || !ins || !ins->method || ins->type != JD_TYPE_DALVIK) return;
+    long end = ftell(stream);
+    if (end <= start) return;
+    jd_method *method = ins->method;
+    jd_dex *dex = method->meta;
+    encoded_method *em = method->meta_method;
+    if (!dex || !em) return;
+    dex_method_id *mid = &dex->meta->method_ids[em->method_id];
+    if (location_method != method) {
+        location_method = method;
+        location_scope = str_create("%s->%s%s", dex_str_of_type_id(dex->meta, mid->class_idx),
+            dex_str_of_idx(dex->meta, mid->name_idx), raw_proto(dex->meta, &dex->meta->proto_ids[mid->proto_idx]));
+    }
+    unsigned offset = (ins->state_flag & INS_STATE_DUPLICATE) ? ins->old_offset : ins->offset;
+    char header[160];
+    int size = snprintf(header, sizeof header, "%s{\"start\":%ld,\"end\":%ld,\"offset\":%u,\"scope\":",
+        spans_length > 1 ? "," : "", start, end, offset);
+    append_bytes(header, size); append_json_string(location_scope); append_bytes("}", 1);
 }
 int source_map_tracks_expression(jd_exp *exp) {
     if (!spans || !exp->ins || !exp->ins->method) return 0;

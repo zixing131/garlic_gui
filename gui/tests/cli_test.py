@@ -347,6 +347,12 @@ public class Check {
     run([str(engine), str(fixtures / 'demo.jar'), '-o', str(disabled), '-c', 'demo/Folded', '-t', '1'],
                    check=True, capture_output=True, timeout=20, env=dict(env, GARLIC_DEOBFUSCATE='0'))
     assert 'decoded:' not in (disabled / 'demo/Folded.java').read_text(encoding='utf-8')
+    for names, strings in [('1', '0'), ('0', '1')]:
+        target = root / ('split-fold-' + names + strings)
+        run([str(engine), str(fixtures / 'demo.jar'), '-o', str(target), '-c', 'demo/Folded', '-t', '1'],
+            check=True, capture_output=True, timeout=20,
+            env=dict(env, GARLIC_DEOBFUSCATE=names, GARLIC_DEOBFUSCATE_STRINGS=strings))
+        assert ('decoded:' in (target / 'demo/Folded.java').read_text(encoding='utf-8')) == (strings == '1')
     # Decoding comments must not change identity or let hostile strings escape a comment.
     runner.write_text('''import demo.Folded;
 public class Check {
@@ -370,6 +376,8 @@ public class Check {
     wide_source = wide_input / 'WideConstants.java'
     wide_source.write_text('''package demo;
 public class WideConstants {
+    public static int intLow() { return Integer.MIN_VALUE; }
+    public static int mask() { return 65535; }
     public static long low() { return Long.MIN_VALUE; }
     public static long high() { return Long.MAX_VALUE; }
     public static long mixed() { return 0x1234567887654321L; }
@@ -386,7 +394,7 @@ public class WideConstants {
     runner.write_text('''import demo.WideConstants;
 public class Check {
     public static void main(String[] args) {
-        if (WideConstants.low() != Long.MIN_VALUE || WideConstants.high() != Long.MAX_VALUE
+        if (WideConstants.intLow() != Integer.MIN_VALUE || WideConstants.mask() != 65535 || WideConstants.low() != Long.MIN_VALUE || WideConstants.high() != Long.MAX_VALUE
             || WideConstants.mixed() != 0x1234567887654321L)
             throw new AssertionError("JVM 64-bit constants changed");
     }
@@ -396,6 +404,14 @@ public class Check {
          str(wide_output / 'demo/WideConstants.java'), str(runner)],
         check=True, capture_output=True, timeout=30)
     run(['java', '-cp', str(wide_output), 'Check'], check=True, capture_output=True, timeout=20)
+    for number_format in ['auto', 'decimal', 'hex']:
+        run([str(engine), str(wide_archive), '-o', str(wide_output), '-t', '1'], check=True,
+            capture_output=True, timeout=20, env=dict(os.environ, GARLIC_NUMBER_FORMAT=number_format))
+        code = (wide_output / 'demo/WideConstants.java').read_text(encoding='utf-8')
+        assert ('0xffff' in code) == (number_format != 'decimal'), code
+        run(['javac', '-encoding', 'UTF-8', '-d', str(wide_output),
+             str(wide_output / 'demo/WideConstants.java'), str(runner)], check=True, capture_output=True, timeout=30)
+        run(['java', '-cp', str(wide_output), 'Check'], check=True, capture_output=True, timeout=20)
     # Use non-ASCII input, output, index and environment paths on every runner,
     # including Windows ARM64 where an ANSI argv previously disagreed with miniz.
     unicode_root = root / ('中文路径 测试' * 10)

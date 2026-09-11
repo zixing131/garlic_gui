@@ -44,7 +44,7 @@
 > 请保存配置并说明需要重新加载客户端，不要声称已经连接成功。
 
 参数说明：`--apk` 也可替换为单个位置参数；`--engine PATH` 指定引擎；
-`--threads 1..64`（默认 4）；`--deobfuscate`、`--simplify-control-flow`、`--unflatten`
+`--threads 1..64`（默认 4）；`--deobfuscate`（名称）、`--deobfuscate-strings`（字符串，独立开关）、`--simplify-control-flow`、`--unflatten`
 分别开启反混淆、控制流简化和去平坦化；`--background` 开启全量源码预生成
 （默认按需生成，适合快速接入）；`--headless --help` 查看完整参数。
 每个无头进程拥有独立工作区，不覆盖桌面偏好或 GUI 的 MCP 发现记录。
@@ -58,3 +58,5 @@ HTTP 模式持续运行，结束分析后停止进程。`--mcp` 单独使用仍�
 
 
 构建后本文件位于 build/gui/；macOS 应用包内为 Contents/Resources/，Windows/Linux 为可执行文件同目录；发布包根目录也提供 AI-HEADLESS.md。
+
+整数输出格式：`--number-format auto|decimal|hex`，默认 `auto`；两个反混淆开关默认关闭。

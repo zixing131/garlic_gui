@@ -34,6 +34,29 @@ class WindowTest : public QObject {
         settings.sync();
         QCOMPARE(settings.status(), QSettings::NoError);
     }
+    void splitDeobfuscationSettings() {
+        const auto defaults = AppSettings::fromJson({});
+        QVERIFY(!defaults.deobfuscate); QVERIFY(!defaults.deobfuscateStrings);
+        QCOMPARE(defaults.numberFormat, QString("auto"));
+        MainWindow window;
+        bool inspected = false;
+        QTimer::singleShot(30, &window, [&] {
+            auto dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+            if (!dialog) return;
+            auto names = dialog->findChild<QCheckBox *>("deobfuscate");
+            auto strings = dialog->findChild<QCheckBox *>("deobfuscateStrings");
+            auto format = dialog->findChild<QComboBox *>("numberFormat");
+            if (!names || !strings || !format) { dialog->reject(); return; }
+            inspected = !names->isChecked() && !strings->isChecked() && format->count() == 3;
+            strings->setChecked(true); format->setCurrentIndex(format->findData("hex")); dialog->accept();
+        });
+        window.findChild<QAction *>("settings")->trigger();
+        QVERIFY(inspected);
+        const auto saved = AppSettings::load();
+        QVERIFY(!saved.deobfuscate); QVERIFY(saved.deobfuscateStrings);
+        QCOMPARE(saved.numberFormat, QString("hex"));
+        QCOMPARE(AppSettings::fromJson({{"numberFormat", "invalid"}}).numberFormat, QString("auto"));
+    }
     void searchHistoryLimit() {
         MainWindow window;
         SearchDialog dialog(&window);
@@ -747,6 +770,7 @@ class WindowTest : public QObject {
         QTRY_VERIFY(!matches("Ldemo/deep/nested/Leaf;").isEmpty());
         auto leaf = matches("Ldemo/deep/nested/Leaf;").first();
         QVERIFY(window.windowTitle().contains("代码浏览器 v "));
+        QVERIFY(window.windowTitle().endsWith(" - demo.jar"));
         auto copyMenu = [&](const QModelIndex &index, const QString &label, const QString &expected) {
             tree->scrollTo(index);
             bool triggered = false;

@@ -19,7 +19,11 @@ class ProjectTest : public QObject {
         QVERIFY(!project.displayDescriptor("(L" + type + ";)L" + type + ";").contains(glyph));
         const QString local = "Ldemo/Use;->run()V@local:0:O0oO0";
         const QString text = "int O0oO0 = 1; O0oO0++;";
-        const auto result = project.applyAliases({text, {{4, 9, local, true}, {15, 20, local, false}}}, false);
+        const auto result = project.applyAliases({text, {{4, 9, local, true}, {15, 20, local, false}},
+            {{0, int(text.size()), 7, "Ldemo/Use;->run()V"}}}, false);
+        QCOMPARE(result.locations.size(), 1);
+        QCOMPARE(result.text.mid(result.locations[0].start, result.locations[0].end - result.locations[0].start),
+            QString("int local_1 = 1; local_1++;"));
         QVERIFY(result.text.contains("renamed from: O0oO0, reason: deobfuscation:"));
         QVERIFY(result.text.endsWith("int local_1 = 1; local_1++;"));
         for (const auto &span : result.spans)

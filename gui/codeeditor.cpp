@@ -254,6 +254,11 @@ void CodeEditor::setSource(const SourceDocument &source) {
     highlighter_->setDocument(this->document());
     if (this->document()->property("deferHighlight").toBool()) scheduleHighlight();
     else ++highlightGeneration_;
+    locations_ = document.locations;
+    for (auto &location : locations_) {
+        location.start -= std::lower_bound(removed.begin(), removed.end(), location.start) - removed.begin();
+        location.end -= std::lower_bound(removed.begin(), removed.end(), location.end) - removed.begin();
+    }
     spans_ = document.spans;
     auto cursor = textCursor();
     cursor.setPosition(qMin(position, int(document.text.size())));
@@ -283,6 +288,17 @@ bool CodeEditor::goToSymbol(const QString &id, int line) {
 }
 bool CodeEditor::goToHit(const QJsonObject &hit) {
     int start = -1, length = 0;
+    if (hit.value("mappedLocation").toBool()) {
+        const SourceLocation *best = nullptr;
+        const int offset = hit.value("offset").toInt(-1);
+        for (const auto &location : locations_) {
+            if (location.scope != hit.value("scope").toString()) continue;
+            if (!best || qAbs(qint64(location.offset) - offset) < qAbs(qint64(best->offset) - offset)) best = &location;
+        }
+        if (!best) return false;
+        auto cursor = textCursor(); cursor.setPosition(best->start);
+        setTextCursor(cursor); centerCursor(); return true;
+    }
     if (hit.contains("symbol")) {
         int occurrence = hit.value("occurrence").toInt();
         int scopeStart = 0, scopeEnd = document()->characterCount();
@@ -566,4 +582,29 @@ bool CodeEditor::event(QEvent *event) {
         }
     }
     return QPlainTextEdit::event(event);
+}
+
+QJsonObject CodeEditor::locationAtCursor() const {
+    const auto cursor = textCursor();
+    const int position = cursor.selectionStart();
+    const auto block = document()->findBlock(position);
+    const SourceLocation *best = nullptr;
+    for (const auto &location : locations_) {
+        if (location.start > block.position() + block.length()) break;
+        if (location.end <= block.position()) continue;
+        if (!best || (location.start <= position && position < location.end)) best = &location;
+    }
+    if (!best) {
+        QString scope;
+        for (const auto &span : spans_) {
+            if (span.start > position) break;
+            if (span.declaration && span.id.contains('(') && !span.id.contains("@local:")) scope = span.id;
+        }
+        for (const auto &location : locations_) {
+            if (scope.isEmpty() || location.scope != scope) continue;
+            if (!best || qAbs(location.start - position) < qAbs(best->start - position)) best = &location;
+        }
+    }
+    if (!best) return {};
+    return {{"mappedLocation", true}, {"scope", best->scope}, {"offset", best->offset}};
 }

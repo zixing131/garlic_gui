@@ -5,6 +5,7 @@
 #include "common/str_tools.h"
 
 string exp_to_s(jd_exp *expression);
+string const_integer_to_s(int64_t value, bool wide);
 
 string exp_invoke_to_s(jd_exp *expression);
 

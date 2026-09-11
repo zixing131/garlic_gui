@@ -193,16 +193,14 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     auto central = new QWidget;
     auto layout = new QVBoxLayout(central);
     layout->setContentsMargins(0, 0, 0, 0);
-    auto fileRow = new QHBoxLayout;
-    fileLabel_ = new QLabel(tr("打开 APK / DEX / JAR / CLASS"));
-    fileLabel_->setTextFormat(Qt::PlainText);
-    fileLabel_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-    fileLabel_->setContentsMargins(8, 0, 0, 0);
+    auto toolbarSpacer = new QWidget;
+    toolbarSpacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    toolbar->addWidget(toolbarSpacer);
     countLabel_ = new QLabel;
     countLabel_->setObjectName("muted");
-    fileRow->addWidget(fileLabel_, 1);
-    fileRow->addWidget(countLabel_);
-    layout->addLayout(fileRow);
+    countLabel_->setContentsMargins(4, 0, 8, 0);
+    toolbar->addWidget(countLabel_);
+    layout->setSpacing(0);
     auto splitter = new QSplitter;
     splitter->setObjectName("mainSplitter");
     splitter->setChildrenCollapsible(false);
@@ -653,8 +651,7 @@ void MainWindow::openPaths(const QStringList &paths) {
     updateHistoryActions();
     pendingId_.clear();
     pendingLine_ = 0;
-    fileLabel_->setText(QFileInfo(path).fileName());
-    fileLabel_->setToolTip(QFileInfo(path).absoluteFilePath());
+
     QSettings().setValue("lastDirectory", QFileInfo(path).absolutePath());
     status_->setText(tr("正在读取类与符号索引…"));
     resourceInfo_.clear();
@@ -669,10 +666,10 @@ void MainWindow::openPaths(const QStringList &paths) {
         recent.removeLast();
     QSettings().setValue("recentFiles", recent);
     refreshRecent();
-    fileLabel_->setText(
-        paths.size() > 1
-            ? tr("%1 等 %2 个输入文件").arg(QFileInfo(path).fileName()).arg(paths.size())
-            : QFileInfo(path).fileName());
+    const auto inputName = paths.size() > 1
+        ? tr("%1 等 %2 个输入文件").arg(QFileInfo(path).fileName()).arg(paths.size())
+        : QFileInfo(path).fileName();
+    setWindowTitle(QString("Garlic - 代码浏览器 v %1 - %2").arg(GARLIC_GUI_VERSION, inputName));
 }
 void MainWindow::populate(const QStringList &classes) {
     const int generation = ++treeGeneration_;
@@ -1412,6 +1409,7 @@ static SourceDocument presentDocument(const Project &project, const AppSettings 
               [](const OverrideNote &a, const OverrideNote &b) { return a.position > b.position; });
     for (const auto &note : notes) {
         doc.text.insert(note.position, note.text);
+        doc.shiftLocations({{note.position, int(note.text.size())}});
         for (auto &span : doc.spans)
             if (span.start >= note.position) {
                 span.start += note.text.size();
@@ -1444,6 +1442,7 @@ static SourceDocument presentDocument(const Project &project, const AppSettings 
             QString origin =
                 " · loaded from: " + file + (source == file ? QString() : " / " + source);
             doc.text.insert(end, origin);
+            doc.shiftLocations({{end, int(origin.size())}});
             for (auto &span : doc.spans)
                 if (span.start >= end) {
                     span.start += origin.size();

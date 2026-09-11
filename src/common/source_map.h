@@ -4,6 +4,7 @@
 int source_java_packed(void);
 int source_java_pack(jsource_file *jf, const char *data, size_t length);
 void source_map_begin(void);
+void source_map_location(FILE *stream, long start, jd_ins *ins);
 void source_map_end(jsource_file *jf);
 void source_map_definition(FILE *stream, long start, const char *owner, const char *name,
                            const char *desc, const char *token, int method);

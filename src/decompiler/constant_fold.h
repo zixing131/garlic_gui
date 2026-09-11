@@ -447,7 +447,9 @@ static void fold_expression(jd_exp *e, int depth, int *budget, bool value) {
     }
 }
 static void fold_method_constants(jd_method *m) {
-    const char *enabled = getenv("GARLIC_DEOBFUSCATE");
+    const char *enabled = getenv("GARLIC_DEOBFUSCATE_STRINGS");
+    /* Preserve the legacy CLI switch; the GUI always supplies an explicit value. */
+    if (!enabled) enabled = getenv("GARLIC_DEOBFUSCATE");
     if (!enabled || strcmp(enabled, "1")) return;
     int budget = 100000;
     for (int i = 0; i < m->expressions->size && budget > 0; ++i)

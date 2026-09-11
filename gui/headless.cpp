@@ -22,7 +22,9 @@ int runHeadless(int argc, char **argv) {
                        {"apk", "Input APK/APKS/DEX/JAR file", "path"},
                        {"engine", "Garlic engine executable", "path"},
                        {"threads", "Engine threads (1-64)", "count", "4"},
-                       {"deobfuscate", "Enable deobfuscation"},
+                       {"deobfuscate", "Deobfuscate class, method and variable names"},
+                       {"deobfuscate-strings", "Decode statically known strings"},
+                       {"number-format", "Integer format: auto, decimal or hex", "format", "auto"},
                        {"simplify-control-flow", "Simplify control flow"},
                        {"unflatten", "Recover flattened control flow"},
                        {"background", "Generate all sources in the background"},
@@ -48,6 +50,10 @@ int runHeadless(int argc, char **argv) {
     if (!valid || settings.threads < 1 || settings.threads > 64)
         return error("--threads must be between 1 and 64");
     settings.deobfuscate = parser.isSet("deobfuscate");
+    settings.deobfuscateStrings = parser.isSet("deobfuscate-strings");
+    settings.numberFormat = parser.value("number-format");
+    if (!QStringList{"auto", "decimal", "hex"}.contains(settings.numberFormat))
+        return error("--number-format must be auto, decimal or hex");
     settings.simplifyControlFlow = parser.isSet("simplify-control-flow");
     settings.unflatten = parser.isSet("unflatten");
     settings.background = parser.isSet("background");
@@ -60,8 +66,9 @@ int runHeadless(int argc, char **argv) {
     if (parser.isSet("print-mcp-config")) {
         if (parser.isSet("http-port")) return error("--print-mcp-config generates stdio configuration; omit --http-port");
         QJsonArray args{"--headless", "--apk", input, "--threads", QString::number(settings.threads)};
-        for (const auto &flag : {"deobfuscate", "simplify-control-flow", "unflatten", "background"})
+        for (const auto &flag : {"deobfuscate", "deobfuscate-strings", "simplify-control-flow", "unflatten", "background"})
             if (parser.isSet(flag)) args.append(QString("--") + flag);
+        args.append("--number-format"); args.append(settings.numberFormat);
         if (parser.isSet("engine")) {
             args.append("--engine"); args.append(QFileInfo(parser.value("engine")).absoluteFilePath());
         }

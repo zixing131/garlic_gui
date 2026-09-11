@@ -742,6 +742,10 @@ SourceDocument Project::document(const QString &name, bool smali, const QString 
             if (from < 0 || to > bytes.size() || to <= from)
                 continue;
             const int start = positions.value(from), end = positions.value(to);
+            if (r.contains("offset")) {
+                result.locations.append({start, end, r.value("offset").toInt(-1), r.value("scope").toString()});
+                continue;
+            }
             const auto token = r.value("token").toString();
             if (token.isEmpty())
                 continue;
@@ -1024,6 +1028,20 @@ SourceDocument Project::document(const QString &name, bool smali, const QString 
     }
     std::sort(result.spans.begin(), result.spans.end(),
               [](const auto &a, const auto &b) { return a.start < b.start; });
+    if (smali) {
+        const QRegularExpression marker("# @offset ([0-9]+)\\r?\\n([^\\n]*)");
+        auto matches = marker.globalMatch(result.text);
+        QString scope; int spanIndex = 0;
+        while (matches.hasNext()) {
+            const auto match = matches.next();
+            while (spanIndex < result.spans.size() && result.spans[spanIndex].start < match.capturedStart()) {
+                const auto &span = result.spans[spanIndex++];
+                if (span.declaration && span.id.contains('(') && !span.id.contains("@local:")) scope = span.id;
+            }
+            if (!scope.isEmpty()) result.locations.append({int(match.capturedStart(2)), int(match.capturedEnd(2)), match.captured(1).toInt(), scope});
+        }
+    }
+    std::sort(result.locations.begin(), result.locations.end(), [](const auto &a, const auto &b) { return a.start < b.start; });
     return applyAliases ? this->applyAliases(result, smali) : result;
 }
 
@@ -1051,6 +1069,7 @@ SourceDocument Project::applyAliases(SourceDocument result, bool smali) const {
     int cursor = 0, shift = 0;
     bool changed = false;
     QVector<QPair<int, QString>> notes;
+    QVector<QPair<int, int>> locationChanges;
     for (auto &span : result.spans) {
         const int originalStart = span.start, originalEnd = span.end;
         span.start += shift;
@@ -1102,7 +1121,9 @@ SourceDocument Project::applyAliases(SourceDocument result, bool smali) const {
         const int delta = replacement.size() - (originalEnd - originalStart);
         span.end += delta;
         shift += delta;
+        locationChanges.append({originalEnd, shift});
     }
+    result.shiftLocations(locationChanges);
     if (changed) {
         rewritten += QStringView(result.text).mid(cursor);
         result.text = std::move(rewritten);
@@ -1117,18 +1138,21 @@ SourceDocument Project::applyAliases(SourceDocument result, bool smali) const {
         }
         QString annotated; annotated.reserve(result.text.size() + notes.size() * 100);
         int from = 0, added = 0, spanIndex = 0;
+        locationChanges.clear();
         for (auto it = insertions.cbegin(); it != insertions.cend(); ++it) {
             while (spanIndex < result.spans.size() && result.spans[spanIndex].start < it.key()) {
                 auto &span = result.spans[spanIndex++]; span.start += added; span.end += added;
             }
             annotated += QStringView(result.text).mid(from, it.key() - from);
             annotated += it.value(); added += it.value().size(); from = it.key();
+            locationChanges.append({it.key(), added});
         }
         while (spanIndex < result.spans.size()) {
             auto &span = result.spans[spanIndex++]; span.start += added; span.end += added;
         }
         annotated += QStringView(result.text).mid(from);
         result.text = std::move(annotated);
+        result.shiftLocations(locationChanges);
     }
     return result;
 }

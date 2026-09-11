@@ -110,7 +110,7 @@ class MainWindow : public QMainWindow {
     QToolButton *findCase_ = nullptr, *findWord_ = nullptr, *findRegex_ = nullptr;
     QLabel *memoryLabel_;
     quint64 peakMemory_ = 0;
-    QLabel *fileLabel_, *countLabel_, *status_;
+    QLabel *countLabel_, *status_;
     QProgressBar *progress_;
     QPlainTextEdit *logs_;
     QStackedWidget *pages_;

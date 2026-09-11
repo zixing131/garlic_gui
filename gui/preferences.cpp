@@ -163,9 +163,19 @@ void MainWindow::settingsDialog() {
     excluded->setMaximumHeight(100);
     decompile->addRow(tr("排除的包"), excluded);
     auto background = check(decompile, tr("打开文件后自动后台生成项目源码"), settings.background);
-    auto deobfuscate = check(decompile, tr("反混淆（名称、整数常量和静态字符串）"), settings.deobfuscate);
+    auto deobfuscate = check(decompile, tr("函数和变量名称反混淆（含类名）"), settings.deobfuscate);
     deobfuscate->setObjectName("deobfuscate");
-    deobfuscate->setToolTip(tr("静态计算确定的 32 位整数表达式；ASCII 字符数组及 substring、concat、replace 的还原结果以 decoded 注释显示。不会执行目标解密函数。"));
+    deobfuscate->setToolTip(tr("为混淆的类、函数、字段和局部变量生成可读名称。"));
+    auto strings = check(decompile, tr("字符串反混淆"), settings.deobfuscateStrings);
+    strings->setObjectName("deobfuscateStrings");
+    strings->setToolTip(tr("静态还原可确定的字符串表达式，并显示 decoded 注释；不会执行目标解密函数。"));
+    auto numberFormat = new QComboBox;
+    numberFormat->setObjectName("numberFormat");
+    numberFormat->addItem("auto", "auto");
+    numberFormat->addItem(tr("十进制"), "decimal");
+    numberFormat->addItem(tr("十六进制"), "hex");
+    numberFormat->setCurrentIndex(qMax(0, numberFormat->findData(settings.numberFormat)));
+    decompile->addRow(tr("数值格式化"), numberFormat);
     auto controlFlow = check(decompile, tr("控制流整理（DEX 跳转链和共享代码块）"), settings.simplifyControlFlow);
     controlFlow->setObjectName("simplifyControlFlow");
     auto unflatten = check(decompile, tr("反控制流平坦化（DEX 常量状态 switch 调度器）"), settings.unflatten);
@@ -449,6 +459,8 @@ void MainWindow::settingsDialog() {
                 excluded->clear();
                 background->setChecked(false);
                 deobfuscate->setChecked(false);
+                strings->setChecked(false);
+                numberFormat->setCurrentIndex(0);
                 controlFlow->setChecked(false);
                 unflatten->setChecked(false);
                 unicode->setChecked(false);
@@ -484,6 +496,8 @@ void MainWindow::settingsDialog() {
     settings.excluded = excluded->toPlainText().split('\n', Qt::SkipEmptyParts);
     settings.background = background->isChecked();
     settings.deobfuscate = deobfuscate->isChecked();
+    settings.deobfuscateStrings = strings->isChecked();
+    settings.numberFormat = numberFormat->currentData().toString();
     settings.simplifyControlFlow = controlFlow->isChecked();
     settings.unflatten = unflatten->isChecked();
     settings.escapeUnicode = unicode->isChecked();
@@ -501,12 +515,13 @@ void MainWindow::settingsDialog() {
     }
     const auto previous = backend_.settings();
     const bool analysisChanged = previous.deobfuscate != settings.deobfuscate ||
+        previous.deobfuscateStrings != settings.deobfuscateStrings || previous.numberFormat != settings.numberFormat ||
         previous.simplifyControlFlow != settings.simplifyControlFlow || previous.unflatten != settings.unflatten;
     settings.save();
     applySettings(settings, analysisChanged);
     if (analysisChanged && !backend_.input().isEmpty()) {
         if (QMessageBox::question(this, tr("重建索引"),
-                tr("反混淆或控制流选项已更改。是否立即重建当前文件索引？取消后可手动重建。"),
+                tr("反混淆、数值格式或控制流选项已更改。是否立即重建当前文件索引？取消后可手动重建。"),
                 QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) == QMessageBox::Yes)
             backend_.rebuildIndex();
     }

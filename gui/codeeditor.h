@@ -10,6 +10,7 @@ class CodeEditor : public QPlainTextEdit {
     void setTheme(bool light);
     void setSource(const SourceDocument &document);
     QString symbolAtCursor() const;
+    QJsonObject locationAtCursor() const;
     QVector<SourceSpan> spans() const { return spans_; }
     bool goToSymbol(const QString &id, int line = 0);
     bool goToHit(const QJsonObject &hit);
@@ -49,6 +50,7 @@ class CodeEditor : public QPlainTextEdit {
     bool light_ = false;
     class QSyntaxHighlighter *highlighter_;
     QVector<SourceSpan> spans_;
+    QVector<SourceLocation> locations_;
     QWidget *gutter_ = nullptr;
     QString findQuery_;
     bool findCaseSensitive_ = false, findWholeWords_ = false, findRegex_ = false;

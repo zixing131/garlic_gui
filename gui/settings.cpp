@@ -36,6 +36,7 @@ QJsonObject AppSettings::toJson() const {
             {"cacheMode", cacheMode},
             {"showMemory", showMemory},
             {"deobfuscate", deobfuscate},
+            {"deobfuscateStrings", deobfuscateStrings}, {"numberFormat", numberFormat},
             {"unflatten", unflatten},
             {"simplifyControlFlow", simplifyControlFlow},
             {"excluded", QJsonArray::fromStringList(excluded)},
@@ -71,6 +72,9 @@ AppSettings AppSettings::fromJson(const QJsonObject &j) {
     s.cacheMode = j.value("cacheMode").toString() == "memory" ? "memory" : "disk";
     s.showMemory = j.value("showMemory").toBool(true);
     s.deobfuscate = j.value("deobfuscate").toBool(false);
+    s.deobfuscateStrings = j.value("deobfuscateStrings").toBool(false);
+    s.numberFormat = j.value("numberFormat").toString("auto");
+    if (!QStringList{"auto", "decimal", "hex"}.contains(s.numberFormat)) s.numberFormat = "auto";
     s.unflatten = j.value("unflatten").toBool(false);
     s.simplifyControlFlow = j.value("simplifyControlFlow").toBool(false);
     s.mcpEnabled = j.value("mcpEnabled").toBool(s.mcpEnabled);

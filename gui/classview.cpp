@@ -33,6 +33,12 @@ ClassView::ClassView(const QString &name, bool hasSmali, const AppSettings &sett
                 if (!span.declaration && span.id == symbol && span.end <= position) ++occurrence;
             }
             modePosition_ = {{"symbol", symbol}, {"scope", scope}, {"occurrence", occurrence}, {"declaration", declaration}};
+            const auto location = code->locationAtCursor();
+            if (!location.isEmpty() && (!declaration || symbol.contains("@local:"))) {
+                modePosition_["mappedLocation"] = true;
+                modePosition_["offset"] = location.value("offset");
+                modePosition_["scope"] = location.value("scope");
+            }
             selectMode(!smali());
             restoreModePosition();
             editor()->setFocus();
@@ -76,7 +82,11 @@ void ClassView::invalidate() {
 
 void ClassView::restoreModePosition() {
     if (modePosition_.isEmpty() || !loaded(smali())) return;
-    const auto hit = modePosition_; modePosition_ = {};
+    auto hit = modePosition_; modePosition_ = {};
+    if (hit.value("mappedLocation").toBool()) {
+        if (editor()->goToHit(hit)) return;
+        hit.remove("mappedLocation");
+    }
     const auto symbol = hit.value("symbol").toString();
     if (!symbol.isEmpty() && (hit.value("declaration").toBool()
             ? editor()->goToSymbol(symbol) : editor()->goToHit(hit))) return;

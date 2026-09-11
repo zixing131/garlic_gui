@@ -124,6 +124,7 @@ static void write_expression(jsource_file *jf,
                              bool terminated)
 {
     FILE *stream = file_output(jf);
+    long map_start = getenv("GARLIC_SOURCE_MAP_DIR") ? ftell(stream) : -1;
     if (DEBUG_INS_AND_NODE_INFO) {
         if (DEBUG_WRITE_COLOR) {
             fprintf(stream, "\033[0;31m");
@@ -139,6 +140,7 @@ static void write_expression(jsource_file *jf,
     else {
         expression_to_stream(stream, node, exp);
     }
+    source_map_location(stream, map_start, ins);
     if (terminated)
         fprintf(stream, ";\n");
 }
@@ -726,7 +728,7 @@ static void write_case(FILE *stream, jsource_file *jf, jd_node *n)
         fprintf(stream, "%sdefault: {", ident);
     else {
         fprintf(stream, "%s%s ", ident, node_name(n));
-        fprintf(stream, "%d", _case->key);
+        fprintf(stream, "%s", const_integer_to_s(_case->key, false));
         fprintf(stream, ": {");
     }
     write_node_debug_info(jf, n);
