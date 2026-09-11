@@ -43,6 +43,7 @@ class Project : public QObject {
     QString displayName(const QString &name) const;
     QString renamedClass(const QString &name) const;
     QString symbolName(const QString &id) const;
+    QJsonObject symbolInfo(const QString &id) const { return symbols_.value(id); }
     QString alias(const QString &id) const { return aliases_.value(id); }
     QString rename(const QString &id, const QString &newName);
     void deobfuscateNames();

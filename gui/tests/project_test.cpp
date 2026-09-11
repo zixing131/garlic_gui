@@ -6,6 +6,32 @@
 class ProjectTest : public QObject {
     Q_OBJECT
   private slots:
+    void referenceIndexMutationAndAliases() {
+        Project project;
+        auto entry = [](const QString &target) {
+            return QJsonObject{{"name", "Caller"}, {"refs", QJsonArray{QJsonObject{
+                {"from", "LCaller;"}, {"target", target}, {"offset", 0}}}}};
+        };
+        project.addClass(entry("LFirst;"));
+        auto beforeBuild = project.snapshot();
+        project.addClass(entry("LSecond;"));
+        QCOMPARE(beforeBuild->xrefs("LFirst;").size(), 1);
+        QVERIFY(project.xrefs("LFirst;").isEmpty());
+        QCOMPARE(project.xrefs("LSecond;").size(), 1);
+        auto afterBuild = project.snapshot();
+        project.addClass(entry("LThird;"));
+        QCOMPARE(afterBuild->xrefs("LSecond;").size(), 1);
+        QVERIFY(project.xrefs("LSecond;").isEmpty());
+        QCOMPARE(project.xrefs("LThird;").size(), 1);
+        for (const auto &name : QStringList{"Valid_123", "正常名称", "a", "9invalid", QString("no") + QChar(0x200b) + "isy"})
+            project.addClass({{"name", name}, {"kind", "class"}});
+        project.deobfuscateNames();
+        QVERIFY(!project.aliasMap().contains("LValid_123;"));
+        QVERIFY(!project.aliasMap().contains("L正常名称;"));
+        QVERIFY(project.aliasMap().contains("La;"));
+        QVERIFY(project.aliasMap().contains("L9invalid;"));
+        QVERIFY(project.aliasMap().contains(QString("Lno") + QChar(0x200b) + "isy;"));
+    }
     void filterOnlyWarmup() {
         auto project = std::make_shared<Project>();
         project->addClass({{"name", "Warm"}});

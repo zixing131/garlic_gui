@@ -132,11 +132,21 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
     label->setTextFormat(Qt::PlainText);
     label->setTextInteractionFlags(Qt::TextSelectableByMouse);
     root->addWidget(label);
+    auto filter = new QLineEdit(this);
+    filter->setObjectName("referenceFilter");
+    filter->setPlaceholderText(tr("过滤当前引用结果：节点名称或代码片段…"));
+    filter->setClearButtonEnabled(true);
+    root->addWidget(filter);
     auto table = new QTableView;
     table->setObjectName("referenceResults");
     auto model = new QStandardItemModel(0, 2, table);
     model->setHorizontalHeaderLabels({tr("节点"), tr("代码 / 引用位置")});
-    table->setModel(model);
+    auto proxy = new QSortFilterProxyModel(table);
+    proxy->setSourceModel(model);
+    proxy->setFilterKeyColumn(-1);
+    proxy->setFilterCaseSensitivity(Qt::CaseInsensitive);
+    table->setModel(proxy);
+    connect(filter, &QLineEdit::textChanged, proxy, &QSortFilterProxyModel::setFilterFixedString);
     table->setSelectionBehavior(QAbstractItemView::SelectRows);
     table->setSelectionMode(QAbstractItemView::SingleSelection);
     table->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -148,8 +158,18 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
     auto delegate = new SnippetDelegate(table);
     table->setItemDelegate(delegate);
     root->addWidget(table, 1);
+    auto canceled = std::make_shared<std::atomic_bool>(false);
     auto count = new QLabel(tr("正在查询引用索引…"));
+    count->setObjectName("referenceCount");
     root->addWidget(count);
+    auto updateCount = [model, proxy, count, canceled] {
+        count->setText(QObject::tr("显示 %1 / %2 处引用%3").arg(proxy->rowCount()).arg(model->rowCount())
+            .arg(*canceled ? QObject::tr("（已停止）") : QString()));
+    };
+    connect(proxy, &QAbstractItemModel::rowsInserted, this, updateCount);
+    connect(proxy, &QAbstractItemModel::rowsRemoved, this, updateCount);
+    connect(proxy, &QAbstractItemModel::modelReset, this, updateCount);
+    connect(filter, &QLineEdit::textChanged, this, updateCount);
     auto bottom = new QHBoxLayout;
     auto keep = new QCheckBox(tr("保持窗口"));
     keep->setChecked(QSettings().value("references/keep", false).toBool());
@@ -159,17 +179,17 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
     auto preview = new QPushButton(tr("打开选中来源 / 加载源码"));
     bottom->addWidget(preview);
     bottom->addStretch();
-    auto copy = new QPushButton(tr("复制全部")), go = new QPushButton(tr("转到")),
+    auto copy = new QPushButton(tr("复制筛选结果")), go = new QPushButton(tr("转到")),
          stop = new QPushButton(tr("停止")), close = new QPushButton(tr("关闭"));
     bottom->addWidget(copy);
     bottom->addWidget(stop);
     bottom->addWidget(go);
     bottom->addWidget(close);
     root->addLayout(bottom);
-    auto canceled = std::make_shared<std::atomic_bool>(false);
     connect(this, &QObject::destroyed, [canceled] { *canceled = true; });
-    connect(stop, &QPushButton::clicked, this, [canceled, stop] {
+    connect(stop, &QPushButton::clicked, this, [canceled, stop, updateCount] {
         *canceled = true;
+        updateCount();
         stop->setEnabled(false);
     });
     connect(close, &QPushButton::clicked, this, &QDialog::close);
@@ -191,25 +211,25 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
     });
     connect(table, &QTableView::doubleClicked, this,
             [navigate](const QModelIndex &) { navigate(); });
-    connect(copy, &QPushButton::clicked, this, [model] {
+    connect(copy, &QPushButton::clicked, this, [proxy] {
         QString text;
-        for (int i = 0; i < model->rowCount(); i++)
-            text += model->item(i, 0)->text() + "\t" + model->item(i, 1)->text() + "\n";
+        for (int i = 0; i < proxy->rowCount(); i++)
+            text += proxy->index(i, 0).data().toString() + "\t" + proxy->index(i, 1).data().toString() + "\n";
         QApplication::clipboard()->setText(text);
     });
     auto previewTimer = new QTimer(this);
     previewTimer->setInterval(200);
     auto attempted = std::make_shared<QSet<QString>>();
-    connect(previewTimer, &QTimer::timeout, this, [window, table, model, canceled, attempted] {
+    connect(previewTimer, &QTimer::timeout, this, [window, table, proxy, canceled, attempted] {
         if (*canceled || window->backend()->busy() || !table->isVisible()) return;
         int first = table->rowAt(0);
         if (first < 0) first = 0;
         int last = table->rowAt(table->viewport()->height() - 1);
-        if (last < 0) last = model->rowCount() - 1;
+        if (last < 0) last = proxy->rowCount() - 1;
         for (int row = first; row <= last; ++row) {
-            if (model->item(row)->data(Qt::UserRole + 2).toInt() > 0) continue;
+            if (proxy->index(row, 0).data(Qt::UserRole + 2).toInt() > 0) continue;
             const auto owner = window->backend()->project()->owner(
-                Project::classOf(model->item(row)->data(Qt::UserRole + 1).toString()));
+                Project::classOf(proxy->index(row, 0).data(Qt::UserRole + 1).toString()));
             if (attempted->contains(owner)) continue;
             attempted->insert(owner);
             window->backend()->request(owner, false);
@@ -218,7 +238,7 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
     });
     previewTimer->start();
     connect(window->backend(), &Backend::sourceReady, this,
-            [this, window, model, id, count](const QString &name, bool smali, const QString &path) {
+            [this, window, model, id, updateCount](const QString &name, bool smali, const QString &path) {
                 if (smali)
                     return;
                 auto project = window->backend()->project()->snapshot();
@@ -231,7 +251,7 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
                 if (!relevant) return;
                 auto task = new QFutureWatcher<ReferenceDocument>(this);
                 connect(task, &QFutureWatcher<ReferenceDocument>::finished, this,
-                        [task, model, project, name, id, count] {
+                        [task, model, project, name, id, updateCount] {
                             auto doc = task->result();
                             task->deleteLater();
                             QSet<QString> shown;
@@ -259,7 +279,7 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
                                 }
                                 if (matched && !replaced) model->removeRow(row);
                             }
-                            count->setText(QObject::tr("%1 处引用").arg(model->rowCount()));
+                            updateCount();
                         });
                 task->setFuture(QtConcurrent::run(
                     [project, name, path, id] { return ReferenceDocument(project->document(name, false, path), id); }));
@@ -271,22 +291,14 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
     const bool allReady = window->backend()->projectReady();
     auto task = new QFutureWatcher<QJsonArray>(this);
     connect(task, &QFutureWatcher<QJsonArray>::resultReadyAt, this,
-            [task, model, count, project](int index) {
+            [task, model, updateCount, project](int index) {
                 auto rows = task->resultAt(index);
                 for (const auto &v : rows) {
                     auto row = v.toObject();
                     auto symbol = row.value("from").toString();
-                    auto info = project->info(Project::classOf(symbol));
-                    QString kind = info.value("kind").toString();
-                    int flags = info.value("flags").toInt();
-                    for (const auto &collection : {"methods", "fields"})
-                        for (const auto &v : info.value(collection).toArray()) {
-                            auto m = v.toObject();
-                            if (m.value("id").toString() == symbol) {
-                                kind = QString(collection) == "methods" ? "method" : "field";
-                                flags = m.value("flags").toInt();
-                            }
-                        }
+                    const auto info = project->symbolInfo(symbol);
+                    const auto kind = info.value("kind").toString();
+                    const int flags = info.value("flags").toInt();
                     auto node = new QStandardItem(
                         NodeIcons::icon(kind, flags, symbol.contains("-><init>")),
                         project->displayName(Project::classOf(symbol)).replace('/', '.') +
@@ -301,13 +313,11 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
                     snippet->setData(row.value("highlights").toArray(), Qt::UserRole + 3);
                     model->appendRow({node, snippet});
                 }
-                count->setText(QObject::tr("已找到 %1 处引用…").arg(model->rowCount()));
+                updateCount();
             });
     connect(task, &QFutureWatcher<QJsonArray>::finished, this,
-            [task, model, count, stop, canceled] {
-                count->setText(QObject::tr("%1 处引用%2")
-                                   .arg(model->rowCount())
-                                   .arg(*canceled ? QObject::tr("（已停止）") : QString()));
+            [task, updateCount, stop] {
+                updateCount();
                 stop->setEnabled(false);
                 task->deleteLater();
             });

@@ -981,6 +981,7 @@ void Backend::prepareMetadata() {
         QFile file(path);
         QByteArray pending;
         int count = 0, lastPercent = -1;
+        QElapsedTimer timing; timing.start();
         auto progress = [&](const QString &phase, int percent) {
             if (self) QMetaObject::invokeMethod(self, [self, generation, phase, percent] {
                 if (self && self->projectGeneration_ == generation)
@@ -1039,8 +1040,10 @@ void Backend::prepareMetadata() {
                 .arg(QString::fromUtf8(errors.readAll().right(4000)))};
         }
         if (canceled->load()) return {{}, QStringLiteral("canceled")};
+        const auto parsedMs = timing.elapsed();
         progress(QObject::tr("构建查询索引"), 0);
         if (settings.deobfuscate) snapshot->deobfuscateNames();
+        const auto aliasesMs = timing.elapsed();
         progress(QObject::tr("构建查询索引"), 33);
         // Both indexes read immutable metadata and own separate synchronization.
         auto references = std::async(std::launch::async, [snapshot] { snapshot->xrefs(QString()); });
@@ -1049,6 +1052,8 @@ void Backend::prepareMetadata() {
         progress(QObject::tr("构建查询索引"), 66);
         references.get();
         if (canceled->load()) return {{}, QStringLiteral("canceled")};
+        if (qEnvironmentVariableIsSet("GARLIC_PROFILE_LOAD"))
+            qInfo() << "Metadata parse / aliases / queries ms:" << parsedMs << aliasesMs - parsedMs << timing.elapsed() - aliasesMs;
         progress(QObject::tr("构建查询索引"), 100);
         return {snapshot, {}};
     }));

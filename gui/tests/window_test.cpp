@@ -61,6 +61,27 @@ class WindowTest : public QObject {
         run->click(); QTRY_VERIFY_WITH_TIMEOUT(run->isEnabled(), 3000);
         QVERIFY(output->toPlainText().contains("RECOVERED")); QVERIFY(output->toPlainText().contains("exit=0"));
     }
+    void referenceResultFilter() {
+        MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
+        auto dialog = new ReferencesDialog(&window, "LExample;");
+        auto filter = dialog->findChild<QLineEdit *>("referenceFilter");
+        auto table = dialog->findChild<QTableView *>("referenceResults");
+        auto proxy = qobject_cast<QSortFilterProxyModel *>(table->model());
+        auto model = qobject_cast<QStandardItemModel *>(proxy->sourceModel());
+        QVERIFY(filter); QVERIFY(model);
+        model->appendRow({new QStandardItem("Alpha.call"), new QStandardItem("return value;")});
+        model->appendRow({new QStandardItem("Beta.run"), new QStandardItem("decode(secret);")});
+        filter->setText("SECRET"); QCOMPARE(proxy->rowCount(), 1);
+        QCOMPARE(proxy->index(0, 0).data().toString(), QString("Beta.run"));
+        model->appendRow({new QStandardItem("Gamma.run"), new QStandardItem("secret = 1;")});
+        QCOMPARE(proxy->rowCount(), 2);
+        model->item(1, 1)->setText("plain"); QCOMPARE(proxy->rowCount(), 1);
+        filter->setText("Alpha"); QCOMPARE(proxy->rowCount(), 1);
+        filter->setText("[literal]"); QCOMPARE(proxy->rowCount(), 0);
+        filter->clear(); QCOMPARE(proxy->rowCount(), 3);
+        QCOMPARE(dialog->findChild<QLabel *>("referenceCount")->text(), QString("显示 3 / 3 处引用"));
+        delete dialog;
+    }
     void realLargeLifecycle() {
         const auto input = qEnvironmentVariable("GARLIC_TEST_LIFECYCLE_APK");
         if (input.isEmpty()) QSKIP("Set APK for lifecycle profiling");

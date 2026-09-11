@@ -59,7 +59,8 @@ void Project::reset(const QString &input) {
     undo_.clear();
 }
 void Project::addClass(const QJsonObject &entry) {
-    referenceIndex_ = std::make_shared<ReferenceIndex>();
+    if (referenceIndex_.use_count() > 1 || referenceIndex_->ready || !referenceIndex_->groups.isEmpty())
+        referenceIndex_ = std::make_shared<ReferenceIndex>();
     if (overrideIndex_->ready)
         overrideIndex_ = std::make_shared<OverrideIndex>();
     if (symbolIndex_->ready)
@@ -87,10 +88,12 @@ void Project::addClass(const QJsonObject &entry) {
             if (ref.value("kind") == "extends" || ref.value("kind") == "implements")
                 parents_[name] << classOf(ref.value("target").toString());
         }
-    for (const auto &simple :
-         QSet<QString>{name.section('/', -1), name.section('/', -1).section('$', -1)})
-        if (!classNames_[simple].contains(classId(name)))
-            classNames_[simple] << classId(name);
+    const auto id = classId(name);
+    // Directory entries do not populate this map. A full class symbol proves
+    // membership already exists, without scanning every other obfuscated "a".
+    if (!symbols_.contains(id))
+        for (const auto &simple : QSet<QString>{name.section('/', -1), name.section('/', -1).section('$', -1)})
+            classNames_[simple].append(id);
     symbols_.insert(classId(name), {{"id", classId(name)},
                                     {"name", name.section('/', -1)},
                                     {"owner", name},
@@ -365,7 +368,7 @@ void Project::deobfuscateNames() {
     QSet<QString> used;
     for (auto it = symbols_.cbegin(); it != symbols_.cend(); ++it) {
         if (canceled_->load()) return;
-        used.insert(symbolName(it.key()));
+        used.insert(aliases_.value(it.key(), it.value().value(QStringLiteral("name")).toString(it.key())));
     }
     auto ids = symbols_.keys();
     std::sort(ids.begin(), ids.end());
@@ -374,10 +377,16 @@ void Project::deobfuscateNames() {
         if (canceled_->load()) return;
         const auto symbol = symbols_.value(id);
         const auto name = symbol.value("name").toString();
-        const bool suspicious = noisy.match(name).hasMatch() || name.contains(QChar(0xfffd)) ||
-                                name.size() <= 1;
+        bool asciiIdentifier = !name.isEmpty();
+        for (qsizetype i = 0; i < name.size() && asciiIdentifier; ++i) {
+            const auto c = name.at(i).unicode();
+            asciiIdentifier = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c == '$' ||
+                (i > 0 && c >= '0' && c <= '9');
+        }
+        const bool suspicious = name.size() <= 1 || (!asciiIdentifier &&
+            (noisy.match(name).hasMatch() || name.contains(QChar(0xfffd))));
         if (aliases_.contains(id) || name.isEmpty() || name == "<init>" || name == "<clinit>" ||
-            (identifier.match(name).hasMatch() && !suspicious))
+            ((asciiIdentifier || identifier.match(name).hasMatch()) && !suspicious))
             continue;
         const bool method = id.contains("->") && id.contains('(');
         const bool member = id.contains("->");
@@ -974,8 +983,10 @@ QString Project::canonicalId(const QString &id) const {
     if (id.contains("@local:") || symbols_.contains(id) || !id.contains("->"))
         return id;
     const QString suffix = id.mid(id.indexOf("->"));
-    QStringList work{classOf(id)};
-    QSet<QString> visited;
+    const auto owner = classOf(id);
+    QStringList work = parents_.value(owner);
+    if (work.isEmpty()) return id;
+    QSet<QString> visited{owner};
     while (!work.isEmpty() && visited.size() < 128) {
         auto name = work.takeFirst();
         if (visited.contains(name))

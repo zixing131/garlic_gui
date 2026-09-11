@@ -51,18 +51,15 @@ static encoded_method *find_encoded_method(jd_meta_dex *meta, unsigned method_in
     const unsigned class_index = meta->method_ids[method_index].class_idx;
     if (class_index >= meta->header->type_ids_size)
         return NULL;
-    for (u4 i = 0; i < meta->header->class_defs_size; ++i) {
-        dex_class_def *klass = &meta->class_defs[i];
-        if (klass->class_idx != class_index || !klass->class_data)
-            continue;
-        dex_class_data_item *data = klass->class_data;
-        for (int kind = 0; kind < 2; ++kind) {
-            encoded_method *methods = kind ? data->virtual_methods : data->direct_methods;
-            unsigned count = kind ? data->virtual_methods_size : data->direct_methods_size;
-            for (unsigned j = 0; j < count; ++j)
-                if (methods[j].method_id == method_index)
-                    return &methods[j];
-        }
+    dex_class_def *klass = hget_u4obj(meta->class_type_id_map, class_index);
+    if (!klass || !klass->class_data) return NULL;
+    dex_class_data_item *data = klass->class_data;
+    for (int kind = 0; kind < 2; ++kind) {
+        encoded_method *methods = kind ? data->virtual_methods : data->direct_methods;
+        unsigned count = kind ? data->virtual_methods_size : data->direct_methods_size;
+        for (unsigned j = 0; j < count; ++j)
+            if (methods[j].method_id == method_index)
+                return &methods[j];
     }
     return NULL;
 }
@@ -421,6 +418,14 @@ static jd_dex_ins *trace_comparison_dispatcher(state_graph *g, jd_dex_ins *origi
 static int specialize_state_edges(jd_method *m)
 {
     int count = m->instructions->size, changed = 0;
+    bool candidate = false;
+    for (int i = 0; i < count; ++i) {
+        jd_dex_ins *ins = lget_obj(m->instructions, i);
+        if (dex_ins_is_switch(ins) || dex_ins_is_goto_jump(ins) ||
+            (dex_ins_is_if(ins) && ins->code >= DEX_INS_IF_EQZ)) { candidate = true; break; }
+    }
+    if (!candidate) return 0; // No instruction handled by this pass; avoid constructing dataflow state.
+
     state_graph g = {m, calloc(count, sizeof(int)), calloc(count, sizeof(bool))};
     int *queue = calloc(count, sizeof(int));
     size_t edges = 0;
