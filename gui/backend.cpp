@@ -725,7 +725,7 @@ void Backend::applyEnvironment(QProcess &process, const QString &directory) {
     env.insert("GARLIC_EXCLUDED_PACKAGES", settings_.excluded.join(';').replace('.', '/'));
     process.setProcessEnvironment(env);
 }
-void Backend::configure(const AppSettings &settings) {
+void Backend::configure(const AppSettings &settings, bool clearSources) {
     const bool engineChange = settings_.escapeUnicode != settings.escapeUnicode ||
                               settings_.excluded != settings.excluded ||
                               settings_.simplifyControlFlow != settings.simplifyControlFlow ||
@@ -739,7 +739,7 @@ void Backend::configure(const AppSettings &settings) {
         if (indexChange) indexTicket_ = {};
     }
     settings_ = settings;
-    if (engineChange && !busy() && !preparing_ && !metadataPreparing_)
+    if (clearSources && engineChange && !busy() && !preparing_ && !metadataPreparing_)
         clearCache(false);
 }
 QString Backend::cachedPath(const QString &name, bool smali) const {

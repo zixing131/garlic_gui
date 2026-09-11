@@ -17,7 +17,7 @@ class Backend : public QObject {
     Project *project() { return &project_; }
     const Project *project() const { return &project_; }
     AppSettings settings() const { return settings_; }
-    void configure(const AppSettings &settings);
+    void configure(const AppSettings &settings, bool clearSources = true);
     QHash<QString, QString> cachedSources() const { return cache_; }
     QString cachedPath(const QString &name, bool smali) const;
     void prepareSources();

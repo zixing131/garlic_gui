@@ -36,7 +36,7 @@ class MainWindow : public QMainWindow {
     void showReferences(const QString &id);
     void openResource(const QString &path, const QString &entry, const QString &generated = {}, int line = 0, const QJsonObject &hit = {});
     void showCallGraph(const QString &id);
-    void applySettings(const AppSettings &settings);
+    void applySettings(const AppSettings &settings, bool preserveAnalysis = false);
     QString mcpEndpoint() const;
 
   protected:

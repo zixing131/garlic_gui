@@ -45,6 +45,7 @@ class Project : public QObject {
     QJsonArray callees(const QString &id) const;
     QJsonArray symbols(const QString &query = {}) const;
     QString displayName(const QString &name) const;
+    QString displayDescriptor(const QString &descriptor) const;
     QString renamedClass(const QString &name) const;
     QString symbolName(const QString &id) const;
     QJsonObject symbolInfo(const QString &id) const { return symbols_.value(id); }
@@ -55,7 +56,7 @@ class Project : public QObject {
     bool canUndo() const { return !undo_.isEmpty(); }
     QJsonObject aliases() const;
     QHash<QString, QString> aliasMap() const { return aliases_; }
-    bool hasAliases() const { return !aliases_.isEmpty(); }
+    bool hasAliases() const { return deobfuscateLocals_ || !aliases_.isEmpty(); }
     QString aliasVersion() const;
     bool save(const QString &path, QString *error = nullptr) const;
     bool loadAliases(const QString &path, QString *error = nullptr);
@@ -92,6 +93,7 @@ class Project : public QObject {
     QHash<QString, QString> aliases_;
     QHash<QString, QStringList> classNames_, parents_;
     QVector<QHash<QString, QString>> undo_;
+    bool deobfuscateLocals_ = false;
     QHash<QString, SourceDocument> documents_;
     struct MapArchiveIndex {
         std::mutex lock;

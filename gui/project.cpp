@@ -55,6 +55,7 @@ void Project::reset(const QString &input) {
     classNames_.clear();
     parents_.clear();
     aliases_.clear();
+    deobfuscateLocals_ = false;
     aliasIndex_ = std::make_shared<AliasIndex>();
     undo_.clear();
 }
@@ -376,10 +377,23 @@ QString Project::rename(const QString &id, const QString &newName) {
     emit renamed();
     return {};
 }
+QString Project::displayDescriptor(const QString &descriptor) const {
+    QString result; int at = 0;
+    const QRegularExpression types("L[^;]+;");
+    auto matches = types.globalMatch(descriptor);
+    while (matches.hasNext()) {
+        const auto match = matches.next();
+        result += descriptor.mid(at, match.capturedStart() - at);
+        result += classId(renamedClass(classOf(match.captured())));
+        at = match.capturedEnd();
+    }
+    return result + descriptor.mid(at);
+}
 void Project::deobfuscateNames() {
+    deobfuscateLocals_ = true;
     aliasIndex_ = std::make_shared<AliasIndex>();
     static const QRegularExpression identifier("^[\\p{L}_$][\\p{L}\\p{N}_$]*$");
-    static const QRegularExpression noisy("[\\p{Cc}\\p{Cf}\\p{Co}\\p{Cs}\\p{Cn}\\p{Mn}\\p{Mc}]");
+    static const QRegularExpression confusable("^[O0oIl1|]{3,}$");
     QSet<QString> used;
     for (auto it = symbols_.cbegin(); it != symbols_.cend(); ++it) {
         if (canceled_->load()) return;
@@ -402,8 +416,8 @@ void Project::deobfuscateNames() {
         const bool method = member && id.contains('(');
         // Unicode letters can be valid Java identifiers yet deliberately
         // unreadable. Use readable aliases for class/method names in deobf mode.
-        const bool suspicious = name.size() <= 1 || (!asciiIdentifier &&
-            (!member || method || noisy.match(name).hasMatch() || name.contains(QChar(0xfffd))));
+        const bool suspicious = name.size() <= 1 || !asciiIdentifier ||
+            confusable.match(name).hasMatch();
         if (aliases_.contains(id) || name.isEmpty() || name == "<init>" || name == "<clinit>" ||
             ((asciiIdentifier || identifier.match(name).hasMatch()) && !suspicious))
             continue;
@@ -433,6 +447,7 @@ QString Project::aliasVersion() const {
     std::lock_guard<std::mutex> guard(aliasIndex_->lock);
     if (aliasIndex_->version.isEmpty()) {
         QCryptographicHash hash(QCryptographicHash::Sha256);
+        hash.addData(deobfuscateLocals_ ? "locals:1" : "locals:0");
         auto ids = aliases_.keys();
         ids.sort();
         for (const auto &id : ids) {
@@ -912,12 +927,36 @@ SourceDocument Project::document(const QString &name, bool smali, const QString 
     // Lexically resolved locals take priority over guessed type contexts (a[i], a < b).
     if (!smali) {
         QHash<QString, QString> imports;
-        const QRegularExpression importRe("\\bimport\\s+([\\w.$]+)\\s*;");
+        const QRegularExpression importRe("\\bimport\\s+([^\\s;]+)\\s*;");
         auto importsIt = importRe.globalMatch(mask);
         while (importsIt.hasNext()) {
             auto m = importsIt.next();
             const auto n = normalize(m.captured(1));
             imports[n.section('/', -1)] = classId(n);
+        }
+        // Annotation identifiers may be qualified or contain non-Java obfuscation glyphs.
+        const QRegularExpression annotationRe("@([^\\s(]+)");
+        auto annotations = annotationRe.globalMatch(mask);
+        while (annotations.hasNext()) {
+            const auto match = annotations.next();
+            const auto word = match.captured(1);
+            QString id = imports.value(word);
+            if (word.contains('.')) id = classId(normalize(word));
+            if (id.isEmpty()) {
+                const auto candidate = normalize(name).section('/', 0, -2) + '/' + word;
+                if (classes_.contains(candidate)) id = classId(candidate);
+            }
+            if (!id.isEmpty()) add(match.capturedStart(1), match.capturedEnd(1), id, false);
+        }
+        // Imported obfuscated types can contain symbols outside Unicode letter categories.
+        for (auto it = imports.cbegin(); it != imports.cend(); ++it) {
+            if (QRegularExpression("^[\\p{L}_$][\\p{L}\\p{N}_$]*$").match(it.key()).hasMatch()) continue;
+            const QRegularExpression token("(?<![\\p{L}\\p{N}_$])" + QRegularExpression::escape(it.key()) + "(?![\\p{L}\\p{N}_$])");
+            auto occurrences = token.globalMatch(mask);
+            while (occurrences.hasNext()) {
+                const auto match = occurrences.next();
+                add(match.capturedStart(), match.capturedEnd(), it.value(), false);
+            }
         }
         const auto aliasClasses = classAliases();
         auto resolveType = [&](const QString &word) -> QString {
@@ -959,6 +998,22 @@ SourceDocument Project::document(const QString &name, bool smali, const QString 
 }
 
 SourceDocument Project::applyAliases(SourceDocument result, bool smali) const {
+    static const QRegularExpression localObfuscation("^[O0oIl1|]{3,}$|[^\\x00-\\x7f]");
+    QHash<QString, QString> localAliases;
+    if (deobfuscateLocals_) {
+        QSet<QString> used;
+        for (const auto &span : result.spans) if (span.declaration)
+            used.insert(aliases_.value(span.id, result.text.mid(span.start, span.end - span.start)));
+        int number = 1;
+        for (const auto &span : result.spans) if (span.declaration && span.id.contains("@local:")) {
+            const auto name = result.text.mid(span.start, span.end - span.start);
+            if (localObfuscation.match(name).hasMatch()) {
+                QString replacement;
+                do { replacement = "local_" + QString::number(number++); } while (used.contains(replacement));
+                used.insert(replacement); localAliases.insert(span.id, replacement);
+            }
+        }
+    }
     // Append unchanged ranges and replacements once. Replacing every token in a
     // large QString repeatedly shifts the rest of the file for each alias.
     QString rewritten;
@@ -969,7 +1024,7 @@ SourceDocument Project::applyAliases(SourceDocument result, bool smali) const {
         const int originalStart = span.start, originalEnd = span.end;
         span.start += shift;
         span.end += shift;
-        QString replacement = aliases_.value(span.id);
+        QString replacement = aliases_.value(span.id, localAliases.value(span.id));
         if ((!span.id.contains("->") && span.id.endsWith(';')) ||
             (!smali && !span.id.contains("@local:") && span.id.contains(";-><init>"))) {
             const QString old = classOf(span.id), renamed = renamedClass(old);
@@ -1106,6 +1161,7 @@ void Project::replaceData(const Project &other, bool keepDocuments) {
     classNames_ = other.classNames_;
     parents_ = other.parents_;
     aliases_ = other.aliases_;
+    deobfuscateLocals_ = other.deobfuscateLocals_;
     aliasIndex_ = other.aliasIndex_;
     undo_ = other.undo_;
 }

@@ -6,6 +6,37 @@
 class ProjectTest : public QObject {
     Q_OBJECT
   private slots:
+    void obfuscatedTypesAndLocals() {
+        Project project;
+        const QString glyph = QString(QChar(0xe123)) + QChar(0x2588);
+        const QString type = "demo/" + glyph;
+        project.addClass({{"name", type}});
+        project.addClass({{"name", "demo/Use"}, {"fields", QJsonArray{
+            QJsonObject{{"id", "Ldemo/Use;->O0oO0:I"}, {"name", "O0oO0"}, {"descriptor", "I"}}}}});
+        project.deobfuscateNames();
+        QVERIFY(project.alias(Project::classId(type)).startsWith("Class_"));
+        QVERIFY(project.alias("Ldemo/Use;->O0oO0:I").startsWith("field_"));
+        QVERIFY(!project.displayDescriptor("(L" + type + ";)L" + type + ";").contains(glyph));
+        const QString local = "Ldemo/Use;->run()V@local:0:O0oO0";
+        const QString text = "int O0oO0 = 1; O0oO0++;";
+        const auto result = project.applyAliases({text, {{4, 9, local, true}, {15, 20, local, false}}}, false);
+        QCOMPARE(result.text, QString("int local_1 = 1; local_1++;"));
+        QTemporaryDir dir;
+        QFile source(dir.filePath("Use.java")); QVERIFY(source.open(QIODevice::WriteOnly));
+        source.write(("import demo." + glyph + ";\nclass Use { " + glyph + " value; }").toUtf8()); source.close();
+        QVERIFY(!project.document("demo/Use", false, source.fileName()).text.contains(glyph));
+    }
+    void qualifiedAnnotationSymbols() {
+        Project project; project.addClass({{"name", "demo/Use"}});
+        QTemporaryDir dir;
+        QFile source(dir.filePath("Use.java")); QVERIFY(source.open(QIODevice::WriteOnly));
+        source.write("import androidx.annotation.Nullable;\n@Nullable class Use { @androidx.annotation.Nullable String name; }"); source.close();
+        const auto doc = project.document("demo/Use", false, source.fileName());
+        int references = 0;
+        for (const auto &span : doc.spans)
+            if (span.id == "Landroidx/annotation/Nullable;" && doc.text[span.start - 1] == '@') ++references;
+        QCOMPARE(references, 2);
+    }
     void referenceDedupLargeGroup() {
         Project project;
         QJsonArray rows;

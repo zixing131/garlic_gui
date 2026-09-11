@@ -110,6 +110,59 @@ with test_workspace() as root:
         assert any('class Foo' in text for text in sources)
         assert any('class foo' in text for text in sources)
 
+    # Add annotation metadata to the small DEX fixture, including nested/array type values.
+    annotated = bytearray((fixtures / 'cases.dex').read_bytes())
+    def u32(offset): return struct.unpack_from('<I', annotated, offset)[0]
+    def uleb(value):
+        data = bytearray()
+        while value >= 128: data.append((value & 127) | 128); value >>= 7
+        data.append(value); return data
+    strings = []
+    for i in range(u32(56)):
+        pos = u32(u32(60) + i * 4)
+        while annotated[pos] & 128: pos += 1
+        pos += 1
+        strings.append(bytes(annotated[pos:annotated.index(0, pos)]).decode())
+    types = [strings[u32(u32(68) + i * 4)] for i in range(u32(64))]
+    foo_type = types.index('Ldemo/cases/Foo;')
+    annotation_type = types.index('Ldemo/cases/foo;')
+    object_type = types.index('Ljava/lang/Object;')
+    method = next(i for i in range(u32(88)) if struct.unpack_from('<H', annotated, u32(92) + i * 8)[0] == foo_type)
+    class_offset = next(u32(100) + i * 32 for i in range(u32(96)) if u32(u32(100) + i * 32) == foo_type)
+    old_map = u32(52)
+    mapping = [struct.unpack_from('<HHII', annotated, old_map + 4 + i * 12) for i in range(u32(old_map))]
+    annotation_offset = len(annotated)
+    annotated += bytes([0]) + uleb(annotation_type) + uleb(1) + uleb(strings.index('identify'))
+    annotated += bytes([0x1c, 2, 0x18, object_type, 0x1d]) + uleb(annotation_type) + uleb(0)
+    while len(annotated) % 4: annotated.append(0)
+    set_offset = len(annotated)
+    annotated += struct.pack('<II', 1, annotation_offset)
+    directory_offset = len(annotated)
+    annotated += struct.pack('<IIIIII', set_offset, 0, 1, 0, method, set_offset)
+    struct.pack_into('<I', annotated, class_offset + 20, directory_offset)
+    new_map = len(annotated)
+    mapping = [item for item in mapping if item[0] != 0x1000]
+    mapping += [(0x2004, 0, 1, annotation_offset), (0x1003, 0, 1, set_offset),
+                (0x2006, 0, 1, directory_offset), (0x1000, 0, 1, new_map)]
+    mapping.sort(key=lambda item: item[3])
+    annotated += struct.pack('<I', len(mapping))
+    for item in mapping: annotated += struct.pack('<HHII', *item)
+    struct.pack_into('<I', annotated, 52, new_map)
+    struct.pack_into('<I', annotated, 32, len(annotated))
+    struct.pack_into('<I', annotated, 104, len(annotated) - u32(108))
+    annotated[12:32] = hashlib.sha1(annotated[32:]).digest()
+    struct.pack_into('<I', annotated, 8, zlib.adler32(annotated[12:]) & 0xffffffff)
+    annotated_path = root / 'annotations.dex'; annotated_path.write_bytes(annotated)
+    annotated_index = root / 'annotations.jsonl'
+    environment = dict(os.environ, GARLIC_COMPACT_INDEX='0')
+    run([str(engine), str(annotated_path), '-I', str(annotated_index), '-o', str(root / 'annotations-out')],
+        env=environment, check=True, capture_output=True, timeout=20)
+    annotated_rows = [json.loads(line) for line in annotated_index.read_text().splitlines()]
+    refs = next(row for row in annotated_rows if row['name'] == 'demo/cases/Foo')['refs']
+    for owner in ('Ldemo/cases/Foo;', 'Ldemo/cases/Foo;->identify()I'):
+        assert any(ref['from'] == owner and ref['target'] == 'Ldemo/cases/foo;' and ref['kind'] == 'annotation' for ref in refs)
+        assert any(ref['from'] == owner and ref['target'] == 'Ljava/lang/Object;' and ref['kind'] == 'annotation-value' for ref in refs)
+
     # Default compact v2 and explicit legacy output retain the same class records.
     indexes = []
     for mode in (None, '0'):

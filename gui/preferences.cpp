@@ -19,8 +19,8 @@ class PreferenceItemDelegate : public QStyledItemDelegate {
     }
 };
 } // namespace
-void MainWindow::applySettings(const AppSettings &settings) {
-    backend_.configure(settings);
+void MainWindow::applySettings(const AppSettings &settings, bool preserveAnalysis) {
+    backend_.configure(settings, !preserveAnalysis);
     qApp->setFont(settings.interfaceFont());
     for (auto widget : QApplication::allWidgets()) {
         if (auto code = qobject_cast<CodeEditor *>(widget))
@@ -499,8 +499,17 @@ void MainWindow::settingsDialog() {
         QSettings().setValue("shortcuts-v3/" + edit.first->objectName(),
                              edit.second->keySequence().toString());
     }
+    const auto previous = backend_.settings();
+    const bool analysisChanged = previous.deobfuscate != settings.deobfuscate ||
+        previous.simplifyControlFlow != settings.simplifyControlFlow || previous.unflatten != settings.unflatten;
     settings.save();
-    applySettings(settings);
+    applySettings(settings, analysisChanged);
+    if (analysisChanged && !backend_.input().isEmpty()) {
+        if (QMessageBox::question(this, tr("重建索引"),
+                tr("反混淆或控制流选项已更改。是否立即重建当前文件索引？取消后可手动重建。"),
+                QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) == QMessageBox::Yes)
+            backend_.rebuildIndex();
+    }
     if (!backend_.input().isEmpty())
         refreshAliases();
 }

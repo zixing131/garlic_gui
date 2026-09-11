@@ -82,24 +82,26 @@ static void reference(cJSON *array, const char *from, const char *target, int of
     cJSON_AddStringToObject(r, "kind", kind);
     cJSON_AddItemToArray(array, r);
 }
+static void descriptor_references(cJSON *refs, const char *from, const char *desc, const char *kind) {
+    while (desc && (desc = strchr(desc, 'L'))) {
+        const char *end = desc + 1;
+        while (*end && *end != ';' && *end != '<') ++end;
+        if (!*end) break;
+        string target = x_alloc((size_t)(end - desc) + 2);
+        memcpy(target, desc, (size_t)(end - desc));
+        target[end - desc] = ';'; target[end - desc + 1] = 0;
+        reference(refs, from, target, -1, kind);
+        desc = end + 1;
+    }
+}
 static void signature_references(cJSON *entry) {
     const char *kinds[] = {"methods", "fields"};
     for (int k = 0; k < 2; k++) {
         cJSON *m = NULL;
-        cJSON_ArrayForEach(m, cJSON_GetObjectItem(entry, kinds[k])) {
-            const char *from = cJSON_GetObjectItem(m, "id")->valuestring;
-            const char *desc = cJSON_GetObjectItem(m, "descriptor")->valuestring;
-            while (desc && (desc = strchr(desc, 'L'))) {
-                const char *end = strchr(desc, ';');
-                if (!end)
-                    break;
-                string target = x_alloc((size_t)(end - desc) + 2);
-                memcpy(target, desc, (size_t)(end - desc) + 1);
-                target[end - desc + 1] = 0;
-                reference(cJSON_GetObjectItem(entry, "refs"), from, target, -1, "signature");
-                desc = end + 1;
-            }
-        }
+        cJSON_ArrayForEach(m, cJSON_GetObjectItem(entry, kinds[k]))
+            descriptor_references(cJSON_GetObjectItem(entry, "refs"),
+                cJSON_GetObjectItem(m, "id")->valuestring,
+                cJSON_GetObjectItem(m, "descriptor")->valuestring, "signature");
     }
 }
 static string dex_proto_to_descriptor(jd_meta_dex *meta, dex_proto_id *proto) {
@@ -122,6 +124,82 @@ static string dex_fid(jd_meta_dex *meta, unsigned idx) {
     dex_field_id *f = &meta->field_ids[idx];
     return str_create("%s->%s:%s", dex_str_of_type_id(meta, f->class_idx),
                       dex_str_of_idx(meta, f->name_idx), dex_str_of_type_id(meta, f->type_idx));
+}
+static void dex_annotation_refs(cJSON *, jd_meta_dex *, const char *, encoded_annotation *, int);
+static void dex_annotation_value_refs(cJSON *refs, jd_meta_dex *meta, const char *from, encoded_value *value, int depth) {
+    if (!value || depth > 64) return;
+    unsigned idx = 0;
+    if (value->value_length <= 4 && value->value)
+        for (size_t i = 0; i < value->value_length; ++i) idx |= (unsigned)value->value[i] << (i * 8);
+    switch (value->value_type) {
+        case kDexAnnotationType:
+            if (idx < meta->header->type_ids_size)
+                descriptor_references(refs, from, dex_str_of_type_id(meta, idx), "annotation-value");
+            break;
+        case kDexAnnotationField: case kDexAnnotationEnum:
+            if (idx < meta->header->field_ids_size) reference(refs, from, dex_fid(meta, idx), -1, "annotation-value");
+            break;
+        case kDexAnnotationMethod:
+            if (idx < meta->header->method_ids_size) reference(refs, from, dex_mid(meta, idx), -1, "annotation-value");
+            break;
+        case kDexAnnotationArray: {
+            encoded_array *array = (encoded_array *)value->value;
+            if (array) for (u4 i = 0; i < array->size; ++i)
+                dex_annotation_value_refs(refs, meta, from, &array->values[i], depth + 1);
+            break;
+        }
+        case kDexAnnotationAnnotation:
+            dex_annotation_refs(refs, meta, from, (encoded_annotation *)value->value, depth + 1);
+            break;
+    }
+}
+static void dex_annotation_refs(cJSON *refs, jd_meta_dex *meta, const char *from, encoded_annotation *annotation, int depth) {
+    if (!annotation || depth > 64 || annotation->type_idx >= meta->header->type_ids_size) return;
+    reference(refs, from, dex_str_of_type_id(meta, annotation->type_idx), -1, "annotation");
+    if (!strcmp(dex_str_of_type_id(meta, annotation->type_idx), "Ldalvik/annotation/Signature;")) {
+        str_list *signature = str_list_init();
+        for (u4 i = 0; i < annotation->size; ++i) {
+            encoded_value *value = annotation->elements[i].value;
+            if (!value || value->value_type != kDexAnnotationArray || !value->value) continue;
+            encoded_array *array = (encoded_array *)value->value;
+            for (u4 j = 0; j < array->size; ++j) {
+                encoded_value *part = &array->values[j]; unsigned idx = 0;
+                if (part->value_type != kDexAnnotationString || !part->value || part->value_length > 4) continue;
+                for (size_t k = 0; k < part->value_length; ++k) idx |= (unsigned)part->value[k] << (8 * k);
+                if (idx < meta->header->string_ids_size) str_concat(signature, dex_str_of_idx(meta, idx));
+            }
+        }
+        descriptor_references(refs, from, str_join(signature), "signature");
+    }
+    for (u4 i = 0; i < annotation->size; ++i)
+        dex_annotation_value_refs(refs, meta, from, annotation->elements[i].value, depth + 1);
+}
+static void dex_annotation_set_refs(cJSON *refs, jd_meta_dex *meta, const char *from, annotation_set_item *set) {
+    if (set) for (u4 i = 0; i < set->size; ++i)
+        if (set->entries[i].annotation_item)
+            dex_annotation_refs(refs, meta, from, set->entries[i].annotation_item->encoded_annotation, 0);
+}
+static void dex_all_annotation_refs(cJSON *refs, jd_meta_dex *meta, dex_class_def *cf, const char *from) {
+    dex_annotations_directory_item *annotations = cf->annotations;
+    if (!annotations) return;
+    dex_annotation_set_refs(refs, meta, from, annotations->class_annotation);
+    for (u4 i = 0; i < annotations->fields_size; ++i) {
+        field_annotation *field = &annotations->field_annotations[i];
+        if (field->field_idx < meta->header->field_ids_size)
+            dex_annotation_set_refs(refs, meta, dex_fid(meta, field->field_idx), field->annotation);
+    }
+    for (u4 i = 0; i < annotations->methods_size; ++i) {
+        method_annotation *method = &annotations->method_annotations[i];
+        if (method->method_idx < meta->header->method_ids_size)
+            dex_annotation_set_refs(refs, meta, dex_mid(meta, method->method_idx), method->annotation);
+    }
+    for (u4 i = 0; i < annotations->parameters_size; ++i) {
+        parameter_annotation *parameter = &annotations->parameter_annotations[i];
+        if (!parameter->annotation || parameter->method_idx >= meta->header->method_ids_size) continue;
+        const char *method = dex_mid(meta, parameter->method_idx);
+        for (u4 j = 0; j < parameter->annotation->size; ++j)
+            dex_annotation_set_refs(refs, meta, method, parameter->annotation->list[j].annotation);
+    }
 }
 static void dex_methods(cJSON *entry, jd_meta_dex *meta, encoded_method *methods, unsigned size,
                         const char *owner) {
@@ -218,6 +296,7 @@ char *browse_index_dex_json(jd_meta_dex *meta, dex_class_def *cf) {
         dex_methods(entry, meta, data->direct_methods, data->direct_methods_size, name);
         dex_methods(entry, meta, data->virtual_methods, data->virtual_methods_size, name);
     }
+    dex_all_annotation_refs(cJSON_GetObjectItem(entry, "refs"), meta, cf, desc);
     signature_references(entry);
     char *json = class_selection_format(entry);
     cJSON_Delete(entry);

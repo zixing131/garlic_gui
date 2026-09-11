@@ -100,11 +100,20 @@ SearchDialog::SearchDialog(MainWindow *window) : QDialog(window), window_(window
     auto root = new QVBoxLayout(this);
     auto top = new QHBoxLayout;
     top->addWidget(new QLabel(tr("搜索文本：")));
-    query_ = new QLineEdit;
+    history_ = new QComboBox;
+    history_->setObjectName("searchHistory");
+    history_->setEditable(true);
+    history_->setInsertPolicy(QComboBox::NoInsert);
+    auto history = QSettings().value("search/history").toStringList();
+    history.removeDuplicates();
+    history = history.mid(0, 50);
+    history_->addItems(history);
+    history_->setCurrentIndex(-1);
+    query_ = history_->lineEdit();
     query_->setObjectName("projectQuery");
     query_->setClearButtonEnabled(true);
     query_->setPlaceholderText(tr("输入类名、方法名、字段或代码…"));
-    top->addWidget(query_, 1);
+    top->addWidget(history_, 1);
     sensitive_ = new QCheckBox(tr("区分大小写"));
     regex_ = new QCheckBox(tr("正则"));
     automatic_ = new QCheckBox(tr("自动搜索"));
@@ -269,6 +278,13 @@ void SearchDialog::startSearch(int limit) {
     limit_ = limit;
     SearchOptions o;
     o.query = query_->text();
+    if (!o.query.trimmed().isEmpty()) {
+        auto history = QSettings().value("search/history").toStringList();
+        history.removeAll(o.query); history.prepend(o.query); history = history.mid(0, 50);
+        QSettings().setValue("search/history", history);
+        QSignalBlocker block(history_), editBlock(query_);
+        history_->clear(); history_->addItems(history); history_->setEditText(o.query);
+    }
     o.package = package_->text();
     o.classes = classes_->isChecked();
     o.methods = methods_->isChecked();

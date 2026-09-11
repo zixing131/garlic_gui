@@ -34,6 +34,50 @@ class WindowTest : public QObject {
         settings.sync();
         QCOMPARE(settings.status(), QSettings::NoError);
     }
+    void searchHistoryLimit() {
+        MainWindow window;
+        SearchDialog dialog(&window);
+        auto query = dialog.findChild<QLineEdit *>("projectQuery");
+        auto history = dialog.findChild<QComboBox *>("searchHistory");
+        QVERIFY(query && history);
+        for (int i = 0; i < 55; ++i) { query->setText("term" + QString::number(i)); dialog.startSearch(); }
+        QCOMPARE(history->count(), 50);
+        QCOMPARE(history->itemText(0), QString("term54"));
+        QCOMPARE(history->itemText(49), QString("term5"));
+        query->setText("term10"); dialog.startSearch();
+        QCOMPARE(history->count(), 50); QCOMPARE(history->itemText(0), QString("term10"));
+        SearchDialog reopened(&window);
+        QCOMPARE(reopened.findChild<QComboBox *>("searchHistory")->itemText(0), QString("term10"));
+    }
+    void deferAnalysisRebuild() {
+        MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
+        window.openPath(qEnvironmentVariable("GARLIC_TEST_FIXTURES") + "/demo.jar");
+        QTRY_VERIFY_WITH_TIMEOUT(!window.backend()->busy() && !window.backend()->project()->classes().isEmpty(), 15000);
+        const auto workspace = window.backend()->workspacePath();
+        const bool previous = window.backend()->settings().deobfuscate;
+        bool asked = false, edited = false, rebuild = false;
+        QTimer timer;
+        connect(&timer, &QTimer::timeout, &window, [&] {
+            if (auto message = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) {
+                asked = true; message->button(rebuild ? QMessageBox::Yes : QMessageBox::Cancel)->click();
+            } else if (auto dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget())) {
+                if (auto box = dialog->findChild<QCheckBox *>("deobfuscate")) {
+                    box->setChecked(!box->isChecked()); edited = true; dialog->accept();
+                }
+            }
+        });
+        timer.start(20);
+        window.findChild<QAction *>("settings")->trigger();
+        QVERIFY(edited && asked);
+        QCOMPARE(window.backend()->workspacePath(), workspace);
+        QCOMPARE(window.backend()->settings().deobfuscate, !previous);
+        QVERIFY(!window.backend()->busy());
+        rebuild = true; asked = false;
+        window.findChild<QAction *>("settings")->trigger();
+        QVERIFY(asked);
+        QTRY_VERIFY_WITH_TIMEOUT(window.backend()->workspacePath() != workspace, 15000);
+        QTRY_VERIFY_WITH_TIMEOUT(!window.backend()->busy(), 15000);
+    }
     void resultNavigationAfterPresentation() {
         MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
         window.openPath(qEnvironmentVariable("GARLIC_TEST_FIXTURES") + "/demo.jar");

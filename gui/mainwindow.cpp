@@ -14,6 +14,16 @@
 #include <QtWidgets>
 #include <algorithm>
 
+namespace {
+class TreeItemDelegate : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+    void paint(QPainter *p, const QStyleOptionViewItem &option, const QModelIndex &index) const override {
+        auto clean = option; clean.state &= ~QStyle::State_HasFocus;
+        QStyledItemDelegate::paint(p, clean, index);
+    }
+};
+}
 static SourceDocument presentDocument(const Project &project, const AppSettings &settings,
                                       const QString &selectedName, const SourceDocument &raw, bool smali);
 
@@ -207,6 +217,7 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     filter_->setClearButtonEnabled(true);
     leftLayout->addWidget(filter_);
     tree_ = new QTreeView;
+    tree_->setItemDelegate(new TreeItemDelegate(tree_));
     tree_->setIconSize(QSize(16, 16));
     tree_->setObjectName("classTree");
     tree_->setUniformRowHeights(true);
@@ -808,7 +819,7 @@ void MainWindow::populateMembers(const QModelIndex &index) {
             auto child = new QStandardItem(
                 NodeIcons::icon(m.value("nodeKind").toString(), m.value("flags").toInt(),
                                 m.value("name").toString() == "<init>"),
-                backend_.project()->symbolName(id) + m.value("descriptor").toString());
+                backend_.project()->symbolName(id) + backend_.project()->displayDescriptor(m.value("descriptor").toString()));
             child->setData(m.value("descriptor").toString(), Qt::UserRole + 5);
             child->setData(id, Qt::UserRole + 1);
             child->setData(name + " " + child->text(), Qt::UserRole + 2);
@@ -1230,7 +1241,7 @@ void MainWindow::applyAliasChanges(const QHash<QString, QString> &aliases, const
             const auto id = child->data(Qt::UserRole + 1).toString();
             if (id.isEmpty() || !id.contains("->")) continue;
             const auto descriptor = child->data(Qt::UserRole + 5).toString();
-            child->setText(backend_.project()->symbolName(id) + descriptor);
+            child->setText(backend_.project()->symbolName(id) + backend_.project()->displayDescriptor(descriptor));
             child->setData(owner + " " + child->text(), Qt::UserRole + 2);
         }
     };

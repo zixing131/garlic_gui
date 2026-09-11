@@ -31,9 +31,19 @@ struct ReferenceDocument {
     QJsonObject hit(const SourceSpan &span) const {
         return {{"symbol", span.id}, {"occurrence", occurrences.value(span.start)}};
     }
-    int start(const QString &from) const { return declarations.value(from, -1); }
+    int start(const QString &from) const {
+        const int declaration = declarations.value(from, -1);
+        if (declaration < 0) return -1;
+        int row = line(declaration) - 1;
+        while (row > 0) {
+            const auto previous = doc.text.mid(lines[row - 1], lines[row] - lines[row - 1]).trimmed();
+            if (!previous.startsWith('@')) break;
+            --row;
+        }
+        return lines[row];
+    }
     int end(const QString &from) const {
-        const int at = start(from);
+        const int at = declarations.value(from, -1);
         if (at < 0 || !from.contains("->")) return doc.text.size();
         const auto next = std::upper_bound(members.cbegin(), members.cend(), at,
             [](int p, const SourceSpan &s) { return p < s.start; });
@@ -381,7 +391,7 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
                 found = true;
                 if (seen.contains(key)) continue;
                 seen.insert(key);
-                rows.append(QJsonObject{{"from", doc.container(span.start, from)},
+                rows.append(QJsonObject{{"from", from},
                                         {"hit", doc.hit(span)}, {"line", line}, {"text", doc.text(span.start)}, {"highlights", doc.highlights(span.start)}});
             }
             if (found) resolvedMethods.insert(from);
