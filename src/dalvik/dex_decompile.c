@@ -146,7 +146,7 @@ static void dex_class_source_save_dir(jd_dex *dex, jsource_file *jf)
         char *parent = str_dup(path), *slash = strrchr(parent, '/');
         if (slash) { *slash = 0; mkdir_p(parent); }
     } else {
-        string full_dir = str_create("%s/%s", meta->source_dir, jf->pname);
+        string full_dir = str_create("%s/%s", meta->source_dir, jf->pname ? jf->pname : "");
         mkdir_p(full_dir);
         path = str_create("%s/%s.java", full_dir, jf->sname);
     }
@@ -166,7 +166,7 @@ FILE* dex_class_smali_save_dir(jd_dex *dex, dex_class_def *cf)
     string sname = class_simple_name_without_primitive(fname);
     string pname = class_package_name_of(fname);
 
-    string full_dir = str_create("%s/%s", meta->source_dir, pname);
+    string full_dir = str_create("%s/%s", meta->source_dir, pname ? pname : "");
     mkdir_p(full_dir);
 
     string path = str_create("%s/%s.smali", full_dir, sname);
@@ -205,8 +205,6 @@ jsource_file* dex_class_inside(jd_dex *dex,
     jf->fname = class_full_name(desc);
     jf->sname = class_simple_name_without_primitive(jf->fname);
     jf->pname = class_package_name(jf);
-    if (jf->pname == NULL)
-        jf->pname = (string) g_str_default;
     jf->imports = trie_create_node("");
     jf->meta = dex;
     jf->jclass = cf;

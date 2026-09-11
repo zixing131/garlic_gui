@@ -81,13 +81,24 @@ int class_selection_close(void)
     return selection_error ? 1 : 0;
 }
 
+/* Formatting may run concurrently while the caller keeps origin stable. Only
+ * the ordered producer writes the stream and updates its error state. */
+char *class_selection_format(cJSON *entry)
+{
+    const cJSON *name = cJSON_GetObjectItem(entry, "name");
+    if (name && name->valuestring && excluded(name->valuestring, strlen(name->valuestring))) return strdup("");
+    if (origin) cJSON_AddStringToObject(entry, "origin", origin);
+    return cJSON_PrintUnformatted(entry);
+}
+void class_selection_write_line(const char *line)
+{
+    if (!index_stream) return;
+    if (!line || (*line && fprintf(index_stream, "%s\n", line) < 0)) selection_error = 1;
+}
 void class_selection_write(cJSON *entry)
 {
     if (!index_stream) return;
-    const cJSON *name=cJSON_GetObjectItem(entry,"name");
-    if(name && name->valuestring && excluded(name->valuestring,strlen(name->valuestring))) return;
-    if (origin) cJSON_AddStringToObject(entry, "origin", origin);
-    char *json=cJSON_PrintUnformatted(entry);
-    if (!json || fprintf(index_stream,"%s\n",json)<0) selection_error=1;
+    char *json = class_selection_format(entry);
+    class_selection_write_line(json);
     free(json);
 }

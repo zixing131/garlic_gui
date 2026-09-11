@@ -126,6 +126,22 @@ QJsonArray Project::members(const QString &name, bool methods) const {
     return info(name).value(methods ? "methods" : "fields").toArray();
 }
 QJsonArray Project::xrefs(const QString &id) const {
+    // Most methods have only a handful of references. Keep their dedup keys
+    // inline; switch to hashing for large methods to retain linear complexity.
+    struct Seen {
+        quint64 small[16]{};
+        int size = 0;
+        QSet<quint64> large;
+        bool insert(quint64 key) {
+            if (size < 16) {
+                for (int i = 0; i < size; ++i) if (small[i] == key) return false;
+                small[size++] = key; return true;
+            }
+            if (large.isEmpty()) for (auto value : small) large.insert(value);
+            if (large.contains(key)) return false;
+            large.insert(key); return true;
+        }
+    };
     std::lock_guard<std::mutex> guard(referenceIndex_->lock);
     if (!referenceIndex_->ready) {
         QHash<QString, QPair<int, int>> canonical;
@@ -147,11 +163,10 @@ QJsonArray Project::xrefs(const QString &id) const {
             return result;
         };
         auto add = [&](const QPair<int, int> &target, int offset, const ReferencePosition &position,
-                       QSet<quint64> &seen) {
+                       Seen &seen) {
             if (target.first < 0) return;
             const quint64 key = (quint64(quint32(target.first)) << 32) | quint32(offset);
-            if (seen.contains(key)) return;
-            seen.insert(key);
+            if (!seen.insert(key)) return;
             referenceIndex_->positions[target.first].append(position);
             if (target.second != target.first)
                 referenceIndex_->positions[target.second].append(position);
@@ -169,7 +184,7 @@ QJsonArray Project::xrefs(const QString &id) const {
                     const auto from = g.key();
                     const int group = referenceIndex_->groups.size();
                     referenceIndex_->groups.append({it.key(), from});
-                    QSet<quint64> seen;
+                    Seen seen;
                     const auto rows = g.value().toArray();
                     for (int i = 0; i < rows.size(); ++i) {
                         const auto row = rows[i].toArray();
@@ -184,7 +199,7 @@ QJsonArray Project::xrefs(const QString &id) const {
             } else {
                 const int group = referenceIndex_->groups.size();
                 referenceIndex_->groups.append({it.key(), {}});
-                QHash<QString, QSet<quint64>> seen;
+                QHash<QString, Seen> seen;
                 const auto rows = refs.toArray();
                 for (int i = 0; i < rows.size(); ++i) {
                     const auto ref = rows[i].toObject();

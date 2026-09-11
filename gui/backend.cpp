@@ -154,9 +154,10 @@ void Backend::start(Job job, const QStringList &arguments) {
     job_ = job;
     canceled_ = false;
     errorTail_.clear();
+    indexProgress_ = -1;
     process_.setWorkingDirectory(workspace_->path());
     applyEnvironment(process_, jobDir_);
-    if (job == Job::Source && QFileInfo(arguments.value(0)).suffix().compare("apk", Qt::CaseInsensitive) == 0) {
+    if (job == Job::Source && QStringList{"apk", "zip", "jar", "war"}.contains(QFileInfo(arguments.value(0)).suffix().toLower())) {
         const auto origin = project_.info(argumentClass_).value("origin").toString();
         if (!origin.isEmpty() && origin.endsWith(".dex", Qt::CaseSensitive)) {
             auto environment = process_.processEnvironment();
@@ -222,7 +223,7 @@ void Backend::openPaths(const QStringList &paths) {
     metadataPreparing_ = false;
     directoryOnly_ = paths.size() == 1 &&
         (property("fastOpen").toBool() ||
-         (QStringList{"apk", "apks", "xapk", "dex"}.contains(ext) && QFileInfo(path).size() >= 32LL * 1048576));
+         (QStringList{"apk", "apks", "xapk", "dex", "zip"}.contains(ext) && QFileInfo(path).size() >= 32LL * 1048576));
     metadataReady_ = !directoryOnly_;
     sourcesAfterMetadata_ = false;
     if (searchWarmControl_)
@@ -380,12 +381,18 @@ void Backend::readOutput() {
     const QString text = QString::fromUtf8(bytes);
     errorTail_ = (errorTail_ + text).right(4000);
     if (job_ == Job::Index) {
-        static const QRegularExpression progress("GARLIC_INDEX_PROGRESS (\\d+) (\\d+)");
+        static const QRegularExpression progress("GARLIC_INDEX_PROGRESS (\\d+) (\\d+)\\r?\\n");
         auto matches = progress.globalMatch(errorTail_);
+        int percent = -1;
         while (matches.hasNext()) {
             const auto match = matches.next();
             const int total = match.captured(2).toInt();
-            if (total > 0) emit loadProgress(tr("读取 DEX"), match.captured(1).toInt() * 100 / total);
+            if (total > 0) percent = qBound(0, match.captured(1).toInt() * 100 / total, 100);
+        }
+        // The tail contains older messages too; do not replay 0..100 on every read.
+        if (percent >= 0 && percent != indexProgress_) {
+            indexProgress_ = percent;
+            emit loadProgress(tr("读取 DEX"), percent);
         }
     }
     if (!text.trimmed().isEmpty())

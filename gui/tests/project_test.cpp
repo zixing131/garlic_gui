@@ -6,6 +6,22 @@
 class ProjectTest : public QObject {
     Q_OBJECT
   private slots:
+    void referenceDedupLargeGroup() {
+        Project project;
+        QJsonArray rows;
+        for (int i = 0; i < 24; ++i) {
+            const QJsonObject ref{{"from", "LCaller;"}, {"target", "LTarget;"}, {"offset", i}};
+            rows.append(ref); rows.append(ref);
+        }
+        rows.append(rows.first());
+        project.addClass({{"name", "Caller"}, {"refs", rows}});
+        QCOMPARE(project.xrefs("LTarget;").size(), 24);
+        QJsonArray compact;
+        for (const auto &v : rows) compact.append(QJsonArray{0, v.toObject().value("offset")});
+        project.addClass({{"name", "Caller"}, {"ref_targets", QJsonArray{"LTarget;"}},
+            {"refs", QJsonObject{{"LCaller;", compact}}}});
+        QCOMPARE(project.xrefs("LTarget;").size(), 24);
+    }
     void referenceIndexMutationAndAliases() {
         Project project;
         auto entry = [](const QString &target) {

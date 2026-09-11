@@ -6,6 +6,8 @@
  * Indexing returns false so callers never schedule decompilation work. */
 #include "cJSON.h"
 void class_selection_write(cJSON *entry);
+char *class_selection_format(cJSON *entry);
+void class_selection_write_line(const char *line);
 int class_selection_open(const char *index_path, const char *class_name);
 int class_selection_accept(const char *name);
 int class_selection_close(void);

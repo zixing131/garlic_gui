@@ -8,6 +8,28 @@ class BackendTest : public QObject {
     QString fixtures_ = qEnvironmentVariable("GARLIC_TEST_FIXTURES");
     QString engine_ = qEnvironmentVariable("GARLIC_TEST_ENGINE");
   private slots:
+    void realNestedArchive() {
+        const auto input = qEnvironmentVariable("GARLIC_TEST_ARCHIVE");
+        if (input.isEmpty()) QSKIP("Set GARLIC_TEST_ARCHIVE for nested archive profiling");
+        Backend backend; backend.setEngine(engine_);
+        auto settings = backend.settings(); settings.background = false; settings.deobfuscate = false;
+        backend.configure(settings);
+        QSignalSpy indexed(&backend, &Backend::indexed), errors(&backend, &Backend::failed);
+        QElapsedTimer timer; timer.start(); backend.open(input);
+        QTRY_VERIFY_WITH_TIMEOUT(!indexed.isEmpty() || !errors.isEmpty(), 60000);
+        QVERIFY2(errors.isEmpty(), qPrintable(errors.isEmpty() ? QString() : errors.first()[0].toString()));
+        qInfo() << "Archive directory ms/classes" << timer.elapsed() << backend.project()->classCount();
+        QVERIFY(backend.project()->classCount() > 0);
+        QTRY_VERIFY_WITH_TIMEOUT(backend.metadataReady() || !errors.isEmpty(), 120000);
+        QVERIFY(errors.isEmpty());
+        qInfo() << "Archive metadata ms" << timer.elapsed();
+        const auto name = backend.project()->classes().first();
+        QSignalSpy source(&backend, &Backend::sourceReady); timer.restart(); backend.request(name, false);
+        QTRY_VERIFY_WITH_TIMEOUT(!source.isEmpty() || !errors.isEmpty(), 60000);
+        QVERIFY2(errors.isEmpty(), qPrintable(errors.isEmpty() ? QString() : errors.first()[0].toString()));
+        QVERIFY(!source.isEmpty());
+        qInfo() << "Archive source ms/class" << timer.elapsed() << name;
+    }
     void packedBackgroundSources() {
         Backend backend;
         backend.setEngine(engine_);

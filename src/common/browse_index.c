@@ -1,4 +1,5 @@
 #include "browse_index.h"
+#include "libs/threadpool/threadpool.h"
 #include "decompiler/klass.h"
 #include "cJSON.h"
 #include "class_selection.h"
@@ -178,20 +179,22 @@ static void dex_methods(cJSON *entry, jd_meta_dex *meta, encoded_method *methods
         }
     }
 }
-void browse_index_dex(jd_meta_dex *meta, dex_class_def *cf) {
-    mem_pool *previous_pool = global_pool;
-    global_pool = mem_create_pool();
+char *browse_index_dex_json(jd_meta_dex *meta, dex_class_def *cf) {
+    thread_local_data *tls = get_thread_local_data();
+    mem_pool *previous_pool = tls ? tls->pool : global_pool;
+    mem_pool *scratch = mem_create_pool();
+    if (tls) tls->pool = scratch; else global_pool = scratch;
     string desc = dex_str_of_type_id(meta, cf->class_idx);
     string name = str_dup(desc + 1);
     name[strlen(name) - 1] = 0;
     cJSON *entry = class_json(name, cf->access_flags, cf->is_inner || cf->is_anonymous);
     const char *directory_mode = getenv("GARLIC_DIRECTORY_INDEX");
     if (directory_mode && !strcmp(directory_mode, "names")) {
-        class_selection_write(entry);
+        char *json = class_selection_format(entry);
         cJSON_Delete(entry);
-        mem_free_pool();
-        global_pool = previous_pool;
-        return;
+        mem_pool_free(scratch);
+        if (tls) tls->pool = previous_pool; else global_pool = previous_pool;
+        return json;
     }
     if (cf->superclass_idx < meta->header->type_ids_size)
         reference(cJSON_GetObjectItem(entry, "refs"), desc,
@@ -216,10 +219,16 @@ void browse_index_dex(jd_meta_dex *meta, dex_class_def *cf) {
         dex_methods(entry, meta, data->virtual_methods, data->virtual_methods_size, name);
     }
     signature_references(entry);
-    class_selection_write(entry);
+    char *json = class_selection_format(entry);
     cJSON_Delete(entry);
-    mem_free_pool();
-    global_pool = previous_pool;
+    mem_pool_free(scratch);
+    if (tls) tls->pool = previous_pool; else global_pool = previous_pool;
+    return json;
+}
+void browse_index_dex(jd_meta_dex *meta, dex_class_def *cf) {
+    char *json = browse_index_dex_json(meta, cf);
+    class_selection_write_line(json);
+    free(json);
 }
 void browse_index_jvm(jclass_file *jc, int inner) {
     mem_pool *previous_pool = global_pool;

@@ -97,6 +97,7 @@ class Backend : public QObject {
     QProcess process_;
     QString engine_, input_, currentName_, jobDir_, exportDir_;
     QString errorTail_;
+    int indexProgress_ = -1;
     std::shared_ptr<QTemporaryDir> workspace_;
     QStringList ownedWorkspaces_;
     QList<std::shared_ptr<std::atomic_bool>> metadataEngines_;

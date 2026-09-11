@@ -156,6 +156,56 @@ void apk_smali_thread_task(jd_dex_task *task)
     apk_status(apk);
 }
 
+/* Bounded batches preserve DEX/class order (and duplicate-class precedence),
+ * while independent workers build JSON with their own scratch pools. */
+typedef struct {
+    jd_meta_dex *meta;
+    dex_class_def *cf;
+    pthread_mutex_t *lock;
+    pthread_cond_t *changed;
+    char *json;
+    int ready;
+} index_class_job;
+static void index_class_worker(void *opaque) {
+    index_class_job *job = opaque;
+    char *json = browse_index_dex_json(job->meta, job->cf);
+    pthread_mutex_lock(job->lock);
+    job->json = json; job->ready = 1;
+    pthread_cond_broadcast(job->changed);
+    pthread_mutex_unlock(job->lock);
+}
+static void index_dex_classes(jd_apk *apk, jd_meta_dex *meta) {
+    if (!apk->threadpool) {
+        for (u4 j = 0; j < meta->header->class_defs_size; ++j) browse_index_dex(meta, &meta->class_defs[j]);
+        return;
+    }
+    pthread_mutex_t lock; pthread_mutex_init(&lock, NULL);
+    pthread_cond_t changed; pthread_cond_init(&changed, NULL);
+    for (u4 start = 0; start < meta->header->class_defs_size; start += 128) {
+        index_class_job jobs[128] = {0};
+        u4 count = meta->header->class_defs_size - start;
+        if (count > 128) count = 128;
+        for (u4 i = 0; i < count; ++i) {
+            jobs[i].meta = meta; jobs[i].cf = &meta->class_defs[start + i];
+            jobs[i].lock = &lock; jobs[i].changed = &changed;
+            if (threadpool_add(apk->threadpool, index_class_worker, &jobs[i], 0) != 0) {
+                // A lock/notification error may occur after enqueueing. Never
+                // retry the same stack job and risk executing it twice.
+                fprintf(stderr, "Failed to queue metadata index task\n");
+                exit(EXIT_FAILURE);
+            }
+        }
+        for (u4 i = 0; i < count; ++i) {
+            pthread_mutex_lock(&lock);
+            while (!jobs[i].ready) pthread_cond_wait(&changed, &lock);
+            char *json = jobs[i].json;
+            pthread_mutex_unlock(&lock);
+            class_selection_write_line(json); free(json);
+        }
+    }
+    pthread_cond_destroy(&changed); pthread_mutex_destroy(&lock);
+}
+
 static void apk_process_dex_from_zip(jd_apk *apk, struct zip_t *zip, const char *chain, index_inflater *inflater)
 {
     if (zip == NULL) return;
@@ -257,12 +307,17 @@ static void apk_process_dex_from_zip(jd_apk *apk, struct zip_t *zip, const char 
             continue;
         }
         jd_meta_dex *meta = parse_dex_from_buffer(buf, buf_size);
+        if (class_selection_indexing()) {
+            index_dex_classes(apk, meta);
+            mem_pool_free(meta->pool); // All formatted rows are written; no task retains this DEX.
+            fprintf(stderr, "GARLIC_INDEX_PROGRESS %d %d\n", ++dex_done, dex_total);
+            continue;
+        }
         jd_dex *dex = dex_init_without_thread(meta);
         meta->source_dir = apk->save_dir;
 
         for (int j = 0; j < meta->header->class_defs_size; ++j) {
             dex_class_def *cf = &meta->class_defs[j];
-            if (class_selection_indexing()) { browse_index_dex(meta, cf); continue; }
             if (apk->type == JD_DEX_TASK_DECOMPILE && !class_selection_explicit()) {
                 if (dex_class_is_inner_class(dex->meta, cf) ||
                     dex_class_is_anonymous_class(dex->meta, cf))
@@ -378,7 +433,7 @@ static void archive_decompile_analyse_inner(string path,
     apk->type = type;
     apk->allow_nested_dex = allow_nested_dex;
 
-    if (thread_num > 1 && !class_selection_indexing()) {
+    if (thread_num > 1) {
         apk->threadpool = threadpool_create_in(apk->pool, thread_num, 0);
     } else {
         apk->threadpool = NULL;

@@ -2,6 +2,9 @@
 """Integration contract for the GUI's CLI index and single-class requests."""
 from contextlib import contextmanager
 import json
+import hashlib
+import struct
+import zlib
 import os
 import shutil
 from pathlib import Path
@@ -126,6 +129,46 @@ with test_workspace() as root:
     with zipfile.ZipFile(archive_path, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
         archive.write(fixtures / 'cases.dex', 'classes.dex')
         archive.write(fixtures / 'flattened.dex', 'classes2.dex')
+    # Root-package classes must not acquire a fictitious "default" package/path.
+    data = bytearray((fixtures / 'cases.dex').read_bytes())
+    original = b'\x10Ldemo/cases/Foo;\0'
+    at = data.index(original)
+    replacement = b'\x05LAUX;\0'
+    data[at:at + len(original)] = replacement + b'\0' * (len(original) - len(replacement))
+    data[12:32] = hashlib.sha1(data[32:]).digest()
+    struct.pack_into('<I', data, 8, zlib.adler32(data[12:]) & 0xffffffff)
+    root_dex = root / 'root-package.dex'; root_dex.write_bytes(data)
+    for smali in (False, True):
+        destination = root / ('root-smali' if smali else 'root-java')
+        args = [str(engine), str(root_dex), '-c', 'AUX', '-o', str(destination)]
+        if smali: args.append('-s')
+        run(args, check=True, capture_output=True, timeout=20)
+        text = (destination / ('AUX.smali' if smali else 'AUX.java')).read_text()
+        assert 'package default;' not in text
+        assert ('LAUX;' if smali else 'class AUX') in text
+    # Full and directory indexing both report progress for DEX in subdirectories.
+    nested_zip = root / 'nested-dex.zip'
+    with zipfile.ZipFile(nested_zip, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.write(fixtures / 'cases.dex', 'fix/one.dex')
+        archive.write(fixtures / 'flattened.dex', 'fix/deeper/two.dex')
+    nested_listings = []
+    for mode in ('full', 'names'):
+        index = root / ('nested-' + mode + '.jsonl')
+        environment = dict(os.environ, GARLIC_COMPACT_INDEX='2')
+        environment.pop('GARLIC_DIRECTORY_INDEX', None)
+        if mode == 'names': environment['GARLIC_DIRECTORY_INDEX'] = 'names'
+        result = run([str(engine), str(nested_zip), '-I', str(index), '-o', str(root / 'nested-out')],
+                     env=environment, check=True, capture_output=True, timeout=20)
+        assert b'GARLIC_INDEX_PROGRESS 1 2' in result.stderr
+        assert b'GARLIC_INDEX_PROGRESS 2 2' in result.stderr
+        rows = [json.loads(line) for line in index.read_text(encoding='utf-8').splitlines()]
+        assert {row['origin'] for row in rows} == {'fix/one.dex', 'fix/deeper/two.dex'}
+        nested_listings.append([{key: row.get(key) for key in ('name','flags','kind','inner','origin')} for row in rows])
+    assert nested_listings[0] == nested_listings[1]
+    environment = dict(os.environ, GARLIC_DEX_ENTRY='fix/one.dex')
+    run([str(engine), str(nested_zip), '-c', 'demo/cases/Foo', '-o', str(root / 'nested-source')],
+        env=environment, check=True, capture_output=True, timeout=20)
+    assert 'return 11;' in (root / 'nested-source/demo/cases/Foo.java').read_text()
     # Selecting the indexed DEX must preserve single-class output exactly.
     outputs = []
     for entry in ('', 'classes.dex'):
@@ -138,7 +181,7 @@ with test_workspace() as root:
         outputs.append((destination / 'demo/cases/Foo.java').read_bytes())
     assert outputs[0] == outputs[1]
     listings = []
-    for mode, threads in [('full', '1'), ('names', '1'), ('names', '2')]:
+    for mode, threads in [('full', '1'), ('full', '2'), ('full', '4'), ('names', '1'), ('names', '2')]:
         index = root / ('directory-' + mode + threads + '.jsonl')
         environment = dict(os.environ, GARLIC_COMPACT_INDEX='2')
         if mode == 'names': environment['GARLIC_DIRECTORY_INDEX'] = 'names'
@@ -146,7 +189,7 @@ with test_workspace() as root:
             env=environment, check=True, capture_output=True, timeout=20)
         listings.append([{key: row.get(key) for key in ('name', 'flags', 'kind', 'inner', 'origin')}
                          for row in map(json.loads, index.read_text(encoding='utf-8').splitlines())])
-    assert listings[0] == listings[1] == listings[2], listings
+    assert all(listing == listings[0] for listing in listings), listings
     with zipfile.ZipFile(root / 'broken.apk', 'w') as archive:
         archive.writestr('classes.dex', b'dex\n035\0' + b'\xff' * 104)
     result = run([str(engine), str(root / 'broken.apk'), '-I', str(root / 'broken.jsonl'),
