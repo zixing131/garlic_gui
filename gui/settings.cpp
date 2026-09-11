@@ -40,7 +40,7 @@ AppSettings AppSettings::fromJson(const QJsonObject &j) {
     s.mcpTransport = j.value("mcpTransport").toString() == "http" ? "http" : "stdio";
     s.mcpHost = j.value("mcpHost").toString("127.0.0.1").trimmed();
     s.cacheMode = j.value("cacheMode").toString() == "memory" ? "memory" : "disk";
-    s.showMemory = j.value("showMemory").toBool(false);
+    s.showMemory = j.value("showMemory").toBool(true);
     s.deobfuscate = j.value("deobfuscate").toBool(false);
     s.unflatten = j.value("unflatten").toBool(false);
     s.simplifyControlFlow = j.value("simplifyControlFlow").toBool(false);

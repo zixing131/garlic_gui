@@ -14,6 +14,7 @@ class SearchDialog : public QDialog {
   public:
     explicit SearchDialog(MainWindow *window);
     void startSearch(int limit = 50);
+    void setPackage(const QString &name);
 
   protected:
     void resizeEvent(QResizeEvent *event) override;

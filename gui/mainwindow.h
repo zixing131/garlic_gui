@@ -85,6 +85,7 @@ class MainWindow : public QMainWindow {
     void searchDialog();
     void renameSymbol(const QString &id);
     void refreshAliases();
+    QJsonObject displayedAliases_;
     SourceDocument present(const SourceDocument &raw, bool smali) const;
     void saveProject();
     void openProject();

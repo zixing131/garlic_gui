@@ -94,6 +94,8 @@ class Project : public QObject {
     std::shared_ptr<OverrideIndex> overrideIndex_ = std::make_shared<OverrideIndex>();
     struct SymbolIndex { std::mutex lock; bool ready = false; QJsonArray entries; };
     std::shared_ptr<SymbolIndex> symbolIndex_ = std::make_shared<SymbolIndex>();
+    struct LocalIndex { std::mutex lock; QHash<QString, QHash<QString, QString>> methods; };
+    std::shared_ptr<LocalIndex> localIndex_ = std::make_shared<LocalIndex>();
     struct AliasIndex { std::mutex lock; bool ready = false; QString version; QHash<QString, QStringList> classes; };
     std::shared_ptr<AliasIndex> aliasIndex_ = std::make_shared<AliasIndex>();
     QHash<QString, QStringList> classAliases() const;

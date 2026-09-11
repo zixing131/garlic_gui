@@ -33,6 +33,8 @@ class CodeEditor : public QPlainTextEdit {
     void resizeEvent(QResizeEvent *event) override;
 
   private:
+    void scheduleHighlight();
+    int highlightGeneration_ = 0;
     void highlightCurrentLine();
     void updateHighlights();
     QRegularExpression findExpression(const QString &query, bool caseSensitive, bool wholeWords,

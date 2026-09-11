@@ -6,6 +6,55 @@
 class ProjectTest : public QObject {
     Q_OBJECT
   private slots:
+    void localVariableAliases() {
+        QTemporaryDir directory;
+        Project project;
+        QFile input(directory.path() + "/locals.class");
+        QVERIFY(input.open(QIODevice::WriteOnly)); input.write("fixture"); input.close();
+        project.reset(input.fileName());
+        const QString first = "LExample;->first(I)I", second = "LExample;->second(I)I";
+        project.addClass({{"name", "Example"}, {"methods", QJsonArray{
+            QJsonObject{{"id", first}, {"name", "first"}},
+            QJsonObject{{"id", second}, {"name", "second"}}}}});
+        const QString text = "class Example { int first(int value) { { int temp = value; value += temp; } "
+                             "{ int temp = 2; value += temp; } return value; } "
+                             "int second(int value) { return value; } }";
+        const auto path = directory.path() + "/Example.java";
+        QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly)); file.write(text.toUtf8()); file.close();
+        QJsonArray records;
+        for (const auto &entry : {qMakePair(first, QString("first")), qMakePair(second, QString("second"))}) {
+            const int start = text.indexOf(entry.second);
+            records.append(QJsonObject{{"id", entry.first}, {"token", entry.second},
+                {"start", start}, {"end", start + entry.second.size()}, {"declaration", true}});
+        }
+        QFile map(directory.path() + "/Example.map.json"); QVERIFY(map.open(QIODevice::WriteOnly));
+        map.write(QJsonDocument(records).toJson()); map.close();
+        auto raw = project.document("Example", false, path, false);
+        QString parameter, temp;
+        QSet<QString> locals;
+        for (const auto &span : raw.spans) if (span.declaration && span.id.contains("@local:")) {
+            locals.insert(span.id);
+            if (span.id.startsWith(first) && span.id.endsWith(":value")) parameter = span.id;
+            if (temp.isEmpty() && span.id.endsWith(":temp")) temp = span.id;
+        }
+        QCOMPARE(locals.size(), 4);
+        QVERIFY(!parameter.isEmpty()); QVERIFY(!temp.isEmpty());
+        QVERIFY(!project.rename(parameter, "temp").isEmpty());
+        QVERIFY(project.rename(parameter, "input").isEmpty());
+        QVERIFY(!project.rename(temp, "input").isEmpty());
+        QVERIFY(project.rename(temp, "scratch").isEmpty());
+        const auto renamed = project.applyAliases(raw, false).text;
+        QVERIFY(renamed.contains("first(int input)"));
+        QVERIFY(renamed.contains("int scratch = input; input += scratch;"));
+        QVERIFY(renamed.contains("int temp = 2; input += temp;"));
+        QVERIFY(renamed.contains("second(int value) { return value; }"));
+        QString error;
+        const auto saved = directory.path() + "/project.json";
+        QVERIFY(project.save(saved, &error));
+        project.undoRename(); project.undoRename();
+        QVERIFY2(project.loadAliases(saved, &error), qPrintable(error));
+        QCOMPARE(project.applyAliases(raw, false).text, renamed);
+    }
     void compactReferenceIndex() {
         const QString from = "Ldemo/Main;->call()V", target = "Ldemo/Base;->run()V";
         const QJsonObject inherited{{"from", "Ldemo/Main;"},

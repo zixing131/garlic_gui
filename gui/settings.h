@@ -8,7 +8,7 @@ struct AppSettings {
     bool showNotice = true, mcpEnabled = false;
     int mcpPort = 8650;
     QString mcpTransport = "stdio", mcpHost = "127.0.0.1", cacheMode = "disk";
-    bool showMemory = false;
+    bool showMemory = true;
     bool deobfuscate = false, simplifyControlFlow = false;
     bool unflatten = false;
     QStringList excluded;

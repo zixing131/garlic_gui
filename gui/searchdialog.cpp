@@ -304,3 +304,10 @@ void SearchDialog::resizeEvent(QResizeEvent *event) {
     if (filters_)
         filters_->setDirection(width() < 900 ? QBoxLayout::TopToBottom : QBoxLayout::LeftToRight);
 }
+
+void SearchDialog::setPackage(const QString &name) {
+    package_->setText(QString(name).replace('/', '.'));
+    query_->setFocus();
+    query_->selectAll();
+    startSearch();
+}

@@ -28,6 +28,12 @@ inline QString garlicStyleSheet() { return R"(
         QTabBar::tab:selected { background: #111b26; border-bottom: 2px solid #97d6b1; }
         QStatusBar { color: #95a8b9; background: #14202b; padding: 3px; }
         QSplitter::handle { background: #2a3949; width: 1px; }
+        QScrollBar:vertical { background: #14202b; width: 12px; margin: 0; }
+        QScrollBar:horizontal { background: #14202b; height: 12px; margin: 0; }
+        QScrollBar::handle { background: #354454; border-radius: 5px; min-width: 20px; min-height: 20px; }
+        QScrollBar::handle:hover { background: #8c9dad; }
+        QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
+        QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
         QProgressBar { border: 0; background: #243446; border-radius: 4px; }
         QProgressBar::chunk { background: #97d6b1; }
     )"; }

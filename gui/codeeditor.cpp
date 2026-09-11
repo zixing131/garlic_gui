@@ -12,6 +12,9 @@
 #include <QSyntaxHighlighter>
 #include <QTextBlock>
 #include <algorithm>
+#include <QTimer>
+#include <QScrollBar>
+#include <QElapsedTimer>
 
 namespace {
 class Gutter : public QWidget {
@@ -30,6 +33,11 @@ class Highlighter : public QSyntaxHighlighter {
 
   protected:
     void highlightBlock(const QString &text) override {
+        if (document()->property("deferHighlight").toBool() &&
+            !document()->property("highlightChunk").toBool()) {
+            setCurrentBlockState(0);
+            return;
+        }
         // Bound work for pathological single-line decompiler output.
         if (text.size() > 20000)
             return;
@@ -222,15 +230,19 @@ void CodeEditor::setSource(const SourceDocument &source) {
         }
     }
     const int position = textCursor().position();
+    const int vertical = verticalScrollBar()->value(), horizontal = horizontalScrollBar()->value();
     highlighter_->setDocument(nullptr);
     setPlainText(document.text);
-    // Very large documents remain navigable without an expensive synchronous rehighlight.
-    if (document.text.size() <= 512 * 1024)
-        highlighter_->setDocument(this->document());
+    this->document()->setProperty("deferHighlight", document.text.size() > 512 * 1024);
+    highlighter_->setDocument(this->document());
+    if (this->document()->property("deferHighlight").toBool()) scheduleHighlight();
+    else ++highlightGeneration_;
     spans_ = document.spans;
     auto cursor = textCursor();
     cursor.setPosition(qMin(position, int(document.text.size())));
     setTextCursor(cursor);
+    verticalScrollBar()->setValue(vertical);
+    horizontalScrollBar()->setValue(horizontal);
     updateHighlights();
 }
 QString CodeEditor::symbolAtCursor() const {
@@ -434,14 +446,38 @@ void CodeEditor::clearFindHighlights() {
     updateHighlights();
 }
 void CodeEditor::setTheme(bool light) {
+    const bool changed = light_ != light;
     light_ = light;
     document()->setProperty("lightTheme", light);
     setStyleSheet(light ? "QPlainTextEdit { background: #ffffff; color: #243446; "
                           "selection-background-color: #bdd9f7; selection-color: #12293d; }"
                         : "QPlainTextEdit { background: #111b26; color: #dce5ee; "
                           "selection-background-color: #38635b; }");
-    if (highlighter_->document())
-        highlighter_->rehighlight();
+    if (changed && highlighter_->document()) scheduleHighlight();
     highlightCurrentLine();
     gutter_->update();
+}
+
+void CodeEditor::scheduleHighlight() {
+    const int generation = ++highlightGeneration_;
+    if (!document()->property("deferHighlight").toBool()) {
+        if (highlighter_->document()) highlighter_->rehighlight();
+        return;
+    }
+    auto block = std::make_shared<QTextBlock>(document()->begin());
+    auto step = std::make_shared<std::function<void()>>();
+    std::weak_ptr<std::function<void()>> weak = step;
+    *step = [this, block, generation, weak] {
+        if (generation != highlightGeneration_) return;
+        QElapsedTimer budget; budget.start();
+        document()->setProperty("highlightChunk", true);
+        while (block->isValid() && budget.elapsed() < 5) {
+            highlighter_->rehighlightBlock(*block);
+            *block = block->next();
+        }
+        document()->setProperty("highlightChunk", false);
+        if (block->isValid())
+            if (auto next = weak.lock()) QTimer::singleShot(0, this, [next] { (*next)(); });
+    };
+    QTimer::singleShot(0, this, [step] { (*step)(); });
 }

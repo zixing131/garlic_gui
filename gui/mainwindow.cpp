@@ -398,6 +398,10 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
         QMenu menu;
         if (index.data(Qt::UserRole + 4) == "package") {
             const auto name = index.data(Qt::UserRole + 2).toString();
+            menu.addAction(tr("在此包下搜索"), this, [this, name] {
+                searchDialog();
+                if (searchDialog_) searchDialog_->setPackage(name);
+            });
             menu.addAction(tr("复制包名"), this, [name] { QApplication::clipboard()->setText(name); });
             menu.exec(tree_->viewport()->mapToGlobal(pos));
             return;
@@ -482,7 +486,8 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     connect(&backend_, &Backend::metadataCompleted, this, [this] {
         if (backend_.project()->hasAliases()) {
             refreshAliases();
-        } else {
+        }
+        {
             // Names/kinds are unchanged: retain the 390k-class tree instead of
             // synchronously destroying and reconstructing it when metadata arrives.
             const auto pending = std::exchange(pendingMemberClasses_, {});
@@ -708,6 +713,10 @@ void MainWindow::populate(const QStringList &classes) {
         while (state->root->rowCount())
             sourceRoot_->appendRow(state->root->takeRow(0));
         classItems_ = state->items;
+        if (backend_.project()->hasAliases()) {
+            displayedAliases_ = {};
+            refreshAliases();
+        }
         if (backend_.metadataReady()) {
             const auto pending = std::exchange(pendingMemberClasses_, {});
             for (const auto &name : pending)
@@ -776,6 +785,7 @@ void MainWindow::populateMembers(const QModelIndex &index) {
                 NodeIcons::icon(m.value("nodeKind").toString(), m.value("flags").toInt(),
                                 m.value("name").toString() == "<init>"),
                 backend_.project()->symbolName(id) + m.value("descriptor").toString());
+            child->setData(m.value("descriptor").toString(), Qt::UserRole + 5);
             child->setData(id, Qt::UserRole + 1);
             child->setData(name + " " + child->text(), Qt::UserRole + 2);
             child->setToolTip(id);
@@ -883,7 +893,8 @@ void MainWindow::showSource(const QString &name, bool smali, const QString &path
                         return;
                     target->setProperty(key, false);
                     if (aliases != backend_.project()->aliasVersion() ||
-                        settings.toJson() != backend_.settings().toJson() ||
+                        settings.showMetadata != backend_.settings().showMetadata ||
+                        settings.showNotice != backend_.settings().showNotice ||
                         metadataReady != backend_.metadataReady()) {
                         showSource(name, smali, path);
                         return;
@@ -999,7 +1010,11 @@ void MainWindow::navigateTo(const QString &id, int line) {
 void MainWindow::showReferences(const QString &id) {
     if (id.isEmpty())
         return;
-    if (waitForMetadata([this, id] { showReferences(id); })) return;
+    if (!backend_.metadataReady()) {
+        status_->setText(tr("请等待索引完成后再查找引用。"));
+        backend_.prepareMetadata();
+        return;
+    }
     auto dialog = new ReferencesDialog(this, id);
     dialog->show();
 }
@@ -1030,6 +1045,15 @@ void MainWindow::renameSymbol(const QString &id) {
         QInputDialog::getText(this, tr("重命名符号"), id + tr("\n新的项目名称（保留原始字节码）："),
                               QLineEdit::Normal, backend_.project()->symbolName(id), &ok);
     if (ok) {
+        if (id.contains("@local:") && view()) {
+            const auto method = id.section("@local:", 0, 0) + "@local:";
+            for (const auto &span : view()->rawDocument(false).spans)
+                if (span.declaration && span.id != id && span.id.startsWith(method) &&
+                    backend_.project()->symbolName(span.id) == name) {
+                    QMessageBox::warning(this, tr("无法重命名"), tr("该方法中已有同名局部变量。"));
+                    return;
+                }
+        }
         const auto error = backend_.project()->rename(id, name);
         if (!error.isEmpty())
             QMessageBox::warning(this, tr("无法重命名"), error);
@@ -1038,18 +1062,88 @@ void MainWindow::renameSymbol(const QString &id) {
     }
 }
 void MainWindow::refreshAliases() {
-    populate(backend_.project()->classes());
-    for (int i = 0; i < tabs_->count(); i++) {
-        auto page = qobject_cast<ClassView *>(tabs_->widget(i));
-        if (!page)
-            continue;
-        tabs_->setTabText(i, backend_.project()->displayName(page->name()));
-        for (int mode = 0; mode < 2; mode++)
-            if (page->loaded(mode)) {
-                page->setSource(mode, present(page->rawDocument(mode), mode));
+    const auto aliases = backend_.project()->aliases();
+    QSet<QString> changed;
+    for (auto it = aliases.begin(); it != aliases.end(); ++it)
+        if (displayedAliases_.value(it.key()) != it.value()) changed.insert(it.key());
+    for (auto it = displayedAliases_.begin(); it != displayedAliases_.end(); ++it)
+        if (!aliases.contains(it.key())) changed.insert(it.key());
+    displayedAliases_ = aliases;
+    QSet<QString> owners;
+    for (const auto &id : changed) owners.insert(Project::classOf(id));
+    QSet<QString> renamedClasses;
+    for (const auto &id : changed)
+        if (!id.contains("->")) renamedClasses.insert(Project::classOf(id));
+    auto descendants = renamedClasses.values();
+    while (!descendants.isEmpty()) {
+        const auto owner = descendants.takeLast();
+        auto parent = classItems_.value(owner);
+        if (!parent) continue;
+        for (int row = 0; row < parent->rowCount(); ++row) {
+            const auto id = parent->child(row)->data(Qt::UserRole + 1).toString();
+            if (id.isEmpty() || id.contains("->")) continue;
+            const auto child = Project::classOf(id);
+            if (!renamedClasses.contains(child)) {
+                renamedClasses.insert(child); owners.insert(child); descendants << child;
             }
+        }
+    }
+    for (const auto &owner : owners) {
+        auto item = classItems_.value(owner);
+        if (!item) continue;
+        const auto label = backend_.project()->displayName(owner);
+        if (item->text() != label) {
+            item->setText(label);
+            item->setData(QString(owner).replace('/', '.') + " " + label, Qt::UserRole + 2);
+        }
+        for (int row = 0; row < item->rowCount(); ++row) {
+            auto child = item->child(row);
+            const auto id = child->data(Qt::UserRole + 1).toString();
+            if (!changed.contains(id)) continue;
+            const auto descriptor = child->data(Qt::UserRole + 5).toString();
+            child->setText(backend_.project()->symbolName(id) + descriptor);
+            child->setData(owner + " " + child->text(), Qt::UserRole + 2);
+        }
+    }
+    for (int i = 0; i < tabs_->count(); ++i) {
+        auto page = qobject_cast<ClassView *>(tabs_->widget(i));
+        if (!page) continue;
+        tabs_->setTabText(i, backend_.project()->displayName(page->name()));
+        for (bool mode : {false, true}) {
+            if (!page->loaded(mode)) continue;
+            bool affected = changed.isEmpty();
+            for (const auto &span : page->rawDocument(mode).spans)
+                if (changed.contains(span.id) ||
+                    renamedClasses.contains(Project::classOf(span.id))) { affected = true; break; }
+            if (!affected) continue;
+            auto snapshot = backend_.project()->snapshot();
+            const auto raw = page->rawDocument(mode);
+            const auto settings = backend_.settings();
+            const auto version = snapshot->aliasVersion();
+            const auto name = page->name();
+            const int generation = page->property("sourceGeneration").toInt();
+            QPointer<ClassView> target(page);
+            auto watcher = new QFutureWatcher<SourceDocument>(this);
+            connect(watcher, &QFutureWatcher<SourceDocument>::finished, this,
+                [this, watcher, target, version, generation, settings, mode] {
+                    const auto document = watcher->result();
+                    watcher->deleteLater();
+                    if (!target || generation != target->property("sourceGeneration").toInt() ||
+                        version != backend_.project()->aliasVersion()) return;
+                    if (settings.showMetadata != backend_.settings().showMetadata ||
+                        settings.showNotice != backend_.settings().showNotice) {
+                        refreshAliases();
+                        return;
+                    }
+                    target->setSource(mode, document);
+                });
+            watcher->setFuture(QtConcurrent::run([snapshot, raw, settings, name, mode] {
+                return presentDocument(*snapshot, settings, name, raw, mode);
+            }));
+        }
     }
 }
+
 void MainWindow::saveProject() {
     if (backend_.input().isEmpty())
         return;
@@ -1084,7 +1178,7 @@ void MainWindow::openProject() {
     openPaths(inputs);
 }
 void MainWindow::searchDialog() {
-    if (backend_.project()->classes().isEmpty())
+    if (!backend_.project()->classCount())
         return;
     if (!searchDialog_)
         searchDialog_ = new SearchDialog(this);

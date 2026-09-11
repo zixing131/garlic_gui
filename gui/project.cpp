@@ -42,6 +42,7 @@ void Project::reset(const QString &input) {
     input_ = input;
     inputs_ = {input};
     documents_.clear();
+    localIndex_ = std::make_shared<LocalIndex>();
     referenceIndex_ = std::make_shared<ReferenceIndex>();
     overrideIndex_ = std::make_shared<OverrideIndex>();
     symbolIndex_ = std::make_shared<SymbolIndex>();
@@ -287,6 +288,7 @@ QString Project::renamedClass(const QString &name) const {
 QString Project::symbolName(const QString &id) const {
     if (aliases_.contains(id))
         return aliases_.value(id);
+    if (id.contains("@local:")) return id.section(':', -1);
     return symbols_.value(id).value("name").toString(id);
 }
 QString Project::rename(const QString &id, const QString &newName) {
@@ -301,24 +303,43 @@ QString Project::rename(const QString &id, const QString &newName) {
         "volatile",   "transient", "native",  "assert",     "break",   "continue",  "do",
         "instanceof", "const",     "goto",    "strictfp",   "record",  "sealed",    "yield",
         "var"};
-    if (!symbols_.contains(id))
+    const bool local = id.contains("@local:") && symbols_.contains(id.section("@local:", 0, 0));
+    if (!symbols_.contains(id) && !local)
         return tr("符号不存在，无法重命名。");
     if (!valid.match(newName).hasMatch() || reserved.contains(newName))
         return tr("请输入合法且非保留字的 Java 标识符。");
-    const auto symbol = symbols_.value(id);
+    const auto symbol = local ? QJsonObject{{"name", id.section(':', -1)}} : symbols_.value(id);
     if (symbol.value("name").toString().startsWith('<'))
         return tr("构造方法请通过重命名所属类修改。");
-    for (auto it = symbols_.cbegin(); it != symbols_.cend(); ++it) {
-        if (it.key() == id || symbolName(it.key()) != newName)
-            continue;
-        const bool classSymbol = !id.contains("->");
-        bool sameScope = it.value().value("owner") == symbol.value("owner");
-        if (classSymbol)
-            sameScope = classOf(it.key()).section('/', 0, -2) == classOf(id).section('/', 0, -2) &&
-                        !it.key().contains("->");
-        if (sameScope && (classSymbol || it.value().value("kind") == symbol.value("kind")))
-            return tr("同一作用域已存在该名称。");
+    QStringList candidates;
+    if (local) {
+        const auto method = id.section("@local:", 0, 0);
+        QHash<QString, QString> variables;
+        {
+            std::lock_guard<std::mutex> guard(localIndex_->lock);
+            variables = localIndex_->methods.value(method);
+        }
+        for (auto it = aliases_.cbegin(); it != aliases_.cend(); ++it)
+            if (it.key().startsWith(method + "@local:")) variables.insert(it.key(), it.key().section(':', -1));
+        for (auto it = variables.cbegin(); it != variables.cend(); ++it)
+            if (it.key() != id && aliases_.value(it.key(), it.value()) == newName)
+                return tr("该方法中已有同名局部变量。");
     }
+    if (!local && id.contains("->")) {
+        for (const auto &value : members(classOf(id), symbol.value("kind") == "method"))
+            candidates << value.toObject().value("id").toString();
+    } else if (!local) {
+        // Exact original-name lookup plus the (usually small) project alias set.
+        const auto package = classOf(id).section('/', 0, -2);
+        const auto target = package.isEmpty() ? newName : package + '/' + newName;
+        candidates << classId(target);
+        for (auto it = aliases_.cbegin(); it != aliases_.cend(); ++it)
+            if (!it.key().contains("->") && classOf(it.key()).section('/', 0, -2) == classOf(id).section('/', 0, -2))
+                candidates << it.key();
+    }
+    for (const auto &candidate : candidates)
+        if (candidate != id && symbols_.contains(candidate) && symbolName(candidate) == newName)
+            return tr("同一作用域已存在该名称。");
     undo_.push_back(aliases_);
     if (undo_.size() > 100)
         undo_.removeFirst();
@@ -707,6 +728,88 @@ SourceDocument Project::document(const QString &name, bool smali, const QString 
             add(m.capturedStart(), m.capturedEnd(), m.captured(), false);
         }
     }
+    if (!smali) {
+        // Pair lexical delimiters once; comments and strings are already masked.
+        QHash<int, int> closes;
+        QVector<int> stack;
+        for (int i = 0; i < mask.size(); ++i) {
+            if (mask[i] == '{' || mask[i] == '(') stack << i;
+            else if ((mask[i] == '}' || mask[i] == ')') && !stack.isEmpty()) {
+                closes.insert(stack.takeLast(), i);
+            }
+        }
+        const auto declarations = result.spans;
+        static const QRegularExpression declaration(
+            R"((?:^|[;{}(,])\s*(?:(?:final|volatile|transient)\s+)*(?!return\b|throw\b|new\b|case\b)(?:[\p{L}_$][\p{L}\p{N}_$.]*(?:\s*<[^;{}()]*>)?(?:\s*\[\s*\])*)\s+([\p{L}_$][\p{L}\p{N}_$]*)\s*(?=[=;,:\)\[]))");
+        static const QRegularExpression identifier(R"([\p{L}_$][\p{L}\p{N}_$]*)");
+        for (const auto &method : declarations) {
+            if (!method.declaration || !method.id.contains("->") || !method.id.contains('(')) continue;
+            int parameters = method.end;
+            while (parameters < mask.size() && mask[parameters].isSpace()) ++parameters;
+            if (parameters >= mask.size() || mask[parameters] != '(' || !closes.contains(parameters)) continue;
+            int body = closes.value(parameters) + 1;
+            while (body < mask.size() && mask[body].isSpace()) ++body;
+            if (mask.mid(body, 6) == "throws")
+                while (body < mask.size() && mask[body] != '{' && mask[body] != ';') ++body;
+            if (body >= mask.size() || mask[body] != '{' || !closes.contains(body)) continue;
+            const int end = closes.value(body);
+            struct Local { int start, end; QString id; };
+            QHash<QString, QVector<Local>> locals;
+            const auto region = mask.mid(parameters, end - parameters + 1);
+            QVector<int> scopeEnds(region.size(), end);
+            QVector<int> scopeStack;
+            for (int i = parameters; i <= end; ++i) {
+                while (!scopeStack.isEmpty() && scopeStack.last() < i) scopeStack.removeLast();
+                if (closes.contains(i) && i != parameters) {
+                    int last = closes.value(i);
+                    if (mask[i] == '(') {
+                        int after = last + 1;
+                        while (after < end && mask[after].isSpace()) ++after;
+                        if (mask[after] == '{' && closes.contains(after)) last = closes.value(after);
+                        else {
+                            const auto prefix = mask.mid(qMax(parameters, i - 12), qMin(12, i - parameters));
+                            if (QRegularExpression(R"(\b(?:for|catch)\s*$)").match(prefix).hasMatch()) {
+                                const int semicolon = mask.indexOf(';', after);
+                                last = semicolon < 0 ? end : qMin(end, semicolon);
+                            } else last = end;
+                        }
+                    }
+                    scopeStack << (scopeStack.isEmpty() ? last : qMin(last, scopeStack.last()));
+                }
+                if (!scopeStack.isEmpty()) scopeEnds[i - parameters] = scopeStack.last();
+            }
+            auto matches = declaration.globalMatch(region);
+            while (matches.hasNext()) {
+                const auto match = matches.next();
+                const int start = parameters + match.capturedStart(1);
+                const int scopeEnd = scopeEnds[start - parameters];
+                const auto token = match.captured(1);
+                locals[token].append({start, scopeEnd, method.id + "@local:" + QString::number(start - parameters) + ':' + token});
+            }
+            {
+                QHash<QString, QString> variables;
+                for (auto it = locals.cbegin(); it != locals.cend(); ++it)
+                    for (const auto &variable : it.value()) variables.insert(variable.id, it.key());
+                std::lock_guard<std::mutex> guard(localIndex_->lock);
+                localIndex_->methods.insert(method.id, variables);
+            }
+            auto tokens = identifier.globalMatch(region);
+            while (tokens.hasNext()) {
+                const auto token = tokens.next();
+                const int start = parameters + token.capturedStart();
+                int previous = start - 1;
+                while (previous >= parameters && mask[previous].isSpace()) --previous;
+                if (previous >= parameters && mask[previous] == '.') continue;
+                const auto found = locals.constFind(token.captured());
+                if (found == locals.cend()) continue;
+                for (auto it = found->crbegin(); it != found->crend(); ++it)
+                    if (start >= it->start && start <= it->end) {
+                        add(start, start + token.capturedLength(), it->id, start == it->start);
+                        break;
+                    }
+            }
+        }
+    }
     std::sort(result.spans.begin(), result.spans.end(),
               [](const auto &a, const auto &b) { return a.start < b.start; });
     return applyAliases ? this->applyAliases(result, smali) : result;
@@ -725,7 +828,7 @@ SourceDocument Project::applyAliases(SourceDocument result, bool smali) const {
         span.end += shift;
         QString replacement = aliases_.value(span.id);
         if ((!span.id.contains("->") && span.id.endsWith(';')) ||
-            (!smali && span.id.contains(";-><init>"))) {
+            (!smali && !span.id.contains("@local:") && span.id.contains(";-><init>"))) {
             const QString old = classOf(span.id), renamed = renamedClass(old);
             replacement.clear();
             if (old != renamed) {
@@ -751,7 +854,7 @@ SourceDocument Project::applyAliases(SourceDocument result, bool smali) const {
 }
 
 QString Project::canonicalId(const QString &id) const {
-    if (symbols_.contains(id) || !id.contains("->"))
+    if (id.contains("@local:") || symbols_.contains(id) || !id.contains("->"))
         return id;
     const QString suffix = id.mid(id.indexOf("->"));
     QStringList work{classOf(id)};
@@ -844,6 +947,7 @@ std::shared_ptr<Project> Project::snapshot() const {
 void Project::replaceData(const Project &other, bool keepDocuments) {
     if (!keepDocuments)
         documents_ = other.documents_;
+    if (!keepDocuments) localIndex_ = other.localIndex_;
     referenceIndex_ = other.referenceIndex_;
     overrideIndex_ = other.overrideIndex_;
     symbolIndex_ = other.symbolIndex_;

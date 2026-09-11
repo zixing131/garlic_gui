@@ -2,12 +2,28 @@
 #include "mainwindow.h"
 #include "nodeicons.h"
 #include "referencesdialog.h"
+#include "searchdialog.h"
 #include <QtTest>
 #include <QtWidgets>
 
 class WindowTest : public QObject {
     Q_OBJECT
   private slots:
+    void largeSourceHighlighting() {
+        CodeEditor editor(false);
+        editor.setSource({QString("// padding\n").repeated(60000) + "public class Highlighted {}\n", {}});
+        const auto block = editor.document()->findBlockByNumber(60000);
+        QTRY_VERIFY_WITH_TIMEOUT(!block.layout()->formats().isEmpty(), 10000);
+        editor.setTheme(true);
+        QTRY_VERIFY_WITH_TIMEOUT(!block.layout()->formats().isEmpty(), 10000);
+    }
+    void packageSearchAndMemoryDefaults() {
+        QVERIFY(AppSettings().showMemory);
+        MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
+        SearchDialog dialog(&window);
+        dialog.setPackage("kotlin/jvm/internal");
+        QCOMPARE(dialog.findChild<QLineEdit *>("searchPackage")->text(), QString("kotlin.jvm.internal"));
+    }
     void loadingPercentage() {
         MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
         auto bar = window.findChild<QProgressBar *>();
@@ -27,6 +43,8 @@ class WindowTest : public QObject {
         window.backend()->configure(settings);
         connect(window.backend(), &Backend::indexed, &window, [&] {
             QVERIFY(!window.backend()->metadataReady());
+            window.showReferences("Ldemo/cases/foo;->identify()I");
+            window.showReferences("Ldemo/cases/foo;->identify()I");
             auto tree = window.findChild<QTreeView *>("classTree");
             auto matches = tree->model()->match(tree->model()->index(0, 0), Qt::UserRole + 1,
                 "Ldemo/cases/foo;", 1, Qt::MatchExactly | Qt::MatchRecursive);
@@ -39,6 +57,8 @@ class WindowTest : public QObject {
         QTRY_VERIFY_WITH_TIMEOUT(window.editor() && window.editor()->toPlainText().contains("return 22;"), 15000);
         QTRY_COMPARE(window.editor()->textCursor().selectedText(), QString("identify"));
         QVERIFY(window.backend()->metadataReady());
+        QTest::qWait(100);
+        QVERIFY(window.findChildren<ReferencesDialog *>().isEmpty());
         auto tree = window.findChild<QTreeView *>("classTree");
         auto methods = tree->model()->match(tree->model()->index(0, 0), Qt::UserRole + 1,
             "Ldemo/cases/foo;->identify()I", 1, Qt::MatchExactly | Qt::MatchRecursive);
@@ -313,6 +333,10 @@ class WindowTest : public QObject {
             const auto sourceLimit = qEnvironmentVariableIntValue("GARLIC_TEST_SOURCE_LIMIT_MS");
             if (sourceLimit > 0) QVERIFY(sourceTime.elapsed() < sourceLimit);
             QVERIFY(maxGap < 1000);
+            const auto classBlock = window.editor()->document()->findBlock(
+                window.editor()->toPlainText().indexOf("public class "));
+            if (classBlock.isValid())
+                QTRY_VERIFY_WITH_TIMEOUT(!classBlock.layout()->formats().isEmpty(), 10000);
             if (qEnvironmentVariableIsSet("GARLIC_TEST_WAIT_METADATA")) {
                 auto tree = window.findChild<QTreeView *>("classTree");
                 const QPersistentModelIndex firstClass(tree->model()->index(0, 0));
@@ -321,6 +345,27 @@ class WindowTest : public QObject {
                 QVERIFY(firstClass.isValid());
                 qInfo() << "Through metadata completion max UI heartbeat gap ms:" << maxGap;
                 QVERIFY(maxGap < 1000);
+                if (qEnvironmentVariableIsSet("GARLIC_TEST_RENAME")) {
+                    for (bool local : {false, true}) {
+                        QString id;
+                        for (const auto &span : window.editor()->spans())
+                            if (span.declaration && span.id.contains("->") &&
+                                span.id.contains("@local:") == local &&
+                                (local || !span.id.contains("-><"))) { id = span.id; break; }
+                        QVERIFY(!id.isEmpty());
+                        const QString replacement = local ? "renamedLocalBenchmark" : "renamedMethodBenchmark";
+                        QElapsedTimer renameTime; renameTime.start();
+                        const auto error = window.backend()->project()->rename(id, replacement);
+                        QVERIFY2(error.isEmpty(), qPrintable(error));
+                        QTRY_VERIFY_WITH_TIMEOUT(window.editor()->toPlainText().contains(replacement), 3000);
+                        qInfo() << (local ? "Local rename ms:" : "Method rename ms:") << renameTime.elapsed();
+                        QVERIFY(renameTime.elapsed() < 1000);
+                        QVERIFY(firstClass.isValid());
+                    }
+                    auto settings = window.backend()->settings(); settings.theme = "light";
+                    window.applySettings(settings);
+                    QVERIFY(firstClass.isValid());
+                }
             }
         }
         if (qEnvironmentVariableIsSet("GARLIC_TEST_WAIT_METADATA")) {
@@ -438,11 +483,20 @@ class WindowTest : public QObject {
         const QString id = "Ldemo/Main;->greet(I)Ljava/lang/String;";
         window.navigateTo(id);
         QTRY_COMPARE(window.editor()->textCursor().selectedText(), QString("greet"));
+        auto classTree = window.findChild<QTreeView *>("classTree");
+        const QPersistentModelIndex stableRoot(classTree->model()->index(0, 0));
+        classTree->expand(stableRoot);
         QVERIFY(window.backend()->project()->rename(id, "welcome").isEmpty());
-        QVERIFY(window.editor()->toPlainText().contains("welcome(int"));
+        QVERIFY(stableRoot.isValid());
+        QVERIFY(classTree->isExpanded(stableRoot));
+        auto settings = window.backend()->settings(); settings.theme = "light";
+        window.applySettings(settings);
+        QVERIFY(stableRoot.isValid());
+        QVERIFY(classTree->isExpanded(stableRoot));
+        QTRY_VERIFY(window.editor()->toPlainText().contains("welcome(int"));
         QVERIFY(window.editor()->toPlainText().contains("greet(String"));
         window.backend()->project()->undoRename();
-        QVERIFY(window.editor()->toPlainText().contains("greet(int"));
+        QTRY_VERIFY(window.editor()->toPlainText().contains("greet(int"));
         window.openPath(fixtures + "/Main.class");
         QTRY_VERIFY_WITH_TIMEOUT(
             !window.backend()->busy() && !window.backend()->project()->classes().isEmpty(), 15000);
