@@ -1,8 +1,13 @@
-# Garlic GUI 0.5.35（C++ / Qt 6）
+# Garlic GUI 0.5.36（C++ / Qt 6）
 
 原生桌面浏览器，使用本项目的 garlic C 引擎。Qt 界面通过 `QProcess` 调用引擎，
 先建立类型、成员和引用索引，点击类时生成 Java / Smali。索引读取 CLASS / DEX
 元数据与引用，不执行方法反编译。JAR 索引会读取其中的 CLASS 内容。
+
+## 0.5.36 Native 定位与 import 跳转
+
+- Java/Smali 按 Tab 切换时，Native 方法的 `native` 修饰符所在行会识别为方法作用域，能够定位到另一视图中的同一方法。
+- 项目中存在定义的 import 类现在可通过双击或 Ctrl+左键进入；外部库 import 保持普通文本，避免无效跳转。
 
 ## 0.5.35 搜索选区、成员同步与嵌套类
 

@@ -75,6 +75,25 @@ class ProjectTest : public QObject {
             if (span.id == "Landroidx/annotation/Nullable;" && doc.text[span.start - 1] == '@') ++references;
         QCOMPARE(references, 2);
     }
+    void importedProjectClassIsNavigable() {
+        Project project;
+        project.addClass({{"name", "demo/Target"}});
+        project.addClass({{"name", "demo/Use"}});
+        QTemporaryDir dir;
+        QFile source(dir.filePath("Use.java")); QVERIFY(source.open(QIODevice::WriteOnly));
+        source.write("import demo.Target;\nclass Use { Target target; }"); source.close();
+        const auto doc = project.document("demo/Use", false, source.fileName());
+        const int imported = doc.text.indexOf("demo.Target");
+        const int use = doc.text.lastIndexOf("Target");
+        bool importSpan = false, useSpan = false;
+        for (const auto &span : doc.spans) {
+            if (span.id != "Ldemo/Target;") continue;
+            importSpan |= span.start == imported && span.end == imported + QString("demo.Target").size();
+            useSpan |= span.start == use && span.end == use + QString("Target").size();
+        }
+        QVERIFY(importSpan);
+        QVERIFY(useSpan);
+    }
     void referenceDedupLargeGroup() {
         Project project;
         QJsonArray rows;

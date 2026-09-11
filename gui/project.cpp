@@ -966,7 +966,13 @@ SourceDocument Project::document(const QString &name, bool smali, const QString 
         while (importsIt.hasNext()) {
             auto m = importsIt.next();
             const auto n = normalize(m.captured(1));
-            imports[n.section('/', -1)] = classId(n);
+            const auto id = classId(n);
+            imports[n.section('/', -1)] = id;
+            // Imports are semantic class references too.  Add the declaration token explicitly:
+            // it is otherwise skipped by the type-context lexer when it is fully qualified.
+            // Do not turn external library imports into dead navigation links.
+            if (classes_.contains(n))
+                add(m.capturedStart(1), m.capturedEnd(1), id, false);
         }
         // Annotation identifiers may be qualified or contain non-Java obfuscation glyphs.
         const QRegularExpression annotationRe("@([^\\s(]+)");

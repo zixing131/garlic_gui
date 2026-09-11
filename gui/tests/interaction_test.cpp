@@ -68,6 +68,24 @@ class InteractionTest : public QObject {
         QVERIFY(!view.smali());
         QCOMPARE(view.editor()->textCursor().selectionStart(), 4);
     }
+    void nativeMethodTabMapping() {
+        ClassView view("Native", true, AppSettings{});
+        const QString method = "LNative;->bridge(I)Ljava/lang/String;";
+        const QString java = "public native String bridge(int value);\n";
+        const QString smali = ".method public native bridge(I)Ljava/lang/String;\n.end method\n";
+        view.setSource(false, {java, {{21, 27, method, true}}});
+        view.setSource(true, {smali, {{22, 28, method, true}}});
+        // The native modifier appears before the method-name span and used to lose its scope.
+        auto cursor = view.editor()->textCursor();
+        cursor.setPosition(java.indexOf("native") + 2);
+        view.editor()->setTextCursor(cursor);
+        QTest::keyClick(view.editor(), Qt::Key_Tab);
+        QVERIFY(view.smali());
+        QCOMPARE(view.editor()->textCursor().selectedText(), QString("bridge"));
+        QTest::keyClick(view.editor(), Qt::Key_Tab);
+        QVERIFY(!view.smali());
+        QCOMPARE(view.editor()->textCursor().selectedText(), QString("bridge"));
+    }
     void smaliSearchOptIn() {
         Backend backend; backend.setEngine(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
         backend.open(qEnvironmentVariable("GARLIC_TEST_FIXTURES") + "/cases.dex");

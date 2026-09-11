@@ -1,6 +1,7 @@
 #include "classview.h"
 #include <QSignalBlocker>
 #include <QTabWidget>
+#include <QTextBlock>
 #include <QVBoxLayout>
 ClassView::ClassView(const QString &name, bool hasSmali, const AppSettings &settings,
                      QWidget *parent)
@@ -25,6 +26,18 @@ ClassView::ClassView(const QString &name, bool hasSmali, const AppSettings &sett
                 if (span.start > position) break;
                 if (span.declaration && !span.id.contains("@local:")) scope = span.id;
                 if (position < span.end) { symbol = span.id; declaration = span.declaration; }
+            }
+            // Native methods have no body and users commonly press Tab while the cursor is on
+            // the `native` modifier, before the declaration-name span.  Keep the declaration on
+            // the same source line as the switching scope so it can be located in the other view.
+            if (scope.isEmpty()) {
+                const auto block = code->document()->findBlock(position);
+                for (const auto &span : spans) {
+                    if (!span.declaration || span.id.contains("@local:")) continue;
+                    if (code->document()->findBlock(span.start) != block) continue;
+                    scope = span.id;
+                    break;
+                }
             }
             int occurrence = 0;
             for (const auto &span : spans) {
