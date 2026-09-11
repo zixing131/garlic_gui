@@ -3,6 +3,10 @@
 #include "nodeicons.h"
 #include "referencesdialog.h"
 #include "searchdialog.h"
+#include "hexviewer.h"
+#include "callgraphdialog.h"
+#include "resources.h"
+#include <QThreadPool>
 #include <QtTest>
 #include <QtWidgets>
 
@@ -23,6 +27,105 @@ class WindowTest : public QObject {
         SearchDialog dialog(&window);
         dialog.setPackage("kotlin/jvm/internal");
         QCOMPARE(dialog.findChild<QLineEdit *>("searchPackage")->text(), QString("kotlin.jvm.internal"));
+    }
+    void graphSelectionHighlight() {
+        Project project;
+        const QString caller = "LExample;->caller()V", callee = "LExample;->callee()V";
+        project.addClass({{"name", "Example"}, {"methods", QJsonArray{
+            QJsonObject{{"id", caller}, {"name", "caller"}}, QJsonObject{{"id", callee}, {"name", "callee"}}}},
+            {"refs", QJsonArray{QJsonObject{{"from", caller}, {"target", callee}, {"offset", 0}}}}});
+        CallGraphDialog dialog(project.snapshot(), caller); dialog.show();
+        auto graph = dialog.findChild<QGraphicsView *>("callGraphView");
+        QTRY_VERIFY_WITH_TIMEOUT(graph->scene()->items().size() >= 5, 5000);
+        QGraphicsLineItem *edge = nullptr;
+        for (auto item : graph->scene()->items())
+            if ((edge = dynamic_cast<QGraphicsLineItem *>(item))) break;
+        QVERIFY(edge);
+        QGraphicsItem *node = nullptr;
+        for (auto item : graph->scene()->items())
+            if (item->flags().testFlag(QGraphicsItem::ItemIsSelectable) && item->data(0) == edge->data(0)) { node = item; break; }
+        QVERIFY(node);
+        QTest::mouseClick(graph->viewport(), Qt::LeftButton, {}, graph->mapFromScene(node->sceneBoundingRect().center()));
+        QCOMPARE(edge->pen().widthF(), 3.0);
+        QTest::mouseClick(graph->viewport(), Qt::LeftButton, {}, QPoint(2, 2));
+        QCOMPARE(edge->pen().widthF(), 1.3);
+    }
+    void mergedSplitResources() {
+        QTemporaryDir fixture;
+        const auto archive = fixture.path() + "/resources.apks";
+        QVERIFY(QFile::copy(qEnvironmentVariable("GARLIC_TEST_FIXTURES") + "/resources.apks", archive));
+        const auto entries = Resources::inspect(archive).value("entries").toArray();
+        QSet<QString> names;
+        for (const auto &value : entries) {
+            const auto entry = value.toObject();
+            names.insert(entry.value("name").toString());
+            QString error;
+            QVERIFY(!Resources::read(entry.value("sourcePath").toString(), entry.value("sourceEntry").toString(), 1024, &error).isEmpty());
+            QVERIFY(error.isEmpty());
+        }
+        QVERIFY(names.contains("assets/base.txt"));
+        QVERIFY(names.contains("assets/en.txt"));
+        QVERIFY(names.contains("resources.arsc"));
+        QVERIFY(names.contains("split-data/config.en/resources.arsc"));
+        QVERIFY(!names.contains("base.apk"));
+    }
+    void caseSafeExport() {
+        Backend backend;
+        backend.setEngine(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
+        backend.open(qEnvironmentVariable("GARLIC_TEST_FIXTURES") + "/cases.dex");
+        QTRY_VERIFY_WITH_TIMEOUT(!backend.busy() && backend.project()->classCount() > 0, 15000);
+        QTemporaryDir directory;
+        const auto output = directory.path() + "/export";
+        QSignalSpy finished(&backend, &Backend::exported);
+        backend.exportSources(output, false);
+        QTRY_COMPARE_WITH_TIMEOUT(finished.count(), 1, 15000);
+        QVERIFY(QFileInfo::exists(output + "/.garlic-safe-paths"));
+        const auto upper = Project::sourcePath(output, "demo/cases/Foo", ".java");
+        const auto lower = Project::sourcePath(output, "demo/cases/foo", ".java");
+        QVERIFY(upper.toCaseFolded() != lower.toCaseFolded());
+        QFile first(upper), second(lower);
+        QVERIFY(first.open(QIODevice::ReadOnly)); QVERIFY(second.open(QIODevice::ReadOnly));
+        QVERIFY(first.readAll().contains("class Foo")); QVERIFY(second.readAll().contains("class foo"));
+    }
+    void rawFlattenedSource() {
+        MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
+        auto settings = window.backend()->settings();
+        settings.deobfuscate = settings.unflatten = settings.simplifyControlFlow = false;
+        window.applySettings(settings);
+        window.openPath(qEnvironmentVariable("GARLIC_TEST_FIXTURES") + "/flattened.dex");
+        QTRY_VERIFY_WITH_TIMEOUT(!window.backend()->busy() && window.backend()->project()->classCount() > 0, 15000);
+        window.openClass("demo/Flattened");
+        QTRY_VERIFY_WITH_TIMEOUT(window.editor() && window.editor()->toPlainText().contains("compareDispatcher"), 15000);
+    }
+    void pagedHexLargeFile() {
+        QTemporaryFile file; QVERIFY(file.open());
+        QVERIFY(file.resize(128LL * 1024 * 1024));
+        QVERIFY(file.seek(file.size() - 16)); QCOMPARE(file.write("0123456789abcdef"), qint64(16)); file.flush();
+        HexViewer viewer(file.fileName(), 64); viewer.resize(800, 400); viewer.show();
+        QTest::qWait(20);
+        QVERIFY(viewer.verticalScrollBar()->maximum() > 100000);
+        viewer.verticalScrollBar()->setValue(viewer.verticalScrollBar()->maximum());
+        QVERIFY(!viewer.grab().isNull());
+    }
+    void largeProjectClose() {
+        const auto path = qEnvironmentVariable("GARLIC_TEST_LARGE_APK");
+        if (path.isEmpty()) QSKIP("Set GARLIC_TEST_LARGE_APK for shutdown regression");
+        auto window = std::make_unique<MainWindow>(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
+        bool warming = false;
+        connect(window->backend(), &Backend::loadProgress, window.get(), [&](const QString &phase, int percent) {
+            if (phase == "构建查询索引" && percent >= 33) warming = true;
+        });
+        window->show(); window->openPath(path);
+        QTRY_VERIFY_WITH_TIMEOUT(window->backend()->project()->classCount() > 0, 30000);
+        window->backend()->prepareMetadata();
+        if (qEnvironmentVariableIsSet("GARLIC_TEST_CLOSE_DURING_XREFS"))
+            QTRY_VERIFY_WITH_TIMEOUT(warming, 120000);
+        else QTest::qWait(2000);
+        QElapsedTimer timer; timer.start();
+        window->close(); window.reset();
+        QVERIFY(QThreadPool::globalInstance()->waitForDone(15000));
+        qInfo() << "Shutdown including background cleanup ms:" << timer.elapsed();
+        QVERIFY(timer.elapsed() < 15000);
     }
     void loadingPercentage() {
         MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE"));

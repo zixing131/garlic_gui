@@ -2,6 +2,7 @@
 #include "mainwindow.h"
 #include "nodeicons.h"
 #include "resources.h"
+#include "hexviewer.h"
 #include <QtConcurrent>
 #include <QtWidgets>
 
@@ -110,8 +111,8 @@ void MainWindow::projectNodes() {
                             child->setData(table ? "resource-table" : "resource", Qt::UserRole + 4);
                             if (table)
                                 child->appendRow(new QStandardItem(tr("展开解析资源表…")));
-                            child->setData(path, Qt::UserRole + 5);
-                            child->setData(n, Qt::UserRole + 6);
+                            child->setData(entry.value("sourcePath").toString(path), Qt::UserRole + 5);
+                            child->setData(entry.value("sourceEntry").toString(n), Qt::UserRole + 6);
                             child->setData(n, Qt::UserRole + 2);
                             child->setToolTip(
                                 n + QString(" · %1 bytes").arg(entry.value("size").toDouble()));
@@ -123,7 +124,8 @@ void MainWindow::projectNodes() {
                     };
                     (*step)();
                 });
-        watcher->setFuture(QtConcurrent::run([path] { return Resources::inspect(path); }));
+        const auto canceled = backend_.project()->cancellationToken();
+        watcher->setFuture(QtConcurrent::run([path, canceled] { return Resources::inspect(path, canceled); }));
     }
     tree_->expand(proxy_->mapFromSource(root->index()));
     tree_->expand(proxy_->mapFromSource(sourceRoot_->index()));
@@ -180,15 +182,20 @@ void MainWindow::openResource(const QString &path, const QString &entry, const Q
                 }));
             });
     struct Preview {
-        QString text, error;
+        QString text, error, binaryPath;
         QImage image;
     };
     auto task = new QFutureWatcher<Preview>(page);
     auto limit = backend_.settings().sourceMiB;
-    connect(task, &QFutureWatcher<Preview>::finished, page, [task, code, layout] {
+    const int hexKiB = backend_.settings().hexPreviewKiB;
+    connect(task, &QFutureWatcher<Preview>::finished, page, [task, code, layout, hexKiB] {
         auto result = task->result();
         task->deleteLater();
-        if (!result.image.isNull()) {
+        if (!result.binaryPath.isEmpty()) {
+            auto hex = new HexViewer(result.binaryPath, hexKiB);
+            delete layout->replaceWidget(code, hex);
+            code->deleteLater();
+        } else if (!result.image.isNull()) {
             auto label = new QLabel;
             label->setPixmap(QPixmap::fromImage(result.image));
             auto scroll = new QScrollArea;
@@ -198,7 +205,8 @@ void MainWindow::openResource(const QString &path, const QString &entry, const Q
         } else
             code->setSource({result.error.isEmpty() ? result.text : result.error, {}});
     });
-    task->setFuture(QtConcurrent::run([path, entry, limit, decoded, decodedText] {
+    const auto canceled = backend_.project()->cancellationToken();
+    task->setFuture(QtConcurrent::run([path, entry, limit, decoded, decodedText, canceled] {
         Preview result;
         if (decoded) {
             result.text = decodedText.size() * 2LL > qint64(limit) * 1024 * 1024
@@ -206,7 +214,17 @@ void MainWindow::openResource(const QString &path, const QString &entry, const Q
                               : decodedText;
             return result;
         }
-        auto b = Resources::read(path, entry, qint64(limit) * 1024 * 1024, &result.error);
+        const auto local = Resources::materialize(path, entry, &result.error, canceled);
+        QFile source(local);
+        if (!source.open(QIODevice::ReadOnly)) { result.error = source.errorString(); return result; }
+        const auto prefix = source.peek(65536);
+        const bool structured = entry.endsWith(".xml", Qt::CaseInsensitive) || entry.endsWith(".arsc", Qt::CaseInsensitive);
+        QImageReader imageProbe(local);
+        if (!structured && !imageProbe.canRead() && (prefix.contains('\0') || source.size() > qint64(limit) * 1024 * 1024)) {
+            result.binaryPath = local;
+            return result;
+        }
+        auto b = Resources::read(local, {}, qint64(limit) * 1024 * 1024, &result.error);
         if (!result.error.isEmpty())
             return result;
         QBuffer buffer(&b);
@@ -227,7 +245,7 @@ void MainWindow::openResource(const QString &path, const QString &entry, const Q
         else if (entry.endsWith(".arsc", Qt::CaseInsensitive))
             result.text = Resources::describeTable(b);
         else if (b.contains('\0'))
-            result.text = Resources::hex(b);
+            result.binaryPath = local;
         else
             result.text = QString::fromUtf8(b);
         return result;
@@ -304,7 +322,7 @@ void MainWindow::showOverview(const QString &path, bool signature) {
             dex[c.value("origin").toString()]++;
         }
         owners.removeDuplicates();
-        auto info = Resources::inspect(path);
+        auto info = Resources::inspect(path, project->cancellationToken());
         QString origins;
         for (auto it = dex.begin(); it != dex.end(); ++it)
             origins += QString("  %1: %2 classes\n").arg(it.key()).arg(it.value());

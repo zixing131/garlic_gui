@@ -6,6 +6,7 @@
 #include <QVector>
 #include <memory>
 #include <mutex>
+#include <atomic>
 
 struct SourceSpan {
     int start = 0, end = 0;
@@ -22,6 +23,9 @@ class Project : public QObject {
   public:
     using QObject::QObject;
     std::shared_ptr<Project> snapshot() const;
+    void cancelPendingWork() { canceled_->store(true); }
+    std::shared_ptr<std::atomic_bool> cancellationToken() const { return canceled_; }
+    void setCancellationToken(std::shared_ptr<std::atomic_bool> token) { canceled_ = std::move(token); }
     void replaceData(const Project &other, bool keepDocuments = false);
     void reset(const QString &input);
     void addClass(const QJsonObject &entry);
@@ -75,6 +79,7 @@ class Project : public QObject {
     void renamed();
 
   private:
+    std::shared_ptr<std::atomic_bool> canceled_ = std::make_shared<std::atomic_bool>(false);
     QHash<QString, QJsonObject> classes_, symbols_;
     QHash<QString, QString> aliases_;
     QHash<QString, QStringList> classNames_, parents_;

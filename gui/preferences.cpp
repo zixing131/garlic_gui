@@ -176,6 +176,7 @@ void MainWindow::settingsDialog() {
     cache->addRow(tr("按类源码缓存模式"), cacheMode);
     auto cacheLimit = spin(cache, tr("按类源码缓存上限（MiB）"), settings.cacheMiB, 16, 4096);
     auto maxTabs = spin(cache, tr("最多打开的类标签"), settings.maxTabs, 1, 64);
+    auto hexPreview = spin(cache, tr("十六进制预览页大小（KiB）"), settings.hexPreviewKiB, 1, 16384);
     auto sourceLimit =
         spin(cache, tr("单文件查看 / 搜索大小限制（MiB）"), settings.sourceMiB, 1, 64);
     cache->addRow(
@@ -330,11 +331,12 @@ void MainWindow::settingsDialog() {
                 AppSettings defaults;
                 threads->setValue(defaults.threads);
                 cacheMode->setCurrentIndex(0);
-                memory->setChecked(false);
+                memory->setChecked(defaults.showMemory);
                 host->setText("127.0.0.1");
                 cacheLimit->setValue(defaults.cacheMiB);
                 maxTabs->setValue(defaults.maxTabs);
                 sourceLimit->setValue(defaults.sourceMiB);
+                hexPreview->setValue(defaults.hexPreviewKiB);
                 font->setValue(defaults.fontSize);
                 excluded->clear();
                 background->setChecked(false);
@@ -361,6 +363,7 @@ void MainWindow::settingsDialog() {
     settings.threads = threads->value();
     settings.cacheMiB = cacheLimit->value();
     settings.maxTabs = maxTabs->value();
+    settings.hexPreviewKiB = hexPreview->value();
     settings.sourceMiB = sourceLimit->value();
     settings.fontSize = font->value();
     settings.excluded = excluded->toPlainText().split('\n', Qt::SkipEmptyParts);

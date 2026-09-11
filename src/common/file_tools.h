@@ -25,10 +25,19 @@ static inline char *hex_storage_name(const char *name)
     result[at] = 0;
     return result;
 }
-static inline char *source_storage_name(const char *name)
+static inline bool source_safe_paths_enabled(void)
 {
     const char *enabled = getenv("GARLIC_SAFE_SOURCE_PATHS");
-    if (!enabled || strcmp(enabled, "1")) return strdup(name);
+    if (enabled) return strcmp(enabled, "1") == 0;
+#ifdef _WIN32
+    return true;
+#else
+    return false;
+#endif
+}
+static inline char *source_storage_name(const char *name)
+{
+    if (!source_safe_paths_enabled()) return strdup(name);
     size_t len = strlen(name);
     if (len > 2 && name[0] == 'L' && name[len - 1] == ';') {
         char *plain = strndup(name + 1, len - 2);

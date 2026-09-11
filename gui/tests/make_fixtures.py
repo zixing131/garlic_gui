@@ -86,3 +86,15 @@ if args.d8:
     with zipfile.ZipFile(out / "nested.apks", "w") as archive:
         archive.write(out / "示例 app.apk", "splits/base-master.apk")
 print(out)
+
+# Resource merging does not require d8. Keep every split's assets and tables.
+import io
+splits = []
+for name, entries in [('base.apk', {'assets/base.txt': b'base', 'resources.arsc': b'base-table'}),
+                      ('config.en.apk', {'assets/en.txt': b'english', 'resources.arsc': b'en-table'})]:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as archive:
+        for entry, data in entries.items(): archive.writestr(entry, data)
+    splits.append((name, buffer.getvalue()))
+with zipfile.ZipFile(out / 'resources.apks', 'w') as archive:
+    for name, data in splits: archive.writestr(name, data)

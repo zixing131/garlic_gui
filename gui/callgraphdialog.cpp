@@ -45,6 +45,8 @@ class GraphNode : public QGraphicsRectItem {
         const auto bounds = text->boundingRect();
         setRect(0, 0, qMax(150., bounds.width() + 18), qMax(38., bounds.height() + 12));
         text->setPos(9, 5);
+        setData(0, id);
+        setData(1, color);
         setBrush(color);
         setPen(QPen(color.darker(130), 1.2));
         setToolTip(id + "\n" + QObject::tr("双击跳转到声明"));
@@ -94,6 +96,24 @@ void CallGraphView::wheelEvent(QWheelEvent *event) {
 
 void CallGraphView::mousePressEvent(QMouseEvent *event) {
     if (event->button() == Qt::LeftButton) {
+        auto selected = nodeAt(event->position().toPoint());
+        const auto id = selected ? selected->data(0).toString() : QString();
+        QSet<QString> related{id};
+        for (auto item : scene()->items())
+            if (auto line = dynamic_cast<QGraphicsLineItem *>(item)) {
+                const bool active = !id.isEmpty() && (line->data(0).toString() == id || line->data(1).toString() == id);
+                if (active) { related.insert(line->data(0).toString()); related.insert(line->data(1).toString()); }
+                line->setPen(QPen(active ? QColor("#f08020") : QColor("#7890a3"), active ? 3.0 : 1.3));
+                line->setOpacity(id.isEmpty() || active ? 1.0 : 0.2);
+            }
+        for (auto item : scene()->items())
+            if (auto node = dynamic_cast<GraphNode *>(item)) {
+                const bool active = !id.isEmpty() && related.contains(node->data(0).toString());
+                const auto color = node->data(1).value<QColor>();
+                node->setPen(QPen(active ? QColor("#f08020") : color.darker(130), active ? 3.0 : 1.2));
+                node->setOpacity(id.isEmpty() || active ? 1.0 : 0.3);
+                node->setSelected(node == selected);
+            }
         panning_ = true;
         lastPosition_ = event->position().toPoint();
         viewport()->setCursor(Qt::ClosedHandCursor);
@@ -275,6 +295,8 @@ void CallGraphDialog::render(const QJsonObject &graph) {
         const auto a = from->sceneBoundingRect().center();
         const auto b = to->sceneBoundingRect().center();
         auto line = scene_->addLine(QLineF(a, b), edgePen);
+        line->setData(0, edge.value("from").toString());
+        line->setData(1, edge.value("to").toString());
         line->setZValue(-1);
     }
     status_->setText(tr("%1 个函数 · %2 条调用关系%3")

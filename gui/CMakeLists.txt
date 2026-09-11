@@ -1,4 +1,4 @@
-set(GARLIC_GUI_VERSION "0.5.10")
+set(GARLIC_GUI_VERSION "0.5.11")
 find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Network Concurrent)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_CXX_STANDARD 17)
@@ -8,7 +8,7 @@ qt_add_library(garlic-gui-core STATIC
     memoryusage.cpp memoryusage.h mainwindow.cpp mainwindow.h backend.cpp backend.h codeeditor.cpp codeeditor.h
     settings.cpp settings.h project.cpp project.h classview.cpp classview.h
     referencesdialog.cpp referencesdialog.h callgraphdialog.cpp callgraphdialog.h
-    nativeanalysisdialog.cpp nativeanalysisdialog.h projectbrowser.cpp resources.cpp resources.h ${CMAKE_CURRENT_SOURCE_DIR}/../src/libs/zip/zip.c
+    nativeanalysisdialog.cpp nativeanalysisdialog.h projectbrowser.cpp hexviewer.cpp hexviewer.h resources.cpp resources.h ${CMAKE_CURRENT_SOURCE_DIR}/../src/libs/zip/zip.c
     nodeicons.cpp nodeicons.h preferences.cpp mcpserver.cpp mcpserver.h search.cpp search.h searchdialog.cpp searchdialog.h)
 qt_add_resources(NODE_ICON_RESOURCES icons/jadx/jadx_icons.qrc)
 target_sources(garlic-gui-core PRIVATE ${NODE_ICON_RESOURCES})

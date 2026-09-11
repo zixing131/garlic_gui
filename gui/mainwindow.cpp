@@ -1211,6 +1211,7 @@ void MainWindow::dropEvent(QDropEvent *event) {
 void MainWindow::closeEvent(QCloseEvent *event) {
     QSettings().setValue("geometry", saveGeometry());
     QSettings().setValue("windowState", saveState());
+    backend_.project()->cancelPendingWork();
     backend_.cancel();
     event->accept();
 }

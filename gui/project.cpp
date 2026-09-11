@@ -39,6 +39,7 @@ QString Project::classOf(const QString &id) {
     return end > 0 && id.startsWith('L') ? id.mid(1, end - 1) : normalize(id);
 }
 void Project::reset(const QString &input) {
+    canceled_ = std::make_shared<std::atomic_bool>(false);
     input_ = input;
     inputs_ = {input};
     documents_.clear();
@@ -150,6 +151,7 @@ QJsonArray Project::xrefs(const QString &id) const {
                 referenceIndex_->positions[target.second].append(position);
         };
         for (auto it = classes_.cbegin(); it != classes_.cend(); ++it) {
+            if (canceled_->load()) return {};
             const auto refs = it.value().value("refs");
             const auto dictionary = it.value().value("ref_targets").toArray();
             QVector<QPair<int, int>> resolved;
@@ -257,8 +259,10 @@ QJsonArray Project::callees(const QString &id) const {
 QJsonArray Project::symbols(const QString &query) const {
     std::lock_guard<std::mutex> guard(symbolIndex_->lock);
     if (!symbolIndex_->ready) {
-        for (auto it = symbols_.cbegin(); it != symbols_.cend(); ++it)
+        for (auto it = symbols_.cbegin(); it != symbols_.cend(); ++it) {
+            if (canceled_->load()) return {};
             symbolIndex_->entries.append(it.value());
+        }
         symbolIndex_->ready = true;
     }
     if (query.isEmpty())
@@ -356,12 +360,15 @@ void Project::deobfuscateNames() {
     static const QRegularExpression identifier("^[\\p{L}_$][\\p{L}\\p{N}_$]*$");
     static const QRegularExpression noisy("[\\p{Cc}\\p{Cf}\\p{Co}\\p{Cs}\\p{Cn}\\p{Mn}\\p{Mc}]");
     QSet<QString> used;
-    for (auto it = symbols_.cbegin(); it != symbols_.cend(); ++it)
+    for (auto it = symbols_.cbegin(); it != symbols_.cend(); ++it) {
+        if (canceled_->load()) return;
         used.insert(symbolName(it.key()));
+    }
     auto ids = symbols_.keys();
     std::sort(ids.begin(), ids.end());
     int classNumber = 1, fieldNumber = 1, methodNumber = 1;
     for (const auto &id : ids) {
+        if (canceled_->load()) return;
         const auto symbol = symbols_.value(id);
         const auto name = symbol.value("name").toString();
         const bool suspicious = noisy.match(name).hasMatch() || name.contains(QChar(0xfffd)) ||
@@ -654,6 +661,7 @@ SourceDocument Project::document(const QString &name, bool smali, const QString 
             todo.append(parents_.value(owner));
         }
         for (auto field = fields.cbegin(); field != fields.cend(); ++field) {
+            if (canceled_->load()) return {};
             const QRegularExpression memberAccess(
                 "\\b(?:this|super)\\s*\\.\\s*(" + QRegularExpression::escape(field.key()) +
                     ")(?![\\p{L}\\p{N}_$])",
@@ -690,6 +698,7 @@ SourceDocument Project::document(const QString &name, bool smali, const QString 
         const QRegularExpression words("[\\p{L}_$][\\p{L}\\p{N}_$]*");
         auto wordsIt = words.globalMatch(mask);
         while (wordsIt.hasNext()) {
+            if (canceled_->load()) return {};
             const auto m = wordsIt.next();
             if (overlaps(m.capturedStart(), m.capturedEnd())) continue;
             const QString word = m.captured();
@@ -743,6 +752,7 @@ SourceDocument Project::document(const QString &name, bool smali, const QString 
             R"((?:^|[;{}(,])\s*(?:(?:final|volatile|transient)\s+)*(?!return\b|throw\b|new\b|case\b)(?:[\p{L}_$][\p{L}\p{N}_$.]*(?:\s*<[^;{}()]*>)?(?:\s*\[\s*\])*)\s+([\p{L}_$][\p{L}\p{N}_$]*)\s*(?=[=;,:\)\[]))");
         static const QRegularExpression identifier(R"([\p{L}_$][\p{L}\p{N}_$]*)");
         for (const auto &method : declarations) {
+            if (canceled_->load()) return {};
             if (!method.declaration || !method.id.contains("->") || !method.id.contains('(')) continue;
             int parameters = method.end;
             while (parameters < mask.size() && mask[parameters].isSpace()) ++parameters;
@@ -904,6 +914,7 @@ QJsonArray Project::overrideAnnotations() const {
     std::lock_guard<std::mutex> guard(overrideIndex_->lock);
     if (!overrideIndex_->ready) {
         for (auto it = symbols_.cbegin(); it != symbols_.cend(); ++it) {
+            if (canceled_->load()) return {};
             const auto symbol = it.value();
             if (symbol.value("kind") != "method")
                 continue;
@@ -948,6 +959,7 @@ void Project::replaceData(const Project &other, bool keepDocuments) {
     if (!keepDocuments)
         documents_ = other.documents_;
     if (!keepDocuments) localIndex_ = other.localIndex_;
+    if (!keepDocuments) canceled_ = other.canceled_;
     referenceIndex_ = other.referenceIndex_;
     overrideIndex_ = other.overrideIndex_;
     symbolIndex_ = other.symbolIndex_;

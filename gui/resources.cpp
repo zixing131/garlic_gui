@@ -260,6 +260,42 @@ QString certificateDetails(const QSslCertificate &c) {
 }
 } // namespace
 namespace Resources {
+QString materialize(const QString &path, const QString &entry, QString *error, std::shared_ptr<std::atomic_bool> canceled) {
+    if (canceled && canceled->load()) { *error = "资源读取已取消"; return {}; }
+    if (entry.isEmpty()) return path;
+    const QFileInfo info(path);
+    const auto identity = path.toUtf8() + ':' + QByteArray::number(info.size()) + ':' +
+        QByteArray::number(info.lastModified().toMSecsSinceEpoch()) + ':' + entry.toUtf8();
+    const auto key = QString::fromLatin1(QCryptographicHash::hash(identity, QCryptographicHash::Sha256).toHex());
+    const auto directory = QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + "/resource-files";
+    QDir().mkpath(directory);
+    const auto target = directory + '/' + key + '.' + QFileInfo(entry).suffix();
+    if (QFileInfo::exists(target)) return target;
+    QLockFile lock(target + ".lock");
+    if (!lock.tryLock(1000)) { *error = "资源正在准备，请重试"; return {}; }
+    if (QFileInfo::exists(target)) return target;
+    Archive archive(path);
+    if (!archive.z || zip_entry_open(archive.z, entry.toUtf8().constData()) < 0) {
+        *error = "无法打开压缩包条目"; return {};
+    }
+    QTemporaryFile partial(directory + "/extract-XXXXXX");
+    if (!partial.open()) { *error = partial.errorString(); return {}; }
+    const auto temporary = partial.fileName();
+    struct Extraction { QFile *file; std::shared_ptr<std::atomic_bool> canceled; } extraction{&partial, canceled};
+    const auto write = [](void *context, uint64_t offset, const void *data, size_t size) -> size_t {
+        auto state = static_cast<Extraction *>(context);
+        if (state->canceled && state->canceled->load()) return 0;
+        if (state->file->pos() != qint64(offset) && !state->file->seek(offset)) return 0;
+        const auto written = state->file->write(static_cast<const char *>(data), size);
+        return written < 0 ? 0 : size_t(written);
+    };
+    if (zip_entry_extract(archive.z, write, &extraction) < 0) {
+        *error = "资源解压失败"; return {};
+    }
+    partial.close();
+    if (!QFile::rename(temporary, target)) { *error = "无法保存资源缓存"; return {}; }
+    return target;
+}
 QByteArray read(const QString &path, const QString &entry, qint64 limit, QString *error) {
     if (entry.isEmpty()) {
         QFile f(path);
@@ -668,13 +704,14 @@ QString hex(const QByteArray &b) {
         out += "\n仅预览前 64 KiB，可导出完整资源。";
     return out;
 }
-QJsonObject inspect(const QString &path) {
+QJsonObject inspect(const QString &path, std::shared_ptr<std::atomic_bool> canceled) {
     QJsonArray entries;
     Archive a(path);
     QString manifest;
     if (a.z) {
         int count = zip_entries_total(a.z);
         for (int i = 0; i < count && i < 200000; i++) {
+            if (canceled && canceled->load()) return {};
             if (zip_entry_openbyindex(a.z, i) < 0)
                 continue;
             QString n = QString::fromUtf8(zip_entry_name(a.z));
@@ -682,6 +719,42 @@ QJsonObject inspect(const QString &path) {
                 entries.append(QJsonObject{{"name", n}, {"size", double(zip_entry_size(a.z))}});
             zip_entry_close(a.z);
         }
+    }
+    if (QStringList{"apks", "xapk"}.contains(QFileInfo(path).suffix().toLower())) {
+        QStringList splits;
+        for (const auto &value : entries) {
+            const auto name = value.toObject().value("name").toString();
+            if (name.endsWith(".apk", Qt::CaseInsensitive)) splits << name;
+        }
+        std::sort(splits.begin(), splits.end(), [](const QString &a, const QString &b) {
+            const auto base = [](const QString &s) { return QFileInfo(s).fileName() == "base.apk" || s.contains("base-master"); };
+            if (base(a) != base(b)) return base(a);
+            return a < b;
+        });
+        QMap<QString, QJsonObject> merged;
+        for (const auto &split : splits) {
+            if (canceled && canceled->load()) return {};
+            QString error;
+            const auto file = materialize(path, split, &error, canceled);
+            if (file.isEmpty()) continue;
+            for (const auto &value : inspect(file, canceled).value("entries").toArray()) {
+                auto entry = value.toObject();
+                const auto original = entry.value("name").toString();
+                QString name = original;
+                if (merged.contains(name)) {
+                    if (name == "resources.arsc" || name.endsWith(".dex"))
+                        name = "split-data/" + QFileInfo(split).completeBaseName() + '/' + name;
+                    else continue;
+                }
+                entry["name"] = name;
+                entry["sourcePath"] = file;
+                entry["sourceEntry"] = original;
+                entry["split"] = split;
+                merged.insert(name, entry);
+            }
+        }
+        entries = {};
+        for (const auto &entry : merged) entries.append(entry);
     }
     QString error;
     if (QStringList{"apk", "zip"}.contains(QFileInfo(path).suffix().toLower()))

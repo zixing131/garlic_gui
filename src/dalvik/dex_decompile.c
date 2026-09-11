@@ -140,7 +140,7 @@ static void dex_class_source_save_dir(jd_dex *dex, jsource_file *jf)
     mkdir_p(full_dir);
 
     string path = str_create("%s/%s.java", full_dir, jf->sname);
-    if (getenv("GARLIC_SAFE_SOURCE_PATHS") && !strcmp(getenv("GARLIC_SAFE_SOURCE_PATHS"), "1")) {
+    if (source_safe_paths_enabled()) {
         char *stem = source_storage_name(jf->fname);
         path = str_create("%s/%s.java", meta->source_dir, stem);
         free(stem);
@@ -167,7 +167,7 @@ FILE* dex_class_smali_save_dir(jd_dex *dex, dex_class_def *cf)
     mkdir_p(full_dir);
 
     string path = str_create("%s/%s.smali", full_dir, sname);
-    if (getenv("GARLIC_SAFE_SOURCE_PATHS") && !strcmp(getenv("GARLIC_SAFE_SOURCE_PATHS"), "1")) {
+    if (source_safe_paths_enabled()) {
         char *stem = source_storage_name(desc);
         path = str_create("%s/%s.smali", meta->source_dir, stem);
         free(stem);

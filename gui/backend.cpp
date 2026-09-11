@@ -18,6 +18,7 @@
 #include <QTimer>
 #include <QUuid>
 #include <QtConcurrent>
+#include <future>
 
 Backend::Backend(QObject *parent)
     : QObject(parent), project_(this), settings_(AppSettings::load()) {
@@ -80,6 +81,7 @@ Backend::Backend(QObject *parent)
 }
 
 Backend::~Backend() {
+    project_.cancelPendingWork();
     if (metadataCanceled_)
         metadataCanceled_->store(true);
     if (indexCanceled_)
@@ -288,6 +290,21 @@ void Backend::exportSources(const QString &directory, bool smali) {
         emit failed(tr("导出目标必须是可创建的新目录：%1").arg(directory));
         return;
     }
+    QSet<QString> originalPaths, renamedPaths;
+    bool safePaths = false;
+    for (const auto &name : project_.classes()) {
+        const auto renamed = project_.renamedClass(name);
+        const auto originalKey = name.normalized(QString::NormalizationForm_C).toCaseFolded();
+        const auto renamedKey = renamed.normalized(QString::NormalizationForm_C).toCaseFolded();
+        if (originalPaths.contains(originalKey) || renamedPaths.contains(renamedKey) ||
+            (renamed != name && originalKey == renamedKey)) safePaths = true;
+        originalPaths.insert(originalKey); renamedPaths.insert(renamedKey);
+    }
+    if (safePaths) {
+        QFile marker(directory + "/.garlic-safe-paths");
+        if (!marker.open(QIODevice::WriteOnly)) { emit failed(marker.errorString()); return; }
+        marker.write("1\n");
+    }
     exportDir_ = directory;
     jobDir_ = directory;
     exportQueue_ = inputs_;
@@ -458,7 +475,7 @@ void Backend::finish(int code, QProcess::ExitStatus status) {
         if (inputs_.size() > 1 && QFileInfo(process_.arguments().value(0)).suffix() == "class") {
             for (const auto &name : project_.classes())
                 if (classInput(name) == process_.arguments().value(0)) {
-                    QString dest = exportDir_ + "/" + name + ".java";
+                    QString dest = Project::sourcePath(exportDir_, name, ".java");
                     QDir().mkpath(QFileInfo(dest).absolutePath());
                     QFile::remove(dest);
                     QFile::rename(exportDir_ + "/source.java", dest);
@@ -510,12 +527,9 @@ void Backend::finish(int code, QProcess::ExitStatus status) {
                         if (done.contains(owner))
                             continue;
                         done.insert(owner);
-                        const QString oldPath =
-                            directory + "/" +
-                            (snapshot->inputs().size() == 1 && QFileInfo(input).suffix() == "class"
-                                 ? QString("source")
-                                 : owner) +
-                            (exportSmali ? ".smali" : ".java");
+                        const auto suffix = exportSmali ? QString(".smali") : QString(".java");
+                        const QString oldPath = snapshot->inputs().size() == 1 && QFileInfo(input).suffix() == "class"
+                            ? directory + "/source" + suffix : Project::sourcePath(directory, owner, suffix);
                         if (!QFileInfo::exists(oldPath))
                             continue;
                         if (QFileInfo(oldPath).size() > qint64(limit) * 1024 * 1024) {
@@ -524,11 +538,8 @@ void Backend::finish(int code, QProcess::ExitStatus status) {
                         }
                         const auto document = snapshot->document(owner, exportSmali, oldPath);
                         const auto renamed = snapshot->renamedClass(owner);
-                        const QString target = renamed == owner
-                                                   ? oldPath
-                                                   : QFileInfo(oldPath).absolutePath() + "/" +
-                                                         renamed.section('/', -1) +
-                                                         (exportSmali ? ".smali" : ".java");
+                        const QString target = renamed == owner ? oldPath : Project::sourcePath(directory, renamed, suffix);
+                        QDir().mkpath(QFileInfo(target).absolutePath());
                         QSaveFile file(target);
                         if (!file.open(QIODevice::WriteOnly) ||
                             file.write(document.text.toUtf8()) < 0 || !file.commit()) {
@@ -555,7 +566,7 @@ void Backend::applyEnvironment(QProcess &process, const QString &directory) {
     env.insert("GARLIC_SOURCE_MAP_DIR", directory);
     if (workspace_)
         env.insert("GARLIC_APK_CACHE_DIR", workspace_->path() + "/apk-cache");
-    env.insert("GARLIC_SAFE_SOURCE_PATHS", workspace_ && directory == workspace_->path() + "/all-java" ? "1" : "0");
+    env.insert("GARLIC_SAFE_SOURCE_PATHS", QFileInfo::exists(directory + "/.garlic-safe-paths") ? "1" : "0");
     env.insert("GARLIC_ESCAPE_UNICODE", settings_.escapeUnicode ? "1" : "0");
     env.insert("GARLIC_SIMPLIFY_CONTROL_FLOW", settings_.simplifyControlFlow ? "1" : "0");
     env.insert("GARLIC_UNFLATTEN", settings_.unflatten ? "1" : "0");
@@ -879,6 +890,7 @@ void Backend::prepareMetadata() {
     const auto settings = settings_;
     const int generation = projectGeneration_;
     auto snapshot = project_.snapshot();
+    snapshot->setCancellationToken(canceled);
     const int totalClasses = snapshot->classCount();
     QPointer<Backend> self(this);
     emit loadProgress(tr("成员与引用"), 0);
@@ -987,10 +999,11 @@ void Backend::prepareMetadata() {
         if (settings.deobfuscate) snapshot->deobfuscateNames();
         progress(QObject::tr("构建查询索引"), 33);
         // Both indexes read immutable metadata and own separate synchronization.
-        auto references = QtConcurrent::run([snapshot] { snapshot->xrefs(QString()); });
+        auto references = std::async(std::launch::async, [snapshot] { snapshot->xrefs(QString()); });
         snapshot->symbols();
         progress(QObject::tr("构建查询索引"), 66);
-        references.waitForFinished();
+        references.get();
+        if (canceled->load()) return {{}, QStringLiteral("canceled")};
         progress(QObject::tr("构建查询索引"), 100);
         return {snapshot, {}};
     }));

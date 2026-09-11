@@ -10,6 +10,8 @@ import sys
 import tempfile
 import zipfile
 
+os.environ["GARLIC_SAFE_SOURCE_PATHS"] = "0"  # Legacy paths tested explicitly below.
+
 engine, fixtures = Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve()
 files = [fixtures / 'demo.jar', fixtures / 'demo.zip', fixtures / 'Main.class', fixtures / 'unknown.jar']
 files += [p for p in (fixtures / 'classes.dex', fixtures / '示例 app.apk', fixtures / 'nested.apks') if p.exists()]
@@ -44,6 +46,19 @@ def test_workspace():
 
 
 with test_workspace() as root:
+    # Encoded paths remain distinct after Windows case folding.
+    for mode in (['explicit', 'windows-default'] if os.name == 'nt' else ['explicit']):
+        safe = root / ('safe-output-' + mode)
+        environment = dict(os.environ, GARLIC_SAFE_SOURCE_PATHS='1')
+        if mode == 'windows-default': environment.pop('GARLIC_SAFE_SOURCE_PATHS')
+        run([str(engine), str(fixtures / 'cases.dex'), '-o', str(safe)],
+            env=environment, check=True, capture_output=True, timeout=20)
+        paths = list(safe.rglob('*.java'))
+        assert len(paths) == len({str(p).casefold() for p in paths})
+        sources = [p.read_text(encoding='utf-8') for p in paths]
+        assert any('class Foo' in text for text in sources)
+        assert any('class foo' in text for text in sources)
+
     # Fast directory mode must preserve archive order, case and class kinds.
     archive_path = root / 'directory.apk'
     with zipfile.ZipFile(archive_path, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
@@ -76,6 +91,15 @@ with test_workspace() as root:
                   '-o', str(root / 'broken-out'), '-t', '2'],
                  env=dict(os.environ, GARLIC_DIRECTORY_INDEX='names'), capture_output=True, timeout=20)
     assert result.returncode != 0, 'Malformed DEX directory accepted'
+    # Raw control-flow simulation must propagate values introduced on a backedge.
+    raw_output = root / 'flattened-without-deobfuscation'
+    for threads in ('1', '4'):
+        run([str(engine), str(fixtures / 'flattened.dex'), '-o', str(raw_output), '-t', threads],
+            check=True, capture_output=True, timeout=20,
+            env=dict(os.environ, GARLIC_UNFLATTEN='0', GARLIC_DEOBFUSCATE='0'))
+        raw_code = (raw_output / 'demo/Flattened.java').read_text(encoding='utf-8')
+        assert 'compareDispatcher()' in raw_code and 'return i3;' in raw_code
+
     # Owned smali fixture: constant dispatcher specialization must preserve
     # results, including sparse negative keys and switch default paths.
     flattened = root / 'unflattened'

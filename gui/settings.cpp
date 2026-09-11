@@ -7,6 +7,7 @@ QJsonObject AppSettings::toJson() const {
             {"fontSize", fontSize},
             {"cacheMiB", cacheMiB},
             {"sourceMiB", sourceMiB},
+            {"hexPreviewKiB", hexPreviewKiB},
             {"escapeUnicode", escapeUnicode},
             {"background", background},
             {"wordWrap", wordWrap},
@@ -30,6 +31,7 @@ AppSettings AppSettings::fromJson(const QJsonObject &j) {
     s.maxTabs = qBound(1, j.value("maxTabs").toInt(s.maxTabs), 64);
     s.fontSize = qBound(8, j.value("fontSize").toInt(s.fontSize), 32);
     s.cacheMiB = qBound(16, j.value("cacheMiB").toInt(s.cacheMiB), 4096);
+    s.hexPreviewKiB = qBound(1, j.value("hexPreviewKiB").toInt(s.hexPreviewKiB), 16384);
     s.sourceMiB = qBound(1, j.value("sourceMiB").toInt(s.sourceMiB), 64);
     s.escapeUnicode = j.value("escapeUnicode").toBool(s.escapeUnicode);
     s.background = j.value("background").toBool(s.background);
