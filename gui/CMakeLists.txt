@@ -1,11 +1,11 @@
-set(GARLIC_GUI_VERSION "0.5.18")
+set(GARLIC_GUI_VERSION "0.5.19")
 find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Network Concurrent)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 qt_add_library(garlic-gui-core STATIC
-    indexcache.cpp indexcache.h indexsnapshot.cpp
+    indexcache.cpp indexcache.h indexsnapshot.cpp projectmap.h
     scriptdialog.cpp scriptdialog.h
     memoryusage.cpp memoryusage.h mainwindow.cpp mainwindow.h backend.cpp backend.h codeeditor.cpp codeeditor.h
     settings.cpp settings.h project.cpp project.h classview.cpp classview.h

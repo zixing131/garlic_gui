@@ -15,12 +15,12 @@
 #include <QUuid>
 #include <algorithm>
 namespace {
-QByteArray digest(const QString &path, const std::shared_ptr<std::atomic_bool> &cancel) {
+QByteArray digest(const QString &path, const std::shared_ptr<std::atomic_bool> &cancel, qint64 limit = -1) {
     QFile file(path); if (!file.open(QIODevice::ReadOnly)) return {};
     QCryptographicHash hash(QCryptographicHash::Blake2b_256);
-    while (!file.atEnd()) {
+    while (!file.atEnd() && (limit < 0 || file.pos() < limit)) {
         if (cancel && cancel->load()) return {};
-        const auto data = file.read(1024 * 1024);
+        const auto data = file.read(limit < 0 ? 1048576 : qMin<qint64>(1048576, limit - file.pos()));
         if (data.isEmpty() && file.error() != QFileDevice::NoError) return {};
         hash.addData(data);
     }
@@ -38,7 +38,8 @@ QByteArray stamps(const QStringList &inputs, const QString &engine) {
 QString fingerprint(const AppSettings &settings, const QStringList &inputs, const QString &engine,
                     const std::shared_ptr<std::atomic_bool> &cancel) {
     QCryptographicHash key(QCryptographicHash::Sha256);
-    key.addData("garlic-index-1:" GARLIC_GUI_VERSION);
+    key.addData("garlic-index-4:" GARLIC_GUI_VERSION);
+    key.addData(qVersion()); // QString shard hashing may change between Qt versions.
     auto add = [&](const QByteArray &value) { key.addData(QByteArray::number(value.size()) + ':'); key.addData(value); };
     for (const auto &path : inputs) {
         const auto hash = digest(path, cancel); if (hash.isEmpty()) return {};
@@ -145,7 +146,7 @@ IndexCache::Lookup IndexCache::lookup(const AppSettings &settings, const QString
         const auto name = value.toString(); const QFileInfo info(result.path + '/' + name);
         if (name.isEmpty() || name.contains('/') || name.contains('\\') || !info.isFile() || info.isSymLink()) return result;
     }
-    if (digest(binary, cancel) != m.value("blake2b256").toString().toLatin1()) return result;
+    if (digest(binary, cancel, 4096) != m.value("headerBlake2b256").toString().toLatin1()) return result;
     if (qEnvironmentVariableIsSet("GARLIC_PROFILE_LOAD")) qInfo() << "Cache validation ms" << timing.elapsed();
     QFile file(binary);
     if (file.open(QIODevice::ReadOnly)) result.project = Project::readIndexSnapshot(&file, cancel);
@@ -172,12 +173,12 @@ bool IndexCache::store(const AppSettings &settings, const Ticket &ticket, const 
         if (!QFile::copy(jsonl[i], staging.path() + '/' + name)) return fail("Cannot preserve index JSONL");
         names.append(name);
     }
-    const auto hash = digest(binary, cancel); if (hash.isEmpty()) return false;
+    const auto hash = digest(binary, cancel, 4096); if (hash.isEmpty()) return false;
     QSaveFile info(staging.path() + "/manifest.json");
     if (!info.open(QIODevice::WriteOnly)) return fail(info.errorString());
     info.write(QJsonDocument(QJsonObject{{"owner", "garlic-index-cache"}, {"key", contentKey},
         {"created", double(QDateTime::currentMSecsSinceEpoch())}, {"inputs", QJsonArray::fromStringList(project->inputs())},
-        {"blake2b256", QString::fromLatin1(hash)}, {"snapshotBytes", double(QFileInfo(binary).size())},
+        {"headerBlake2b256", QString::fromLatin1(hash)}, {"snapshotBytes", double(QFileInfo(binary).size())},
         {"files", QJsonArray::fromStringList(names)}}).toJson());
     if (!info.commit()) return fail(info.errorString());
     names.append("manifest.json");

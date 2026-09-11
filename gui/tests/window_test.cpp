@@ -87,6 +87,7 @@ class WindowTest : public QObject {
         if (input.isEmpty()) QSKIP("Set APK for lifecycle profiling");
         auto window = std::make_unique<MainWindow>(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
         auto settings = window->backend()->settings(); settings.background = false;
+        settings.indexDirectory = qEnvironmentVariable("GARLIC_TEST_CACHE_DIRECTORY", settings.indexDirectory);
         settings.deobfuscate = qEnvironmentVariableIsSet("GARLIC_TEST_DEOBFUSCATE");
         window->backend()->configure(settings); window->show();
         QElapsedTimer clock; clock.start(); qint64 last = 0, maxGap = 0; QString phase;

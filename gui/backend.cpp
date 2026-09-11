@@ -261,7 +261,13 @@ void Backend::openPaths(const QStringList &paths) {
     project_.reset(input_);
     project_.setInputs(inputs_);
     // Millions of old metadata objects must not be destroyed on the UI thread.
-    (void)QtConcurrent::run([retiredProject = std::move(retiredProject)] {});
+    (void)QtConcurrent::run([retiredProject = std::move(retiredProject)]() mutable {
+        auto thread = QThread::currentThread();
+        const auto priority = thread->priority();
+        thread->setPriority(QThread::LowestPriority);
+        retiredProject.reset();
+        thread->setPriority(priority == QThread::InheritPriority ? QThread::NormalPriority : priority);
+    });
     indexTicket_ = {}; indexCacheHit_ = false;
     const bool rebuild = rebuildIndex_; rebuildIndex_ = false;
     if (!IndexCache::enabled(settings_)) { nextIndex(); return; }
@@ -319,9 +325,12 @@ void Backend::persistIndex(const std::shared_ptr<Project> &project, const QStrin
         emit log(result.isEmpty() ? tr("磁盘索引已保存（含 JSONL）。") : tr("索引缓存未保存：%1").arg(result));
         emit indexCacheChanged();
     });
-    watcher->setFuture(QtConcurrent::run([settings, ticket, project, jsonl, keep, workspace] {
+    watcher->setFuture(QtConcurrent::run([settings, ticket, project, jsonl, keep = std::shared_ptr<QTemporaryDir>(keep), workspace]() mutable {
         QString error;
         if (!IndexCache::store(settings, ticket, project, jsonl, workspace->path(), &error) && error.isEmpty()) error = "Canceled";
+        // Remove the nested metadata directory while its parent workspace is
+        // still retained; otherwise both cleanup jobs can race on reopen.
+        keep.reset();
         return error;
     }));
 }

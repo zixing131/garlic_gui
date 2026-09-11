@@ -52,6 +52,26 @@ class IndexCacheTest : public QObject {
         QVERIFY(!IndexCache::store(settings, cold.ticket, p, {jsonl}, temp.path(), &error)); // stale writer after clear
         QCOMPARE(IndexCache::stats(settings).value("entries").toInt(), 0);
     }
+    void blockIntegrity() {
+        auto p = project("input");
+        QByteArray bytes; QBuffer out(&bytes); QVERIFY(out.open(QIODevice::WriteOnly));
+        QVERIFY(p->writeIndexSnapshot(&out)); out.close();
+        auto cancel = std::make_shared<std::atomic_bool>(false);
+        auto read = [&](const QByteArray &data) {
+            QBuffer in; in.setData(data); in.open(QIODevice::ReadOnly);
+            return Project::readIndexSnapshot(&in, cancel);
+        };
+        QVERIFY(read(bytes));
+        // Every independently parsed block must be verified, even when the
+        // outer fixed header remains intact and the file length is unchanged.
+        for (qsizetype offset : {qsizetype(4096), bytes.size() / 2 + 2048, bytes.size() - 1}) {
+            auto corrupt = bytes; corrupt[offset] = char(corrupt.at(offset) ^ 1); QVERIFY(!read(corrupt));
+        }
+        auto truncated = bytes; truncated.chop(1); QVERIFY(!read(truncated));
+        auto appended = bytes; appended.append('x'); QVERIFY(!read(appended));
+        auto badHeader = bytes; badHeader[24] = char(0xff); QVERIFY(!read(badHeader));
+        cancel->store(true); QVERIFY(!read(bytes));
+    }
     void oldestFirstQuota() {
         QTemporaryDir temp; AppSettings settings; settings.indexDirectory = temp.path() + "/cache";
         auto canceled = std::make_shared<std::atomic_bool>(false);
@@ -81,7 +101,7 @@ class IndexCacheTest : public QObject {
     void realApkCache() {
         const auto input = qEnvironmentVariable("GARLIC_TEST_CACHE_APK");
         if (input.isEmpty()) QSKIP("Set GARLIC_TEST_CACHE_APK for cold/warm timing");
-        QTemporaryDir temp; AppSettings settings; settings.indexDirectory = temp.path() + "/cache";
+        QTemporaryDir temp; AppSettings settings; settings.indexDirectory = qEnvironmentVariable("GARLIC_TEST_CACHE_DIRECTORY", temp.path() + "/cache");
         settings.background = false; settings.deobfuscate = true;
         Backend backend; backend.setEngine(qEnvironmentVariable("GARLIC_TEST_ENGINE")); backend.configure(settings);
         connect(&backend, &Backend::log, &backend, [](const QString &text) { if (!text.startsWith("[")) qInfo().noquote() << text; });
@@ -96,11 +116,31 @@ class IndexCacheTest : public QObject {
         QTRY_VERIFY_WITH_TIMEOUT(!backend.indexCacheWriting(), 180000);
         QCOMPARE(IndexCache::stats(settings).value("entries").toInt(), 1);
         qInfo() << "saved ms" << timer.elapsed() << "bytes" << IndexCache::stats(settings).value("bytes");
+        const auto referenceId = Project::classId("com/tencent/mm/ui/LauncherUI");
+        const auto references = backend.project()->xrefs(referenceId);
+        const auto aliases = backend.project()->aliasVersion();
         timer.restart(); backend.open(input);
         QTRY_VERIFY_WITH_TIMEOUT(!backend.busy(), 180000);
         QVERIFY(backend.indexCacheHit()); QVERIFY(backend.metadataReady());
         QCOMPARE(backend.project()->classCount(), count);
         qInfo() << "warm complete ms" << timer.elapsed() << "classes" << count;
+        QCOMPARE(backend.project()->xrefs(referenceId), references);
+        QCOMPARE(backend.project()->aliasVersion(), aliases);
+    }
+    void realWarmCache() {
+        const auto input = qEnvironmentVariable("GARLIC_TEST_CACHE_APK");
+        const auto root = qEnvironmentVariable("GARLIC_TEST_CACHE_DIRECTORY");
+        if (input.isEmpty() || root.isEmpty()) QSKIP("Provide an APK and a previously populated benchmark cache directory");
+        AppSettings settings; settings.indexDirectory = root; settings.deobfuscate = true; settings.background = false;
+        Backend backend; backend.setEngine(qEnvironmentVariable("GARLIC_TEST_ENGINE")); backend.configure(settings);
+        QElapsedTimer timer; timer.start(); backend.open(input);
+        QTRY_VERIFY_WITH_TIMEOUT(!backend.busy(), 120000);
+        QVERIFY(backend.indexCacheHit()); QVERIFY(backend.metadataReady());
+        qInfo() << "fresh process warm complete ms" << timer.elapsed() << "classes" << backend.project()->classCount();
+        timer.restart(); backend.open(input);
+        QTRY_VERIFY_WITH_TIMEOUT(!backend.busy(), 120000);
+        QVERIFY(backend.indexCacheHit()); QVERIFY(backend.metadataReady());
+        qInfo() << "same process warm complete ms" << timer.elapsed();
     }
     void backendReopenAndRebuild_data() {
         QTest::addColumn<QStringList>("names");

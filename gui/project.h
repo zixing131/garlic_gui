@@ -1,5 +1,6 @@
 #pragma once
 #include <QIODevice>
+#include "projectmap.h"
 #include <QDateTime>
 #include <QHash>
 #include <QJsonArray>
@@ -87,7 +88,7 @@ class Project : public QObject {
 
   private:
     std::shared_ptr<std::atomic_bool> canceled_ = std::make_shared<std::atomic_bool>(false);
-    QHash<QString, QJsonObject> classes_, symbols_;
+    ProjectMap classes_, symbols_;
     QHash<QString, QString> aliases_;
     QHash<QString, QStringList> classNames_, parents_;
     QVector<QHash<QString, QString>> undo_;
