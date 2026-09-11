@@ -214,8 +214,13 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
         if (!index.isValid())
             return;
         auto first = index.siblingAtColumn(0);
+        auto hit = first.data(Qt::UserRole + 4).toJsonObject();
+        if (hit.value("smali").toBool()) {
+            hit["smali"] = false;
+            hit["preferJava"] = true;
+        }
         window->navigateTo(first.data(Qt::UserRole + 1).toString(),
-                           first.data(Qt::UserRole + 2).toInt(), id, first.data(Qt::UserRole + 4).toJsonObject());
+                           first.data(Qt::UserRole + 2).toInt(), id, hit);
         if (!keep->isChecked())
             this->close();
     };
@@ -352,10 +357,14 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
             ordered.append({project->owner(Project::classOf(ref.value("from").toString())), ref});
         }
         std::stable_sort(ordered.begin(), ordered.end(), [](const auto &a, const auto &b) {
-            return a.first < b.first;
+            if (a.first != b.first) return a.first < b.first;
+            const auto fromA = a.second.value("from").toString(), fromB = b.second.value("from").toString();
+            if (fromA != fromB) return fromA < fromB;
+            return a.second.value("offset").toInt(-1) < b.second.value("offset").toInt(-1);
         });
         QString loadedOwner;
         ReferenceDocument doc;
+        QHash<QString, int> bytecodeOccurrences;
         QSet<QString> resolvedMethods;
         QSet<QString> seen;
         for (const auto &v : ordered) {
@@ -412,6 +421,7 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
                 rows.append(QJsonObject{{"from", from}, {"line", line}, {"text", text},
                     {"hit", QJsonObject{{"symbol", ref.value("target").toString(id)}, {"scope", from},
                         {"smali", ref.value("kind") == "bytecode" && ref.value("offset").toInt(-1) >= 0},
+                        {"occurrence", bytecodeOccurrences[from + "\n" + ref.value("target").toString(id)]++},
                         {"offset", ref.value("offset").toInt(-1)}}}});
             }
         }

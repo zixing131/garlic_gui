@@ -26,6 +26,8 @@ class ClassView : public QWidget {
     void modeChanged();
 
   private:
+    void restoreModePosition();
+    QJsonObject modePosition_;
     SourceDocument raw_[2];
     QString name_;
     QTabWidget *modes_;

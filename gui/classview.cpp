@@ -15,6 +15,28 @@ ClassView::ClassView(const QString &name, bool hasSmali, const AppSettings &sett
         auto code = new CodeEditor(i == 1);
         code->setPlainText(i ? tr("切换到 Smali 后按需加载。") : tr("正在加载 Java 源码…"));
         modes_->addTab(code, i ? "Smali" : tr("代码"));
+        connect(code, &CodeEditor::modeSwitchRequested, this, [this, code] {
+            if (!modes_->isTabEnabled(1) || !loaded(smali())) return;
+            const int position = code->textCursor().selectionStart();
+            QString scope, symbol;
+            bool declaration = false;
+            const auto spans = code->spans();
+            for (const auto &span : spans) {
+                if (span.start > position) break;
+                if (span.declaration && !span.id.contains("@local:")) scope = span.id;
+                if (position < span.end) { symbol = span.id; declaration = span.declaration; }
+            }
+            int occurrence = 0;
+            for (const auto &span : spans) {
+                if (span.start >= position) break;
+                if (span.declaration && span.id == scope) occurrence = 0;
+                if (!span.declaration && span.id == symbol && span.end <= position) ++occurrence;
+            }
+            modePosition_ = {{"symbol", symbol}, {"scope", scope}, {"occurrence", occurrence}, {"declaration", declaration}};
+            selectMode(!smali());
+            restoreModePosition();
+            editor()->setFocus();
+        });
     }
     modes_->setTabEnabled(1, hasSmali);
     layout->addWidget(modes_);
@@ -29,6 +51,7 @@ CodeEditor *ClassView::editor(bool smali) const {
 void ClassView::setSource(bool smali, const SourceDocument &document) {
     editor(smali)->setSource(document);
     loaded_[smali ? 1 : 0] = true;
+    if (this->smali() == smali) restoreModePosition();
 }
 void ClassView::applySettings(const AppSettings &settings) {
     for (int i = 0; i < 2; i++) {
@@ -49,4 +72,13 @@ void ClassView::invalidate() {
         setProperty(i ? "loadingSmali" : "loadingJava", false);
         editor(i)->setSource({tr("源码缓存已清理。重新选择该标签或代码模式以加载。"), {}});
     }
+}
+
+void ClassView::restoreModePosition() {
+    if (modePosition_.isEmpty() || !loaded(smali())) return;
+    const auto hit = modePosition_; modePosition_ = {};
+    const auto symbol = hit.value("symbol").toString();
+    if (!symbol.isEmpty() && (hit.value("declaration").toBool()
+            ? editor()->goToSymbol(symbol) : editor()->goToHit(hit))) return;
+    editor()->goToSymbol(hit.value("scope").toString());
 }

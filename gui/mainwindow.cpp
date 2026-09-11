@@ -898,8 +898,12 @@ void MainWindow::loadCurrent() {
                 code->verticalScrollBar()->setValue(pendingHit_.value("vertical").toInt());
                 code->horizontalScrollBar()->setValue(pendingHit_.value("horizontal").toInt());
             } else if (!pendingHit_.isEmpty()) {
-                if (!page->editor()->goToHit(pendingHit_))
-                    status_->setText(tr("源码已变化，无法精确定位，请重新搜索。"));
+                if (!page->editor()->goToHit(pendingHit_)) {
+                    if (pendingHit_.value("preferJava").toBool()) {
+                        page->editor()->goToSymbol(pendingHit_.value("scope").toString());
+                        status_->setText(tr("此字节码引用没有对应 Java 表达式，已定位到所属方法。"));
+                    } else status_->setText(tr("源码已变化，无法精确定位，请重新搜索。"));
+                }
             } else if (!page->editor()->goToSymbol(pendingId_, pendingLine_) && pendingLine_)
                 page->editor()->goToLine(pendingLine_);
             pendingId_.clear(); pendingLine_ = 0; pendingHit_ = {}; pendingClass_.clear();

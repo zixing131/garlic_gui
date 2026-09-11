@@ -10,6 +10,63 @@
 class InteractionTest : public QObject {
     Q_OBJECT
   private slots:
+    void smaliSearchPreference() {
+        QSettings settings;
+        const auto previous = settings.value("search/smali");
+        settings.remove("search/smali");
+        MainWindow window;
+        {
+            SearchDialog dialog(&window);
+            auto checkbox = dialog.findChild<QCheckBox *>("searchSmali");
+            QVERIFY(checkbox); QVERIFY(!checkbox->isChecked());
+            checkbox->setChecked(true);
+        }
+        {
+            SearchDialog dialog(&window);
+            QVERIFY(dialog.findChild<QCheckBox *>("searchSmali")->isChecked());
+        }
+        if (previous.isValid()) settings.setValue("search/smali", previous);
+        else settings.remove("search/smali");
+    }
+    void tabSwitchPosition() {
+        ClassView view("Use", true, AppSettings{});
+        const QString method = "LUse;->run()V", field = "LUse;->value:I";
+        view.setSource(false, {"run value", {{0, 3, method, true}, {4, 9, field, false}}});
+        auto cursor = view.editor()->textCursor(); cursor.setPosition(6); view.editor()->setTextCursor(cursor);
+        QTest::keyClick(view.editor(), Qt::Key_Tab);
+        QVERIFY(view.smali());
+        // The destination can arrive asynchronously after switching tabs.
+        view.setSource(true, {".method run\niget value\n", {{8, 11, method, true}, {17, 22, field, false}}});
+        QCOMPARE(view.editor()->textCursor().selectedText(), QString("value"));
+        QTest::keyClick(view.editor(), Qt::Key_Tab);
+        QVERIFY(!view.smali());
+        QCOMPARE(view.editor()->textCursor().selectionStart(), 4);
+    }
+    void smaliSearchOptIn() {
+        Backend backend; backend.setEngine(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
+        backend.open(qEnvironmentVariable("GARLIC_TEST_FIXTURES") + "/cases.dex");
+        QTRY_VERIFY_WITH_TIMEOUT(!backend.busy(), 15000);
+        QSignalSpy completed(&backend, &Backend::searchCompleted);
+        SearchOptions options; options.code = false; options.query = ".method";
+        backend.search(options);
+        QTRY_COMPARE_WITH_TIMEOUT(completed.count(), 1, 15000);
+        QVERIFY(qvariant_cast<SearchResult>(completed.last()[1]).hits.isEmpty());
+        options.smali = true;
+        backend.search(options);
+        QTRY_COMPARE_WITH_TIMEOUT(completed.count(), 2, 15000);
+        const auto result = qvariant_cast<SearchResult>(completed.last()[1]);
+        QVERIFY2(result.error.isEmpty(), qPrintable(result.error));
+        QVERIFY(!result.hits.isEmpty());
+        for (const auto &hit : result.hits) QVERIFY(hit.toObject().value("smali").toBool());
+        const auto hit = result.hits.first().toObject();
+        const auto name = hit.value("class").toString();
+        const auto path = backend.cachedPath(name, true);
+        QVERIFY(!path.isEmpty());
+        CodeEditor editor(true);
+        editor.setSource(backend.project()->document(name, true, path));
+        QVERIFY(editor.goToHit(hit));
+        QCOMPARE(editor.textCursor().selectedText(), QString(".method"));
+    }
     void clickSelectAndReferencePosition() {
         CodeEditor editor(false);
         const QString text = "int X = 0;\nX += X;\n";

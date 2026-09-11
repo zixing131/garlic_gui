@@ -136,8 +136,11 @@ bool Backend::supportsSmali(const QString &name) const {
     const auto ext = QFileInfo(name.isEmpty() ? input_ : classInput(name)).suffix().toLower();
     if (ext == "apk" || ext == "dex" || ext == "xapk" || ext == "apks")
         return true;
-    return ext == "zip" && project_.info(name).value("origin").toString().endsWith(".dex",
-                                                                                Qt::CaseInsensitive);
+    if (ext != "zip") return false;
+    if (!name.isEmpty()) return project_.info(name).value("origin").toString().endsWith(".dex", Qt::CaseInsensitive);
+    for (const auto &entry : project_.classes())
+        if (project_.info(entry).value("origin").toString().endsWith(".dex", Qt::CaseInsensitive)) return true;
+    return false;
 }
 
 bool Backend::safeClassName(const QString &name) {
@@ -746,6 +749,11 @@ QString Backend::cachedPath(const QString &name, bool smali) const {
     const auto direct = cache_.value(name + (smali ? ":smali" : ":java"));
     if (direct.startsWith("memory:") || QFileInfo::exists(direct))
         return direct;
+    if (smali && workspace_) {
+        const auto root = workspace_->path() + "/search-smali";
+        const auto path = Project::sourcePath(root, name, ".smali");
+        if (QFileInfo::exists(root + "/.complete") && QFileInfo::exists(path)) return path;
+    }
     const auto persistent = IndexCache::cachedSource(sourceCacheDirectory_, smali ? name : project_.owner(name), smali);
     if (!persistent.isEmpty()) return persistent;
     if (fullReady_ && !smali && workspace_) {
@@ -1007,7 +1015,7 @@ int Backend::search(const SearchOptions &options) {
     const int request = ++searchGeneration_;
     searchControl_ = std::make_shared<SearchControl>();
     const auto control = searchControl_;
-    if (!metadataReady_ && (options.classes || options.methods || options.fields || options.code || options.comments)) {
+    if (!metadataReady_ && (options.classes || options.methods || options.fields || options.code || options.comments || options.smali)) {
         prepareMetadata();
         const auto workspace = workspace_;
         auto timer = new QTimer(this);
@@ -1058,13 +1066,65 @@ void Backend::runSearch(const SearchOptions &options, int request,
     });
     auto settings = options;
     settings.sourceMiB = settings_.sourceMiB;
+    settings.smali = settings.smali && supportsSmali();
     const bool single = inputs_.size() == 1 && QFileInfo(input_).suffix() == "class";
     const auto directory = sourceRoot();
+    QProcess environmentSource;
+    applyEnvironment(environmentSource, directory);
+    const auto environment = environmentSource.processEnvironment();
+    const auto engine = engine_;
+    const auto inputs = inputs_;
+    const int threads = settings_.threads;
     watcher->setFuture(QtConcurrent::run(
-        [snapshot, settings, control, generating, workspace, single, events, request, index, directory] {
-            return searchProject(snapshot, settings,
-                                 directory, single,
-                                 generating, control, events, request, index, true);
+        [snapshot, settings, control, generating, workspace, single, events, request, index, directory,
+         environment, engine, inputs, threads] {
+            auto result = searchProject(snapshot, settings, directory, single,
+                                        generating, control, events, request, index, true);
+            if (!settings.smali || settings.query.isEmpty() || control->canceled || result.canceled || result.truncated || !result.error.isEmpty() || !workspace)
+                return result;
+            const QString root = workspace->path() + "/search-smali";
+            if (!QFileInfo::exists(root + "/.complete")) {
+                QTemporaryDir attempt(workspace->path() + "/smali-search-XXXXXX");
+                if (!attempt.isValid()) { result.error = "Cannot create Smali search workspace"; return result; }
+                QFile marker(attempt.path() + "/.garlic-safe-paths");
+                if (!marker.open(QIODevice::WriteOnly)) { result.error = marker.errorString(); return result; }
+                marker.write("1\n"); marker.close();
+                auto env = environment;
+                env.insert("GARLIC_SOURCE_MAP_DIR", attempt.path());
+                env.insert("GARLIC_SAFE_SOURCE_PATHS", "1");
+                for (const auto &input : inputs) {
+                    if (control->canceled) { result.canceled = true; return result; }
+                    QProcess process; process.setProcessEnvironment(env);
+                    process.setStandardOutputFile(QProcess::nullDevice());
+                    process.setStandardErrorFile(attempt.path() + "/engine.log");
+                    process.start(engine, {input, "-s", "-o", attempt.path(), "-t", QString::number(threads)});
+                    if (!process.waitForStarted()) { result.error = process.errorString(); return result; }
+                    while (!process.waitForFinished(50)) {
+                        if (control->canceled) {
+                            process.kill(); process.waitForFinished(1000); result.canceled = true; return result;
+                        }
+                    }
+                    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
+                        result.error = "Smali generation failed"; return result;
+                    }
+                }
+                if (control->canceled) { result.canceled = true; return result; }
+                QFile complete(attempt.path() + "/.complete");
+                if (!complete.open(QIODevice::WriteOnly)) { result.error = complete.errorString(); return result; }
+                complete.close();
+                if (QDir().rename(attempt.path(), root)) attempt.setAutoRemove(false);
+                else if (!QFileInfo::exists(root + "/.complete")) { result.error = "Cannot publish Smali search cache"; return result; }
+            }
+            auto smaliOptions = settings;
+            smaliOptions.sourceSmali = true; smaliOptions.code = true; smaliOptions.comments = true;
+            smaliOptions.classes = smaliOptions.methods = smaliOptions.fields = smaliOptions.resources = false;
+            smaliOptions.limit = qMax(1, settings.limit - int(result.hits.size()));
+            const auto smali = searchProject(snapshot, smaliOptions, root, false,
+                std::make_shared<std::atomic_bool>(false), control, events, request, index, true);
+            for (const auto &hit : smali.hits) result.hits.append(hit);
+            result.scanned += smali.scanned; result.missing += smali.missing; result.skipped += smali.skipped;
+            result.canceled = smali.canceled; result.truncated = smali.truncated; result.error = smali.error;
+            return result;
         }));
 }
 

@@ -556,3 +556,14 @@ void CodeEditor::scheduleHighlight() {
     };
     QTimer::singleShot(0, this, [step] { (*step)(); });
 }
+
+bool CodeEditor::event(QEvent *event) {
+    if (event->type() == QEvent::KeyPress) {
+        auto key = static_cast<QKeyEvent *>(event);
+        if (key->key() == Qt::Key_Tab && key->modifiers() == Qt::NoModifier) {
+            emit modeSwitchRequested();
+            return true;
+        }
+    }
+    return QPlainTextEdit::event(event);
+}

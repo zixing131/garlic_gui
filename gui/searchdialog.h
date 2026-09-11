@@ -27,7 +27,7 @@ class SearchDialog : public QDialog {
     QBoxLayout *filters_ = nullptr;
     QLineEdit *query_, *package_;
     QComboBox *history_;
-    QCheckBox *resources_, *classes_, *methods_, *fields_, *code_, *comments_, *regex_, *sensitive_, *automatic_,
+    QCheckBox *smali_, *resources_, *classes_, *methods_, *fields_, *code_, *comments_, *regex_, *sensitive_, *automatic_,
         *keep_;
     QTableView *table_;
     QLabel *status_;

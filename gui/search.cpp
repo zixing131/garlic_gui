@@ -293,7 +293,7 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
                         {"line", 0},
                         {"text", text + symbol.value("descriptor").toString()}});
         }
-    if ((o.code || o.comments) && !o.indexOnly && !stopped())
+    if (!o.sourceSmali && (o.code || o.comments) && !o.indexOnly && !stopped())
         for (const auto &v : project->overrideAnnotations()) {
             if (stopped())
                 break;
@@ -326,7 +326,7 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
         QSet<QString> seen;
         for (const auto &name : project->classes())
             if (inPackage(name)) {
-                auto owner = project->owner(name);
+                auto owner = o.sourceSmali ? name : project->owner(name);
                 if (!seen.contains(owner)) {
                     seen.insert(owner);
                     pending.push_back(owner);
@@ -344,7 +344,7 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
                 auto name = std::move(pending.front());
                 pending.pop_front();
                 const QString base = directory + '/' + (singleClass ? "source" : safePaths ? Project::sourceStem(name) : name),
-                              path = base + ".java";
+                              path = base + (o.sourceSmali ? ".smali" : ".java");
                 const QString map =
                     singleClass ? directory + '/' + (safePaths ? Project::sourceStem(name) : name) + ".map.json" : base + ".map.json";
                 // The engine publishes a map after flushing a complete class, so in-flight files
@@ -403,7 +403,7 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
                             continue;
                         }
                     }
-                    const auto source = project->sourceBytes(path, name);
+                    const auto source = o.sourceSmali ? [&] { QFile file(path); return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray(); }() : project->sourceBytes(path, name);
                     if (source.isEmpty()) {
                         ++result.missing;
                         continue;
@@ -420,7 +420,7 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
                         if (immutableSources && prepared.open(QIODevice::ReadOnly)) {
                             text = QString::fromUtf8(prepared.readAll());
                         } else {
-                            text = project->document(name, false, path).text;
+                            text = project->document(name, o.sourceSmali, path).text;
                             if (immutableSources) {
                                 QSaveFile saved(preparedPath);
                                 if (saved.open(QIODevice::WriteOnly)) {
@@ -462,7 +462,7 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
                                                                      : Qt::CaseInsensitive);
                     if (matchStart >= 0) {
                         const int crop = qMax(0, matchStart - 200);
-                        append({{"class", name},
+                        append({{"class", name}, {"smali", o.sourceSmali},
                                 {"node", QString(name).replace('/', '.')},
                                 {"kind", "code"},
                                 {"icon_kind", project->info(name).value("kind")},

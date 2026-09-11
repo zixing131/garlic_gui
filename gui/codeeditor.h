@@ -22,6 +22,7 @@ class CodeEditor : public QPlainTextEdit {
     int gutterWidth() const;
     void paintGutter(QPaintEvent *event);
   signals:
+    void modeSwitchRequested();
     void localJumpStarted();
     void localJumpFinished();
     void navigateRequested();
@@ -30,6 +31,7 @@ class CodeEditor : public QPlainTextEdit {
     void renameRequested();
 
   protected:
+    bool event(QEvent *event) override;
     void mouseDoubleClickEvent(QMouseEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
     void contextMenuEvent(QContextMenuEvent *event) override;
