@@ -10,6 +10,7 @@ import threading
 import time
 
 exe, fixtures = map(Path, sys.argv[1:])
+assert any(p.is_file() for p in (exe.parent / 'AI-HEADLESS.md', exe.parent.parent / 'Resources/AI-HEADLESS.md')), 'Missing AI headless instructions beside executable'
 args = [str(exe), '--headless', '--apk', str(fixtures / 'cases.dex'), '--deobfuscate', '--unflatten']
 env = dict(os.environ, QT_QPA_PLATFORM='intentionally-unavailable')
 config = json.loads(subprocess.check_output(args + ['--print-mcp-config'], env=env, timeout=10))

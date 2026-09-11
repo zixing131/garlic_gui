@@ -1,4 +1,5 @@
 #include "browse_index.h"
+#include "decompiler/klass.h"
 #include "cJSON.h"
 #include "class_selection.h"
 #include "dalvik/dex_descriptor.h"
@@ -264,4 +265,50 @@ void browse_index_jvm(jclass_file *jc, int inner) {
     cJSON_Delete(entry);
     mem_free_pool();
     global_pool = previous_pool;
+}
+
+/* Directory-only reads need just three DEX tables. Avoid constructing strings,
+ * methods, annotation graphs and hash maps for every item in a large APK. */
+static uint32_t directory_u32(const unsigned char *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+int browse_index_dex_directory(const unsigned char *data, size_t size) {
+    const char *mode = getenv("GARLIC_DIRECTORY_INDEX");
+    if (!class_selection_indexing() || !mode || strcmp(mode, "names")) return 0;
+    if (size < 112 || memcmp(data, "dex\n", 4)) return -1;
+    uint32_t strings = directory_u32(data + 56), string_off = directory_u32(data + 60);
+    uint32_t types = directory_u32(data + 64), type_off = directory_u32(data + 68);
+    uint32_t count = directory_u32(data + 96), class_off = directory_u32(data + 100);
+    if ((uint64_t)string_off + (uint64_t)strings * 4 > size ||
+        (uint64_t)type_off + (uint64_t)types * 4 > size ||
+        (uint64_t)class_off + (uint64_t)count * 32 > size) return -1;
+    for (uint32_t i = 0; i < count; ++i) {
+        const unsigned char *definition = data + class_off + (size_t)i * 32;
+        uint32_t type = directory_u32(definition), flags = directory_u32(definition + 4);
+        if (type >= types) return -1;
+        uint32_t string = directory_u32(data + type_off + (size_t)type * 4);
+        if (string >= strings) return -1;
+        size_t offset = directory_u32(data + string_off + (size_t)string * 4);
+        unsigned n = 0;
+        do { if (offset >= size || ++n > 5) return -1; } while (data[offset++] & 128);
+        const unsigned char *end = memchr(data + offset, 0, size - offset);
+        if (!end || end - (data + offset) < 3 || data[offset] != 'L' || end[-1] != ';') return -1;
+        size_t length = end - (data + offset) - 2;
+        char *name = malloc(length + 1);
+        if (!name) return -1;
+        memcpy(name, data + offset + 1, length); name[length] = 0;
+        cJSON *entry = cJSON_CreateObject();
+        cJSON_AddStringToObject(entry, "name", name);
+        cJSON_AddNumberToObject(entry, "flags", flags);
+        cJSON_AddStringToObject(entry, "kind", flags & 0x2000 ? "annotation" :
+            flags & 0x4000 ? "enum" : flags & 0x0200 ? "interface" :
+            flags & 0x0400 ? "abstract" : "class");
+        char *simple = strrchr(name, '/');
+        simple = simple ? simple + 1 : name;
+        cJSON_AddBoolToObject(entry, "inner", is_inner_class(simple) || is_anonymous_class(simple));
+        class_selection_write(entry);
+        cJSON_Delete(entry); free(name);
+    }
+    return 1;
 }

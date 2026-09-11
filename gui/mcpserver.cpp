@@ -338,7 +338,7 @@ void McpServer::dispatch(QLocalSocket *socket, const QJsonObject &request) {
     }
     if (name == "get_status") {
         respond(QJsonObject{{"inputs", QJsonArray::fromStringList(backend->inputs())},
-                            {"class_count", backend->project()->classes().size()},
+                            {"class_count", backend->project()->classCount()},
                             {"busy", backend->busy()}, {"metadata_ready", backend->metadataReady()},
                             {"metadata_preparing", backend->metadataPreparing()},
                             {"sources_ready", backend->projectReady()},
@@ -417,7 +417,7 @@ void McpServer::dispatch(QLocalSocket *socket, const QJsonObject &request) {
             true);
         return;
     }
-    if (project->classes().isEmpty()) {
+    if (project->classCount() == 0) {
         fail("Input is not indexed yet; poll get_status and retry");
         return;
     }

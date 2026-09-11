@@ -80,7 +80,7 @@ int runHeadless(int argc, char **argv) {
     QObject::connect(&backend, &Backend::log, &app, [](const QString &s) { fprintf(stderr, "%s\n", qPrintable(s)); });
     QObject::connect(&backend, &Backend::failed, &app, [&app, &backend](const QString &s) {
         fprintf(stderr, "Analysis failed: %s\n", qPrintable(s));
-        if (backend.project()->classes().isEmpty()) app.exit(1);
+        if (backend.project()->classCount() == 0) app.exit(1);
     });
     QObject::connect(&backend, &Backend::indexed, &app, [&backend, settings](const QStringList &classes) {
         fprintf(stderr, "Indexed %lld classes\n", static_cast<long long>(classes.size()));

@@ -8,6 +8,17 @@
 class WindowTest : public QObject {
     Q_OBJECT
   private slots:
+    void loadingPercentage() {
+        MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
+        auto bar = window.findChild<QProgressBar *>();
+        QVERIFY(bar);
+        window.backend()->loadProgress("成员与引用", 42);
+        QCOMPARE(bar->minimum(), 0);
+        QCOMPARE(bar->maximum(), 100);
+        QCOMPARE(bar->value(), 42);
+        QVERIFY(bar->text().contains("42%"));
+        QVERIFY(bar->isTextVisible());
+    }
     void progressiveNavigation() {
         MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
         window.backend()->setProperty("fastOpen", true);

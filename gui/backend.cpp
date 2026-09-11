@@ -10,6 +10,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcessEnvironment>
+#include <QPointer>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
@@ -44,8 +45,16 @@ Backend::Backend(QObject *parent)
         backgroundErrorTail_ = (backgroundErrorTail_ + text).right(4000);
         emit log(text.right(4000));
     });
-    connect(&background_, &QProcess::readyReadStandardOutput, this,
-            [this] { background_.readAllStandardOutput(); });
+    connect(&background_, &QProcess::readyReadStandardOutput, this, [this] {
+        const auto output = QString::fromUtf8(background_.readAllStandardOutput());
+        static const QRegularExpression pattern("Progress : (\\d+) \\((\\d+)\\)");
+        auto matches = pattern.globalMatch(output);
+        while (matches.hasNext()) {
+            auto match = matches.next();
+            const int total = match.captured(2).toInt();
+            if (total > 0) emit loadProgress(tr("源码生成"), qMin(99, match.captured(1).toInt() * 100 / total));
+        }
+    });
     connect(&background_, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
         if (error == QProcess::FailedToStart)
             prepareFinished(-1, QProcess::CrashExit);
@@ -136,6 +145,7 @@ void Backend::start(Job job, const QStringList &arguments) {
             : QString());
     emit busyChanged(true);
     if (job == Job::Index) {
+        emit loadProgress(tr("读取类目录"), 0);
         QFile::remove(workspace_->path() + "/classes.jsonl");
         indexProducer_ = std::make_shared<std::atomic_int>(0);
         readIndex();
@@ -179,7 +189,7 @@ void Backend::openPaths(const QStringList &paths) {
     metadataPreparing_ = false;
     directoryOnly_ = paths.size() == 1 &&
         (property("fastOpen").toBool() ||
-         (ext == "apks" && QFileInfo(path).size() >= 128LL * 1048576));
+         (QStringList{"apk", "apks", "xapk", "dex"}.contains(ext) && QFileInfo(path).size() >= 32LL * 1048576));
     metadataReady_ = !directoryOnly_;
     sourcesAfterMetadata_ = false;
     if (searchWarmControl_)
@@ -320,6 +330,15 @@ void Backend::readOutput() {
     bytes.replace('\b', ' ');
     const QString text = QString::fromUtf8(bytes);
     errorTail_ = (errorTail_ + text).right(4000);
+    if (job_ == Job::Index) {
+        static const QRegularExpression progress("GARLIC_INDEX_PROGRESS (\\d+) (\\d+)");
+        auto matches = progress.globalMatch(errorTail_);
+        while (matches.hasNext()) {
+            const auto match = matches.next();
+            const int total = match.captured(2).toInt();
+            if (total > 0) emit loadProgress(tr("读取 DEX"), match.captured(1).toInt() * 100 / total);
+        }
+    }
     if (!text.trimmed().isEmpty())
         emit log(text.right(8000));
 }
@@ -616,7 +635,7 @@ void Backend::prepareSources() {
         prepareMetadata();
         return;
     }
-    if (clearing_ || preparing_ || fullReady_ || !workspace_ || project_.classes().isEmpty())
+    if (clearing_ || preparing_ || fullReady_ || !workspace_ || project_.classCount() == 0)
         return;
     if (background_.state() != QProcess::NotRunning) {
         QTimer::singleShot(20, this, &Backend::prepareSources);
@@ -642,6 +661,7 @@ void Backend::prepareSources() {
     marker.write("1\n"); marker.close();
     cancelPreparing_ = false;
     preparing_ = true;
+    emit loadProgress(tr("源码生成"), 0);
     sourceGenerating_->store(true);
     emit preparationChanged(true);
     applyEnvironment(background_, directory);
@@ -711,7 +731,7 @@ void Backend::prepareFinished(int code, QProcess::ExitStatus status) {
 }
 
 void Backend::warmSearchIndex() {
-    if (!workspace_ || project_.classes().isEmpty())
+    if (!workspace_ || project_.classCount() == 0)
         return;
     if (searchWarmControl_)
         searchWarmControl_->canceled = true;
@@ -850,6 +870,9 @@ void Backend::prepareMetadata() {
     const auto settings = settings_;
     const int generation = projectGeneration_;
     auto snapshot = project_.snapshot();
+    const int totalClasses = snapshot->classCount();
+    QPointer<Backend> self(this);
+    emit loadProgress(tr("成员与引用"), 0);
     QProcess environmentSource;
     applyEnvironment(environmentSource, workspace->path() + "/index");
     auto environment = environmentSource.processEnvironment();
@@ -878,7 +901,7 @@ void Backend::prepareMetadata() {
                 prepareSources();
         });
     watcher->setFuture(QtConcurrent::run([snapshot, workspace, input, engine, settings,
-                                         environment, canceled]() -> Result {
+                                         environment, canceled, self, generation, totalClasses]() -> Result {
         // A canceled process may still be exiting when the user retries. Never
         // reuse its output files, even within the same project workspace.
         QTemporaryDir attempt(workspace->path() + "/index/details-XXXXXX");
@@ -896,7 +919,13 @@ void Backend::prepareMetadata() {
             return {{}, process.errorString()};
         QFile file(path);
         QByteArray pending;
-        int count = 0;
+        int count = 0, lastPercent = -1;
+        auto progress = [&](const QString &phase, int percent) {
+            if (self) QMetaObject::invokeMethod(self, [self, generation, phase, percent] {
+                if (self && self->projectGeneration_ == generation)
+                    emit self->loadProgress(phase, percent);
+            }, Qt::QueuedConnection);
+        };
         while (true) {
             if (canceled->load()) {
                 process.kill(); process.waitForFinished();
@@ -931,8 +960,13 @@ void Backend::prepareMetadata() {
             entry["input"] = input;
             if (!entry.contains("origin")) entry["origin"] = QFileInfo(input).fileName();
             snapshot->addClass(entry);
-            if (++count % 256 == 0)
-                process.waitForFinished(1);
+            ++count;
+            int percent = qMin(99, count * 100 / qMax(1, totalClasses));
+            if (percent != lastPercent) {
+                lastPercent = percent; progress(QObject::tr("成员与引用"), percent);
+            }
+            // Pump process state without imposing one millisecond per 256 classes.
+            if (count % 1024 == 0) process.waitForFinished(0);
         }
         if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0 || !count) {
             QFile errors(errorPath); errors.open(QIODevice::ReadOnly);
@@ -940,9 +974,15 @@ void Backend::prepareMetadata() {
                 .arg(QString::fromUtf8(errors.readAll().right(4000)))};
         }
         if (canceled->load()) return {{}, QStringLiteral("canceled")};
+        progress(QObject::tr("构建查询索引"), 0);
         if (settings.deobfuscate) snapshot->deobfuscateNames();
-        snapshot->xrefs(QString());
+        progress(QObject::tr("构建查询索引"), 33);
+        // Both indexes read immutable metadata and own separate synchronization.
+        auto references = QtConcurrent::run([snapshot] { snapshot->xrefs(QString()); });
         snapshot->symbols();
+        progress(QObject::tr("构建查询索引"), 66);
+        references.waitForFinished();
+        progress(QObject::tr("构建查询索引"), 100);
         return {snapshot, {}};
     }));
 }
@@ -969,6 +1009,13 @@ void Backend::readIndex() {
                     return;
                 }
                 if (!result.second.isEmpty()) {
+                    // The parser can reject a row before the producer exits.
+                    // Retire the job first so failed observers can safely reopen.
+                    job_ = Job::None;
+                    producer->store(-1);
+                    process_.kill();
+                    if (process_.state() != QProcess::NotRunning)
+                        process_.waitForFinished(3000);
                     emit busyChanged(false);
                     emit failed(result.second);
                     return;
@@ -990,9 +1037,10 @@ void Backend::readIndex() {
     auto project = project_.snapshot();
     indexCanceled_ = std::make_shared<std::atomic_bool>(false);
     const auto canceled = indexCanceled_;
+    const bool directoryOnly = directoryOnly_;
     const bool deobfuscate = settings_.deobfuscate && !directoryOnly_;
-    const bool finalInput = indexQueue_.isEmpty();
-    watcher->setFuture(QtConcurrent::run([workspace, input, project, canceled, producer, deobfuscate, finalInput] {
+    const bool finalInput = indexQueue_.isEmpty() && !directoryOnly_;
+    watcher->setFuture(QtConcurrent::run([workspace, input, project, canceled, producer, deobfuscate, finalInput, directoryOnly] {
         QElapsedTimer timings;
         timings.start();
         QFile file(workspace->path() + "/classes.jsonl");
@@ -1038,9 +1086,10 @@ void Backend::readIndex() {
             object["input"] = input;
             if (!object.contains("origin"))
                 object["origin"] = QFileInfo(input).fileName();
-            project->addClass(object);
+            if (directoryOnly) project->addDirectoryClass(object);
+            else project->addClass(object);
         }
-        if (project->classes().isEmpty())
+        if (project->classCount() == 0)
             return IndexResult{{}, QStringLiteral("无类被加载，没有什么可以反编译。")};
         const auto parseMs = timings.restart();
         if (deobfuscate)

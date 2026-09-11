@@ -6,6 +6,9 @@
 
 ## AI 无头模式与 MCP 自动接入
 
+独立说明文件为 `AI-HEADLESS.md`。普通编译后位于 `build/gui/`；macOS 包内位于 `Contents/Resources/`，Windows/Linux 与可执行文件同目录；
+发布包根目录也提供该文件，AI 无需访问源码仓库即可读取。
+
 给 AI 软件目录和 APK/APKS 路径后，让它先阅读本 README，按以下步骤接入。
 无头模式不创建窗口、不需要显示器，直接加载输入并提供与 GUI 共用的分析工具。
 

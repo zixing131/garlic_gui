@@ -25,7 +25,10 @@ class Project : public QObject {
     void replaceData(const Project &other, bool keepDocuments = false);
     void reset(const QString &input);
     void addClass(const QJsonObject &entry);
+    // A fresh directory-only project defers symbol maps until full metadata.
+    void addDirectoryClass(const QJsonObject &entry) { classes_.insert(entry.value("name").toString(), entry); }
     QStringList classes() const;
+    int classCount() const { return classes_.size(); }
     QJsonObject info(const QString &name) const { return classes_.value(normalize(name)); }
     QString owner(const QString &name) const;
     QJsonArray members(const QString &name, bool methods) const;

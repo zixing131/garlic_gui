@@ -47,6 +47,7 @@ class Backend : public QObject {
     void cancel();
     static bool safeClassName(const QString &name);
   signals:
+    void loadProgress(const QString &phase, int percent);
     void searchBatch(int request, const QJsonArray &hits);
     void searchProgress(int request, int scanned, int total);
     void searchCompleted(int request, const SearchResult &result);

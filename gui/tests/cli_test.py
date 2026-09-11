@@ -44,6 +44,27 @@ def test_workspace():
 
 
 with test_workspace() as root:
+    # Fast directory mode must preserve archive order, case and class kinds.
+    archive_path = root / 'directory.apk'
+    with zipfile.ZipFile(archive_path, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.write(fixtures / 'cases.dex', 'classes.dex')
+        archive.write(fixtures / 'flattened.dex', 'classes2.dex')
+    listings = []
+    for mode, threads in [('full', '1'), ('names', '1'), ('names', '2')]:
+        index = root / ('directory-' + mode + threads + '.jsonl')
+        environment = dict(os.environ, GARLIC_COMPACT_INDEX='2')
+        if mode == 'names': environment['GARLIC_DIRECTORY_INDEX'] = 'names'
+        run([str(engine), str(archive_path), '-I', str(index), '-o', str(root / 'directory-out'), '-t', threads],
+            env=environment, check=True, capture_output=True, timeout=20)
+        listings.append([{key: row.get(key) for key in ('name', 'flags', 'kind', 'inner', 'origin')}
+                         for row in map(json.loads, index.read_text(encoding='utf-8').splitlines())])
+    assert listings[0] == listings[1] == listings[2], listings
+    with zipfile.ZipFile(root / 'broken.apk', 'w') as archive:
+        archive.writestr('classes.dex', b'dex\n035\0' + b'\xff' * 104)
+    result = run([str(engine), str(root / 'broken.apk'), '-I', str(root / 'broken.jsonl'),
+                  '-o', str(root / 'broken-out'), '-t', '2'],
+                 env=dict(os.environ, GARLIC_DIRECTORY_INDEX='names'), capture_output=True, timeout=20)
+    assert result.returncode != 0, 'Malformed DEX directory accepted'
     # Owned smali fixture: constant dispatcher specialization must preserve
     # results, including sparse negative keys and switch default paths.
     flattened = root / 'unflattened'

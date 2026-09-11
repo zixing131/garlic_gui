@@ -27,7 +27,11 @@ int main(int argc, char **argv) {
             file.write("{\"name\":\"demo/Valid\"}\n{\"name\":");
         } else if (args.value(1).contains("background-failure")) {
             file.write("{\"name\":\"demo/Valid\"}\n");
-        } else file.write("{\"name\":\"../outside\"}\n");
+        } else {
+            file.write("{\"name\":\"../outside\"}\n");
+            file.flush();
+            if (args.value(1).contains("bad")) QThread::sleep(30);
+        }
     }
     return 0;
 }

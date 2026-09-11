@@ -43,6 +43,21 @@ add_custom_target(garlic-gui-engine
         $<TARGET_FILE:garlic> $<TARGET_FILE_DIR:garlic-gui>/garlic${CMAKE_EXECUTABLE_SUFFIX}
     DEPENDS garlic)
 add_dependencies(garlic-gui garlic-gui-engine)
+# Keep AI instructions with plain build outputs as well as packaged releases.
+if(APPLE)
+    set(GARLIC_AI_DOC_DIR "$<TARGET_FILE_DIR:garlic-gui>/../Resources")
+else()
+    set(GARLIC_AI_DOC_DIR "$<TARGET_FILE_DIR:garlic-gui>")
+endif()
+add_custom_target(garlic-gui-docs ALL
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${GARLIC_AI_DOC_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${CMAKE_SOURCE_DIR}/docs/AI-HEADLESS.md "${GARLIC_AI_DOC_DIR}/AI-HEADLESS.md"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${CMAKE_SOURCE_DIR}/docs/AI-HEADLESS.md ${CMAKE_CURRENT_BINARY_DIR}/AI-HEADLESS.md
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${CMAKE_SOURCE_DIR}/docs/garlic-gui.md ${CMAKE_CURRENT_BINARY_DIR}/README.md)
+add_dependencies(garlic-gui garlic-gui-docs)
 
 option(GARLIC_GUI_TESTS "Build GUI integration tests" OFF)
 if(GARLIC_GUI_TESTS)

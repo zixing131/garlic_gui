@@ -450,9 +450,14 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     status_ = new QLabel(tr("就绪"));
     statusBar()->addWidget(status_, 1);
     progress_ = new QProgressBar;
-    progress_->setMaximumWidth(140);
-    progress_->setMaximumHeight(12);
-    progress_->setTextVisible(false);
+    progress_->setMaximumWidth(240);
+    progress_->setMinimumHeight(20);
+    progress_->setTextVisible(true);
+    connect(&backend_, &Backend::loadProgress, this, [this](const QString &phase, int percent) {
+        progress_->setRange(0, 100);
+        progress_->setValue(percent);
+        progress_->setFormat(phase + " %p%");
+    });
     statusBar()->addPermanentWidget(progress_);
     for (auto action : findChildren<QAction *>()) {
         if (!action->shortcut().isEmpty())
@@ -907,7 +912,6 @@ void MainWindow::updateBusy() {
     exportAction_->setEnabled(!busy && backend_.metadataReady() && !backend_.input().isEmpty());
     stopAction_->setEnabled(busy || backend_.preparing() || backend_.metadataPreparing());
     tree_->setEnabled(true);
-    progress_->setRange(0, 0);
     progress_->setVisible(busy || backend_.preparing() || backend_.metadataPreparing());
 }
 bool MainWindow::waitForMetadata(std::function<void()> action) {
