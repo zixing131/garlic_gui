@@ -44,6 +44,14 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     file->addAction(tr("保存项目…"), QKeySequence::Save, this, &MainWindow::saveProject);
     exportAction_ = file->addAction(tr("导出源码…"), QKeySequence("Ctrl+Shift+E"), this,
                                     &MainWindow::exportAll);
+    auto rebuildIndex = file->addAction(tr("重建当前文件索引"), this, [this] { backend_.rebuildIndex(); });
+    rebuildIndex->setObjectName("rebuildIndex");
+    auto updateRebuild = [this, rebuildIndex] {
+        rebuildIndex->setEnabled(!backend_.inputs().isEmpty() && !backend_.busy() && !backend_.preparing() && !backend_.metadataPreparing());
+    };
+    connect(&backend_, &Backend::busyChanged, this, updateRebuild);
+    connect(&backend_, &Backend::preparationChanged, this, updateRebuild);
+    updateRebuild();
     settingsAction_ =
         file->addAction(tr("设置…"), QKeySequence::Preferences, this, &MainWindow::settingsDialog);
     file->addSeparator();

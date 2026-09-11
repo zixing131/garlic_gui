@@ -1,10 +1,11 @@
-set(GARLIC_GUI_VERSION "0.5.17")
+set(GARLIC_GUI_VERSION "0.5.18")
 find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Network Concurrent)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 qt_add_library(garlic-gui-core STATIC
+    indexcache.cpp indexcache.h indexsnapshot.cpp
     scriptdialog.cpp scriptdialog.h
     memoryusage.cpp memoryusage.h mainwindow.cpp mainwindow.h backend.cpp backend.h codeeditor.cpp codeeditor.h
     settings.cpp settings.h project.cpp project.h classview.cpp classview.h
@@ -108,6 +109,12 @@ if(GARLIC_GUI_TESTS)
     add_test(NAME garlic-gui-window COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_qttest.py $<TARGET_FILE:garlic-gui-window-tests>)
     set_tests_properties(garlic-gui-window PROPERTIES ENVIRONMENT "GARLIC_TEST_GUI=$<TARGET_FILE:garlic-gui>;QT_QPA_PLATFORM=offscreen;GARLIC_TEST_ENGINE=$<TARGET_FILE:garlic>;GARLIC_TEST_FIXTURES=${CMAKE_BINARY_DIR}/fixtures")
+    qt_add_executable(garlic-gui-index-cache-tests tests/indexcache_test.cpp)
+    target_include_directories(garlic-gui-index-cache-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(garlic-gui-index-cache-tests PRIVATE garlic-gui-core Qt6::Test)
+    set_target_properties(garlic-gui-index-cache-tests PROPERTIES WIN32_EXECUTABLE FALSE)
+    add_test(NAME garlic-gui-index-cache COMMAND garlic-gui-index-cache-tests)
+    set_tests_properties(garlic-gui-index-cache PROPERTIES ENVIRONMENT "GARLIC_TEST_ENGINE=$<TARGET_FILE:garlic>;GARLIC_TEST_FIXTURES=${CMAKE_BINARY_DIR}/fixtures")
     add_test(NAME garlic-gui-backend COMMAND garlic-gui-tests)
     add_test(NAME garlic-gui-headless COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/headless_test.py $<TARGET_FILE:garlic-gui> ${CMAKE_BINARY_DIR}/fixtures)
     set_tests_properties(garlic-gui-headless PROPERTIES TIMEOUT 90)
@@ -115,4 +122,8 @@ if(GARLIC_GUI_TESTS)
     set_tests_properties(garlic-gui-shutdown PROPERTIES TIMEOUT 180)
     add_test(NAME garlic-gui-cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_test.py $<TARGET_FILE:garlic> ${CMAKE_BINARY_DIR}/fixtures)
     set_tests_properties(garlic-gui-backend PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;GARLIC_TEST_ENGINE=$<TARGET_FILE:garlic>;GARLIC_TEST_FIXTURES=${CMAKE_BINARY_DIR}/fixtures;GARLIC_TEST_FAKE_ENGINE=$<TARGET_FILE:garlic-gui-fake-engine>")
+endif()
+
+if(GARLIC_GUI_TESTS)
+    set_property(TEST garlic-gui-interaction garlic-gui-project garlic-gui-mcp garlic-gui-window garlic-gui-backend garlic-gui-headless garlic-gui-shutdown garlic-gui-cli APPEND PROPERTY ENVIRONMENT "GARLIC_DISABLE_INDEX_CACHE=1")
 endif()

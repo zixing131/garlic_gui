@@ -174,8 +174,46 @@ void MainWindow::settingsDialog() {
     cacheMode->addItem(tr("磁盘缓存"), "disk");
     cacheMode->addItem(tr("内存缓存"), "memory");
     cacheMode->setCurrentIndex(settings.cacheMode == "memory" ? 1 : 0);
-    cache->addRow(tr("按类源码缓存模式"), cacheMode);
+    cache->addRow(tr("源码 / 索引缓存模式"), cacheMode);
     auto cacheLimit = spin(cache, tr("按类源码缓存上限（MiB）"), settings.cacheMiB, 16, 4096);
+    auto indexLimit = spin(cache, tr("磁盘索引容量（GiB）"), settings.indexCacheGiB, 1, 1024);
+    indexLimit->setObjectName("indexCacheGiB");
+    auto indexDirectory = new QLineEdit(settings.indexDirectory);
+    indexDirectory->setObjectName("indexDirectory");
+    indexDirectory->setPlaceholderText(IndexCache::directory(AppSettings()));
+    auto indexRow = new QHBoxLayout; indexRow->addWidget(indexDirectory);
+    auto chooseIndexDirectory = new QPushButton(tr("选择…")); indexRow->addWidget(chooseIndexDirectory);
+    cache->addRow(tr("索引缓存目录"), indexRow);
+    connect(chooseIndexDirectory, &QPushButton::clicked, &dialog, [this, indexDirectory] {
+        auto selected = QFileDialog::getExistingDirectory(this, tr("选择索引缓存目录"), indexDirectory->text());
+        if (!selected.isEmpty()) indexDirectory->setText(selected);
+    });
+    auto indexHint = new QLabel(tr("磁盘模式保存完整索引和 JSONL；空间不足时删除创建时间最早的索引。\n更改目录不搬迁旧缓存，可选回旧目录清理。"));
+    indexHint->setWordWrap(true); cache->addRow(indexHint);
+    auto clearIndexes = new QPushButton(tr("清除目录中的全部索引"));
+    clearIndexes->setObjectName("clearIndexes"); cache->addRow(clearIndexes);
+    connect(clearIndexes, &QPushButton::clicked, &dialog, [this, indexDirectory] {
+        auto target = backend_.settings(); target.indexDirectory = indexDirectory->text().trimmed();
+        backend_.clearIndexes(IndexCache::directory(target));
+    });
+    auto indexUsage = new QLabel; indexUsage->setObjectName("indexCacheUsage"); cache->addRow(indexUsage);
+    auto indexScanning = std::make_shared<bool>(false);
+    auto refreshIndexes = [this, indexDirectory, indexUsage, indexScanning, &dialog] {
+        if (*indexScanning) return;
+        *indexScanning = true;
+        auto target = backend_.settings(); target.indexDirectory = indexDirectory->text().trimmed();
+        auto watcher = new QFutureWatcher<QJsonObject>(&dialog);
+        connect(watcher, &QFutureWatcher<QJsonObject>::finished, &dialog, [this, watcher, indexUsage, indexScanning] {
+            auto stats = watcher->result(); watcher->deleteLater(); *indexScanning = false;
+            indexUsage->setText(tr("持久索引：%1 个 · %2 GiB%3").arg(stats.value("entries").toInt())
+                .arg(stats.value("bytes").toDouble() / (1024 * 1024 * 1024), 0, 'f', 2)
+                .arg(backend_.indexCacheWriting() ? tr(" · 正在后台保存…") : QString()));
+        });
+        watcher->setFuture(QtConcurrent::run([target] { return IndexCache::stats(target); }));
+    };
+    connect(indexDirectory, &QLineEdit::textChanged, &dialog, refreshIndexes);
+    connect(&backend_, &Backend::indexCacheChanged, &dialog, refreshIndexes);
+    refreshIndexes();
     auto maxTabs = spin(cache, tr("最多打开的类标签"), settings.maxTabs, 1, 64);
     auto hexPreview = spin(cache, tr("十六进制预览页大小（KiB）"), settings.hexPreviewKiB, 1, 16384);
     auto sourceLimit =
@@ -353,6 +391,7 @@ void MainWindow::settingsDialog() {
                 memory->setChecked(defaults.showMemory);
                 host->setText("127.0.0.1");
                 cacheLimit->setValue(defaults.cacheMiB);
+                indexLimit->setValue(defaults.indexCacheGiB); indexDirectory->clear();
                 maxTabs->setValue(defaults.maxTabs);
                 sourceLimit->setValue(defaults.sourceMiB);
                 hexPreview->setValue(defaults.hexPreviewKiB);
@@ -383,6 +422,7 @@ void MainWindow::settingsDialog() {
     settings.mcpHost = host->text().trimmed();
     settings.threads = threads->value();
     settings.cacheMiB = cacheLimit->value();
+    settings.indexCacheGiB = indexLimit->value(); settings.indexDirectory = indexDirectory->text().trimmed();
     settings.maxTabs = maxTabs->value();
     settings.hexPreviewKiB = hexPreview->value();
     settings.sourceMiB = sourceLimit->value();

@@ -1,4 +1,5 @@
 #pragma once
+#include <QIODevice>
 #include <QDateTime>
 #include <QHash>
 #include <QJsonArray>
@@ -29,6 +30,8 @@ class Project : public QObject {
     void setCancellationToken(std::shared_ptr<std::atomic_bool> token) { canceled_ = std::move(token); }
     void replaceData(const Project &other, bool keepDocuments = false);
     void reset(const QString &input);
+    bool writeIndexSnapshot(QIODevice *device) const;
+    static std::shared_ptr<Project> readIndexSnapshot(QIODevice *device, const std::shared_ptr<std::atomic_bool> &canceled);
     void addClass(const QJsonObject &entry);
     // A fresh directory-only project defers symbol maps until full metadata.
     void addDirectoryClass(const QJsonObject &entry) { classes_.insert(entry.value("name").toString(), entry); }

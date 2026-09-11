@@ -1,5 +1,6 @@
 #pragma once
 #include "project.h"
+#include "indexcache.h"
 #include "search.h"
 #include "settings.h"
 #include <QHash>
@@ -30,6 +31,11 @@ class Backend : public QObject {
     int search(const SearchOptions &options);
     void cancelSearch(int request = -1);
     void clearCache();
+    void clearIndexes(const QString &directory = QString());
+    void rebuildIndex();
+    bool indexCacheWriting() const { return indexWriters_ > 0; }
+    bool indexCacheHit() const { return indexCacheHit_; }
+
     QJsonObject cacheStats() const;
     void setEngine(const QString &path) { engine_ = path; }
     QString engine() const { return engine_; }
@@ -55,6 +61,7 @@ class Backend : public QObject {
     void projectSourcesReady();
     void searchIndexReady();
     void cacheCleared();
+    void indexCacheChanged();
     void preparationChanged(bool active);
     void searchFinished(const QJsonArray &results, bool truncated);
     void indexed(const QStringList &classes);
@@ -84,6 +91,13 @@ class Backend : public QObject {
     QString argumentClass_, activeInput_;
     QStringList inputs_, indexQueue_, exportQueue_, backgroundQueue_;
     void nextIndex();
+    void persistIndex(const std::shared_ptr<Project> &project, const QStringList &jsonl,
+                      const std::shared_ptr<QTemporaryDir> &keep = {});
+    IndexCache::Ticket indexTicket_;
+    int indexConfiguration_ = 0;
+    bool rebuildIndex_ = false, indexCacheHit_ = false;
+    int indexWriters_ = 0;
+
     void nextBackground();
     Project project_;
     AppSettings settings_;

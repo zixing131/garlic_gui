@@ -3,7 +3,8 @@
 #include <QSettings>
 #include <QStringList>
 struct AppSettings {
-    QString pythonPath, nodePath;
+    QString pythonPath, nodePath, indexDirectory;
+    int indexCacheGiB = 20;
     int scriptTimeout = 300;
     int hexPreviewKiB = 64;
     int threads = 4, maxTabs = 12, fontSize = 13, cacheMiB = 2048, sourceMiB = 8;

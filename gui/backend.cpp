@@ -252,13 +252,78 @@ void Backend::openPaths(const QStringList &paths) {
     indexQueue_ = inputs_;
     cache_.clear();
     searchIndex_ = std::make_shared<SearchIndex>();
+    auto retiredProject = project_.snapshot();
     project_.clearDocuments();
     cacheOrder_.clear();
     setProperty("errorCount", 0);
     setProperty("warningCount", 0);
+    project_.cancelPendingWork();
     project_.reset(input_);
     project_.setInputs(inputs_);
-    nextIndex();
+    // Millions of old metadata objects must not be destroyed on the UI thread.
+    (void)QtConcurrent::run([retiredProject = std::move(retiredProject)] {});
+    indexTicket_ = {}; indexCacheHit_ = false;
+    const bool rebuild = rebuildIndex_; rebuildIndex_ = false;
+    if (!IndexCache::enabled(settings_)) { nextIndex(); return; }
+    indexing_ = true; emit busyChanged(true); emit loadProgress(tr("检查磁盘索引"), 0);
+    indexCanceled_ = std::make_shared<std::atomic_bool>(false);
+    const auto canceled = indexCanceled_; const auto generation = projectGeneration_;
+    const auto configuration = indexConfiguration_;
+    auto watcher = new QFutureWatcher<IndexCache::Lookup>(this);
+    connect(watcher, &QFutureWatcher<IndexCache::Lookup>::finished, this, [this, watcher, generation, canceled, configuration] {
+        const auto result = watcher->result(); watcher->deleteLater();
+        if (generation != projectGeneration_ || canceled->load()) return;
+        indexing_ = false;
+        if (configuration != indexConfiguration_) { nextIndex(); return; }
+        indexTicket_ = result.ticket;
+        if (!result.project) { nextIndex(); return; }
+        indexCacheHit_ = true; directoryOnly_ = false; metadataReady_ = true; indexQueue_.clear();
+        project_.replaceData(*result.project);
+        emit log(tr("已恢复磁盘索引：%1").arg(result.path));
+        emit loadProgress(tr("恢复磁盘索引"), 100);
+        emit indexed(project_.classes());
+        if (generation != projectGeneration_ || canceled->load()) return;
+        emit busyChanged(false); emit metadataCompleted(); emit indexCacheChanged();
+        if (generation == projectGeneration_ && settings_.background) prepareSources();
+    });
+    const auto settings = settings_; const auto inputs = inputs_; const auto engine = engine_;
+    watcher->setFuture(QtConcurrent::run([settings, inputs, engine, canceled, rebuild] {
+        return IndexCache::lookup(settings, inputs, engine, canceled, rebuild);
+    }));
+}
+void Backend::rebuildIndex() {
+    if (busy() || preparing_ || metadataPreparing_ || inputs_.isEmpty()) {
+        emit log(tr("请等待当前任务完成，再重建索引。")); return;
+    }
+    rebuildIndex_ = true; const auto paths = inputs_; openPaths(paths);
+}
+void Backend::clearIndexes(const QString &directory) {
+    auto settings = settings_;
+    if (!directory.isNull()) settings.indexDirectory = directory;
+    auto watcher = new QFutureWatcher<QString>(this);
+    connect(watcher, &QFutureWatcher<QString>::finished, this, [this, watcher] {
+        const auto error = watcher->result(); watcher->deleteLater();
+        emit log(error.isEmpty() ? tr("磁盘索引已清除，当前打开的内存索引仍可使用。") : tr("清除索引失败：%1").arg(error));
+        emit indexCacheChanged();
+    });
+    watcher->setFuture(QtConcurrent::run([settings] { QString error; if (!IndexCache::clear(settings, &error) && error.isEmpty()) error = "Cannot clear index directory"; return error; }));
+}
+void Backend::persistIndex(const std::shared_ptr<Project> &project, const QStringList &jsonl,
+                           const std::shared_ptr<QTemporaryDir> &keep) {
+    if (!IndexCache::enabled(settings_) || indexTicket_.key.isEmpty()) return;
+    ++indexWriters_; emit indexCacheChanged();
+    const auto settings = settings_; const auto ticket = indexTicket_; const auto workspace = workspace_;
+    auto watcher = new QFutureWatcher<QString>(this);
+    connect(watcher, &QFutureWatcher<QString>::finished, this, [this, watcher] {
+        const auto result = watcher->result(); watcher->deleteLater(); --indexWriters_;
+        emit log(result.isEmpty() ? tr("磁盘索引已保存（含 JSONL）。") : tr("索引缓存未保存：%1").arg(result));
+        emit indexCacheChanged();
+    });
+    watcher->setFuture(QtConcurrent::run([settings, ticket, project, jsonl, keep, workspace] {
+        QString error;
+        if (!IndexCache::store(settings, ticket, project, jsonl, workspace->path(), &error) && error.isEmpty()) error = "Canceled";
+        return error;
+    }));
 }
 void Backend::nextIndex() {
     activeInput_ = indexQueue_.takeFirst();
@@ -614,6 +679,9 @@ void Backend::configure(const AppSettings &settings) {
                               settings_.unflatten != settings.unflatten ||
                               settings_.deobfuscate != settings.deobfuscate ||
                               settings_.cacheMode != settings.cacheMode;
+    if (engineChange || settings_.indexDirectory != settings.indexDirectory || settings_.indexCacheGiB != settings.indexCacheGiB) {
+        ++indexConfiguration_; indexTicket_ = {};
+    }
     settings_ = settings;
     if (engineChange && !busy() && !preparing_ && !metadataPreparing_)
         clearCache();
@@ -972,16 +1040,16 @@ void Backend::prepareMetadata() {
         if (canceled->load()) return {{}, QStringLiteral("canceled")};
         // A canceled process may still be exiting when the user retries. Never
         // reuse its output files, even within the same project workspace.
-        QTemporaryDir attempt(workspace->path() + "/index/details-XXXXXX");
-        if (!attempt.isValid()) return {{}, QStringLiteral("Cannot create metadata workspace")};
-        const auto path = attempt.path() + "/metadata.jsonl";
-        const auto errorPath = attempt.path() + "/metadata.stderr";
+        auto attempt = std::make_shared<QTemporaryDir>(workspace->path() + "/index/details-XXXXXX");
+        if (!attempt->isValid()) return {{}, QStringLiteral("Cannot create metadata workspace")};
+        const auto path = attempt->path() + "/metadata.jsonl";
+        const auto errorPath = attempt->path() + "/metadata.stderr";
         QProcess process;
         process.setProcessEnvironment(environment);
         process.setWorkingDirectory(workspace->path());
         process.setStandardOutputFile(QProcess::nullDevice());
         process.setStandardErrorFile(errorPath);
-        process.start(engine, {input, "-I", path, "-o", attempt.path(),
+        process.start(engine, {input, "-I", path, "-o", attempt->path(),
                                "-t", QString::number(settings.threads)});
         if (!process.waitForStarted())
             return {{}, process.errorString()};
@@ -1049,11 +1117,12 @@ void Backend::prepareMetadata() {
         if (canceled->load()) return {{}, QStringLiteral("canceled")};
         const auto parsedMs = timing.elapsed();
         progress(QObject::tr("构建查询索引"), 0);
+        // Reference discovery uses raw symbol IDs and parents, not aliases.
+        auto references = std::async(std::launch::async, [snapshot] { snapshot->xrefs(QString()); });
         if (settings.deobfuscate) snapshot->deobfuscateNames();
         const auto aliasesMs = timing.elapsed();
         progress(QObject::tr("构建查询索引"), 33);
         // Both indexes read immutable metadata and own separate synchronization.
-        auto references = std::async(std::launch::async, [snapshot] { snapshot->xrefs(QString()); });
         snapshot->symbols();
         snapshot->aliasVersion();
         progress(QObject::tr("构建查询索引"), 66);
@@ -1062,6 +1131,10 @@ void Backend::prepareMetadata() {
         if (qEnvironmentVariableIsSet("GARLIC_PROFILE_LOAD"))
             qInfo() << "Metadata parse / aliases / queries ms:" << parsedMs << aliasesMs - parsedMs << timing.elapsed() - aliasesMs;
         progress(QObject::tr("构建查询索引"), 100);
+        if (self) QMetaObject::invokeMethod(self, [self, generation, snapshot, attempt, workspace, path] {
+            if (self && self->projectGeneration_ == generation)
+                self->persistIndex(snapshot, {workspace->path() + "/classes.jsonl", path}, attempt);
+        }, Qt::QueuedConnection);
         return {snapshot, {}};
     }));
 }
@@ -1119,7 +1192,10 @@ void Backend::readIndex() {
     const bool directoryOnly = directoryOnly_;
     const bool deobfuscate = settings_.deobfuscate && !directoryOnly_;
     const bool finalInput = indexQueue_.isEmpty() && !directoryOnly_;
-    watcher->setFuture(QtConcurrent::run([workspace, input, project, canceled, producer, deobfuscate, finalInput, directoryOnly] {
+    const bool persist = IndexCache::enabled(settings_) && !indexTicket_.key.isEmpty() && !directoryOnly_;
+    const auto inputNumber = inputs_.indexOf(input);
+    QPointer<Backend> self(this);
+    watcher->setFuture(QtConcurrent::run([workspace, input, project, canceled, producer, deobfuscate, finalInput, directoryOnly, persist, inputNumber, generation, self] {
         QElapsedTimer timings;
         timings.start();
         QFile file(workspace->path() + "/classes.jsonl");
@@ -1181,6 +1257,22 @@ void Backend::readIndex() {
             project->symbols();
             if (qEnvironmentVariableIsSet("GARLIC_PROFILE_LOAD"))
                 qInfo() << "Index stream / references / symbols ms:" << parseMs << refsMs << timings.elapsed();
+        }
+        if (persist && !canceled->load()) {
+            file.close();
+            const auto saved = workspace->path() + QString("/index/input-%1.jsonl").arg(inputNumber);
+            QFile::remove(saved);
+            QFile::copy(workspace->path() + "/classes.jsonl", saved);
+            if (finalInput && self) QMetaObject::invokeMethod(self, [self, generation, project, workspace] {
+                if (!self || self->projectGeneration_ != generation) return;
+                QStringList files;
+                for (const auto &name : QDir(workspace->path() + "/index").entryList({"input-*.jsonl"}, QDir::Files, QDir::Name))
+                    files.append(workspace->path() + "/index/" + name);
+                if (files.size() != project->inputs().size()) {
+                    emit self->log(QObject::tr("索引缓存未保存：JSONL 文件未完整保留。")); return;
+                }
+                self->persistIndex(project, files);
+            }, Qt::QueuedConnection);
         }
         return IndexResult{project, {}};
     }));
