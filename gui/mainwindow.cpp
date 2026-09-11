@@ -481,6 +481,20 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
         progress_->setFormat(phase + " %p%");
     });
     statusBar()->addPermanentWidget(progress_);
+    // Persist shortcuts by stable IDs, never by translated display labels.
+    const QList<QPair<const char *, const char *>> actionIds = {
+        {"打开文件…", "openFile"}, {"保存项目…", "saveProject"}, {"导出源码…", "exportSources"},
+        {"设置…", "settings"}, {"退出", "quit"}, {"跳转到声明", "declaration"},
+        {"查找引用", "references"}, {"查看函数调用图", "callGraph"}, {"重命名", "rename"},
+        {"撤销重命名", "undoRename"}, {"后退", "navigateBack"}, {"前进", "navigateForward"},
+        {"查找当前代码", "showCodeFind"}, {"项目搜索…", "searchProject"}, {"过滤类", "filterClasses"},
+        {"关闭标签", "closeTab"}, {"放大代码", "zoomIn"}, {"缩小代码", "zoomOut"}};
+    for (auto action : findChildren<QAction *>())
+        for (const auto &entry : actionIds)
+            if (action->text() == tr(entry.first)) {
+                action->setObjectName(entry.second);
+                action->setProperty("shortcutSource", QString::fromUtf8(entry.first));
+            }
     for (auto action : findChildren<QAction *>()) {
         if (!action->shortcut().isEmpty())
             action->setProperty("defaultShortcut", action->shortcut().toString());

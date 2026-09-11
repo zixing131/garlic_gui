@@ -8,6 +8,7 @@ class HexViewer : public QAbstractScrollArea {
     HexViewer(const QString &path, int previewKiB, QWidget *parent = nullptr);
   protected:
     void paintEvent(QPaintEvent *) override;
+    void changeEvent(QEvent *) override;
     void resizeEvent(QResizeEvent *) override;
     void scrollContentsBy(int, int) override { viewport()->update(); }
   private:

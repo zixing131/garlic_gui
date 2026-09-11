@@ -138,9 +138,10 @@ ScriptDialog::ScriptDialog(MainWindow *window, const QString &host) : QDialog(wi
     arguments_->setObjectName("scriptArguments"); arguments_->setPlaceholderText(tr("脚本参数 JSON，例如 {\"key\": 42}")); layout->addWidget(arguments_);
     auto split = new QSplitter(Qt::Vertical);
     code_ = new QPlainTextEdit; code_->setObjectName("scriptCode"); code_->setLineWrapMode(QPlainTextEdit::NoWrap);
-    code_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    code_->setFont(window_->backend()->settings().codeFont());
     auto highlighter = new ScriptHighlighter(code_);
     output_ = new QPlainTextEdit; output_->setObjectName("scriptOutput"); output_->setReadOnly(true); output_->setMaximumBlockCount(2000);
+    output_->setFont(window_->backend()->settings().codeFont());
     split->addWidget(code_); split->addWidget(output_); split->setStretchFactor(0, 3); split->setStretchFactor(1, 1); layout->addWidget(split);
     code_->setPlainText(QSettings().value("scripts/python", "from garlic import api\nprint(api.get_status())\nprint([tool['name'] for tool in api.tools()])\n").toString());
     connect(language_, &QComboBox::currentIndexChanged, this, [this, highlighter] {

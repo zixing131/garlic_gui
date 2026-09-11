@@ -7,6 +7,8 @@
 #include "hexviewer.h"
 #include "callgraphdialog.h"
 #include "resources.h"
+#include "localization.h"
+#include <QScopeGuard>
 #include <QThreadPool>
 #include <QtTest>
 #include <QtWidgets>
@@ -14,6 +16,70 @@
 class WindowTest : public QObject {
     Q_OBJECT
   private slots:
+    void appearanceLanguagesAndFonts() {
+        const auto oldPreferences = QSettings().value("preferences");
+        const auto originalFont = qApp->font();
+        const auto oldShortcut = QSettings().value("shortcuts-v3/references");
+        const auto restore = qScopeGuard([&] {
+            QSettings().setValue("preferences", oldPreferences);
+            if (oldShortcut.isValid()) QSettings().setValue("shortcuts-v3/references", oldShortcut);
+            else QSettings().remove("shortcuts-v3/references");
+            qApp->setFont(originalFont);
+        });
+        QSettings().setValue("shortcuts-v3/references", "Ctrl+R");
+        QSettings().remove("preferences");
+        const auto available = Localization::languages();
+        QCOMPARE(available.size(), 7);
+        for (const auto &locale : {"en", "zh_TW", "ru", "fr", "ja", "ko"}) {
+            Localization translation;
+            QVERIFY(translation.loadLanguage(locale));
+            QVERIFY(!translation.translate("MainWindow", "语言").isEmpty());
+            QVERIFY(translation.translate("MainWindow", "Untranslated text").isEmpty());
+            qApp->installTranslator(&translation);
+            MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
+            QCOMPARE(window.findChild<QAction *>("settings")->text(), translation.translate("MainWindow", "设置…"));
+            QCOMPARE(window.findChild<QAction *>("references")->shortcut(), QKeySequence("Ctrl+R"));
+            bool checked = false;
+            QTimer::singleShot(50, &window, [&] {
+                auto dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+                if (!dialog) return;
+                auto language = dialog->findChild<QComboBox *>("interfaceLanguage");
+                auto ui = dialog->findChild<QSpinBox *>("uiFontSize");
+                auto editor = dialog->findChild<QSpinBox *>("editorFontSize");
+                auto mono = dialog->findChild<QSpinBox *>("monoFontSize");
+                checked = language && language->count() == 7 && ui && editor && mono;
+                if (checked) {
+                    language->setCurrentIndex(language->findData(locale));
+                    ui->setValue(15); editor->setValue(18); mono->setValue(16);
+                    dialog->findChild<QListWidget *>("preferencesNavigation")->setCurrentRow(2);
+                    const auto screenshots = qEnvironmentVariable("GARLIC_SCREENSHOTS");
+                    if (!screenshots.isEmpty()) dialog->grab().save(screenshots + "/appearance-" + locale + ".png");
+                }
+                dialog->accept();
+            });
+            window.findChild<QAction *>("settings")->trigger();
+            QVERIFY(checked);
+            const auto saved = AppSettings::load();
+            QCOMPARE(saved.language, QString(locale));
+            QVERIFY(saved.uiFontFamily.isEmpty());
+            QVERIFY(saved.editorFontFamily.isEmpty());
+            QVERIFY(saved.monoFontFamily.isEmpty());
+            QCOMPARE(saved.interfaceFont().pointSize(), 15);
+            ClassView view("Test", true, saved);
+            QCOMPARE(view.editor(false)->font().pointSize(), 18);
+            QCOMPARE(view.editor(true)->font().pointSize(), 16);
+            ScriptDialog script(&window);
+            QCOMPARE(script.findChild<QPlainTextEdit *>("scriptCode")->font().pointSize(), 18);
+            QTemporaryFile file; QVERIFY(file.open());
+            HexViewer hex(file.fileName(), 64);
+            QCOMPARE(hex.font().pointSize(), 16);
+            qApp->removeTranslator(&translation);
+        }
+        Localization invalid;
+        QVERIFY(!invalid.loadLanguage("../en"));
+        const auto migrated = AppSettings::fromJson({{"fontSize", 17}});
+        QCOMPARE(migrated.monoFontSize, 17);
+    }
     void scripts_data() {
         QTest::addColumn<bool>("python"); QTest::newRow("python") << true; QTest::newRow("javascript") << false;
     }

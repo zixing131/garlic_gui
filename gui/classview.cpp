@@ -34,9 +34,7 @@ void ClassView::applySettings(const AppSettings &settings) {
     for (int i = 0; i < 2; i++) {
         auto code = editor(i);
         code->setTheme(settings.theme == "light");
-        auto font = code->font();
-        font.setPointSize(settings.fontSize);
-        code->setFont(font);
+        code->setFont(settings.codeFont(i == 1));
         code->setLineWrapMode(settings.wordWrap ? QPlainTextEdit::WidgetWidth
                                                 : QPlainTextEdit::NoWrap);
     }

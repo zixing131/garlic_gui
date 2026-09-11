@@ -2,6 +2,8 @@
 #include "mcpserver.h"
 #include "theme.h"
 #include "scriptdialog.h"
+#include "localization.h"
+#include "hexviewer.h"
 #include <QtConcurrent>
 #include <QtWidgets>
 
@@ -19,6 +21,14 @@ class PreferenceItemDelegate : public QStyledItemDelegate {
 } // namespace
 void MainWindow::applySettings(const AppSettings &settings) {
     backend_.configure(settings);
+    qApp->setFont(settings.interfaceFont());
+    for (auto widget : QApplication::allWidgets()) {
+        if (auto code = qobject_cast<CodeEditor *>(widget))
+            code->setFont(settings.codeFont(code->property("monoFont").toBool()));
+        else if (dynamic_cast<HexViewer *>(widget)) widget->setFont(settings.codeFont(true));
+        else if (widget->objectName() == "scriptCode" || widget->objectName() == "scriptOutput")
+            widget->setFont(settings.codeFont());
+    }
     memoryLabel_->setVisible(settings.showMemory);
     for (int i = 0; i < tabs_->count(); i++)
         if (auto page = qobject_cast<ClassView *>(tabs_->widget(i)))
@@ -81,7 +91,8 @@ void MainWindow::applySettings(const AppSettings &settings) {
         mcp_->stop();
     for (auto action : findChildren<QAction *>())
         if (!action->text().isEmpty()) {
-            const auto shortcut = QSettings().value("shortcuts-v2/" + action->text());
+            const auto shortcut = QSettings().value("shortcuts-v3/" + action->objectName(),
+                QSettings().value("shortcuts-v2/" + action->property("shortcutSource").toString()));
             if (shortcut.isValid())
                 action->setShortcut(QKeySequence(shortcut.toString()));
         }
@@ -119,6 +130,8 @@ void MainWindow::settingsDialog() {
         auto widget = new QWidget;
         auto form = new QFormLayout(widget);
         form->setVerticalSpacing(16);
+        form->setRowWrapPolicy(QFormLayout::WrapLongRows);
+        form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
         auto scroll = new QScrollArea;
         scroll->setWidgetResizable(true);
         scroll->setFrameShape(QFrame::NoFrame);
@@ -278,7 +291,33 @@ void MainWindow::settingsDialog() {
         backend_.clearCache();
     });
     auto appearance = page(tr("界面"));
-    auto font = spin(appearance, tr("代码字号"), settings.fontSize, 8, 32);
+    auto language = new QComboBox;
+    language->setObjectName("interfaceLanguage");
+    for (const auto &entry : Localization::languages()) language->addItem(entry.second, entry.first);
+    language->setCurrentIndex(qMax(0, language->findData(settings.language)));
+    appearance->addRow(tr("语言"), language);
+    auto languageNote = new QLabel(tr("语言更改在重启软件后生效。可在 languages 目录添加语言文件。"));
+    languageNote->setWordWrap(true); appearance->addRow(languageNote);
+    auto fontPicker = [&](const QString &label, const QFont &value, const QString &name, const QString &configuredFamily) {
+        auto row = new QHBoxLayout;
+        auto family = new QComboBox; family->setObjectName(name + "Family");
+        family->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+        family->setMinimumContentsLength(14);
+        family->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        family->addItem(tr("系统默认"), QString());
+        for (const auto &name : QFontDatabase::families()) family->addItem(name, name);
+        if (!configuredFamily.isEmpty() && family->findData(configuredFamily) < 0)
+            family->addItem(configuredFamily, configuredFamily);
+        family->setCurrentIndex(qMax(0, family->findData(configuredFamily)));
+        auto size = new QSpinBox; size->setObjectName(name + "Size"); size->setRange(8, 48);
+        size->setValue(qMax(8, value.pointSize()));
+        row->addWidget(family, 1); row->addWidget(size); appearance->addRow(label, row);
+        return qMakePair(family, size);
+    };
+    const auto uiFont = fontPicker(tr("UI 字体 / 字号"), settings.interfaceFont(), "uiFont", settings.uiFontFamily);
+    const auto editorFont = fontPicker(tr("编辑器字体 / 字号"), settings.codeFont(), "editorFont", settings.editorFontFamily);
+    const auto monoFont = fontPicker(tr("Smali / Hex 字体 / 字号"), settings.codeFont(true), "monoFont", settings.monoFontFamily);
+    auto font = editorFont.second;
     auto memory = check(appearance, tr("显示内存占用（当前 / 可用 / 峰值）"), settings.showMemory);
     auto wrap = check(appearance, tr("代码自动换行"), settings.wordWrap);
     auto theme = new QComboBox;
@@ -374,6 +413,11 @@ void MainWindow::settingsDialog() {
            "garlic 运行时选项。\n这些处理仍使用 garlic 自身的默认流程。"));
     supported->setWordWrap(true);
     capabilities->addRow(supported);
+    int navigationWidth = 160;
+    for (int i = 0; i < navigation->count(); ++i)
+        navigationWidth = qMax(navigationWidth, navigation->fontMetrics().horizontalAdvance(navigation->item(i)->text()) + 40);
+    navigation->setFixedWidth(navigationWidth);
+    dialog.resize(qMax(850, navigationWidth + 640), 680);
     auto buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel |
                                         QDialogButtonBox::RestoreDefaults);
     buttons->button(QDialogButtonBox::Save)->setText(tr("保存"));
@@ -395,7 +439,13 @@ void MainWindow::settingsDialog() {
                 maxTabs->setValue(defaults.maxTabs);
                 sourceLimit->setValue(defaults.sourceMiB);
                 hexPreview->setValue(defaults.hexPreviewKiB);
-                font->setValue(defaults.fontSize);
+                language->setCurrentIndex(qMax(0, language->findData(defaults.language)));
+                for (const auto &entry : {qMakePair(uiFont, defaults.interfaceFont()),
+                                         qMakePair(editorFont, defaults.codeFont()),
+                                         qMakePair(monoFont, defaults.codeFont(true))}) {
+                    entry.first.first->setCurrentIndex(0);
+                    entry.first.second->setValue(qMax(8, entry.second.pointSize()));
+                }
                 excluded->clear();
                 background->setChecked(false);
                 deobfuscate->setChecked(false);
@@ -427,6 +477,10 @@ void MainWindow::settingsDialog() {
     settings.hexPreviewKiB = hexPreview->value();
     settings.sourceMiB = sourceLimit->value();
     settings.fontSize = font->value();
+    settings.language = language->currentData().toString();
+    settings.uiFontFamily = uiFont.first->currentData().toString(); settings.uiFontSize = uiFont.second->value();
+    settings.editorFontFamily = editorFont.first->currentData().toString();
+    settings.monoFontFamily = monoFont.first->currentData().toString(); settings.monoFontSize = monoFont.second->value();
     settings.excluded = excluded->toPlainText().split('\n', Qt::SkipEmptyParts);
     settings.background = background->isChecked();
     settings.deobfuscate = deobfuscate->isChecked();
@@ -442,7 +496,7 @@ void MainWindow::settingsDialog() {
     settings.mcpEnabled = enabled->isChecked();
     for (const auto &edit : edits) {
         edit.first->setShortcut(edit.second->keySequence());
-        QSettings().setValue("shortcuts-v2/" + edit.first->text(),
+        QSettings().setValue("shortcuts-v3/" + edit.first->objectName(),
                              edit.second->keySequence().toString());
     }
     settings.save();

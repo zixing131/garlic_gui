@@ -1,4 +1,4 @@
-set(GARLIC_GUI_VERSION "0.5.25")
+set(GARLIC_GUI_VERSION "0.5.26")
 find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Network Concurrent)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_CXX_STANDARD 17)
@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 qt_add_library(garlic-gui-core STATIC
     indexcache.cpp indexcache.h indexsnapshot.cpp projectmap.h
-    scriptdialog.cpp scriptdialog.h
+    scriptdialog.cpp scriptdialog.h localization.cpp localization.h
     memoryusage.cpp memoryusage.h mainwindow.cpp mainwindow.h backend.cpp backend.h codeeditor.cpp codeeditor.h
     settings.cpp settings.h project.cpp project.h classview.cpp classview.h
     referencesdialog.cpp referencesdialog.h callgraphdialog.cpp callgraphdialog.h
@@ -71,6 +71,9 @@ endforeach()
 add_custom_command(TARGET garlic-gui-docs POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/scripts
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/scripts/garlic.py ${CMAKE_CURRENT_SOURCE_DIR}/scripts/garlic.js ${CMAKE_CURRENT_BINARY_DIR}/scripts)
+add_custom_command(TARGET garlic-gui-docs POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/languages "${GARLIC_AI_DOC_DIR}/languages"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/languages ${CMAKE_CURRENT_BINARY_DIR}/languages)
 add_dependencies(garlic-gui garlic-gui-docs)
 
 option(GARLIC_GUI_TESTS "Build GUI integration tests" OFF)

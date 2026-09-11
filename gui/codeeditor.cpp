@@ -1,4 +1,5 @@
 #include "codeeditor.h"
+#include "settings.h"
 #include <limits>
 #include "hookcode.h"
 #include <QApplication>
@@ -162,8 +163,8 @@ CodeEditor::CodeEditor(bool smali, QWidget *parent)
     setReadOnly(true);
     setAttribute(Qt::WA_InputMethodEnabled, false);
     setLineWrapMode(QPlainTextEdit::NoWrap);
-    auto font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
-    font.setPointSize(13);
+    setProperty("monoFont", smali);
+    auto font = AppSettings::load().codeFont(smali);
     setFont(font);
     setTabStopDistance(fontMetrics().horizontalAdvance(' ') * 4);
     setUndoRedoEnabled(false);
@@ -188,6 +189,19 @@ CodeEditor::CodeEditor(bool smali, QWidget *parent)
 int CodeEditor::gutterWidth() const {
     return 22 +
            fontMetrics().horizontalAdvance('9') * QString::number(qMax(1, blockCount())).size();
+}
+
+void CodeEditor::changeEvent(QEvent *event) {
+    QPlainTextEdit::changeEvent(event);
+    if (event->type() == QEvent::FontChange) {
+        setTabStopDistance(fontMetrics().horizontalAdvance(' ') * 4);
+        if (gutter_) {
+            setViewportMargins(gutterWidth(), 0, 0, 0);
+            const auto cr = contentsRect();
+            gutter_->setGeometry(cr.left(), cr.top(), gutterWidth(), cr.height());
+            gutter_->update();
+        }
+    }
 }
 
 void CodeEditor::resizeEvent(QResizeEvent *event) {

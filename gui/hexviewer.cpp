@@ -1,5 +1,7 @@
 #include "hexviewer.h"
+#include "settings.h"
 #include <QFontDatabase>
+#include <QEvent>
 #include <QPainter>
 #include <QScrollBar>
 #include <limits>
@@ -7,7 +9,7 @@
 HexViewer::HexViewer(const QString &path, int previewKiB, QWidget *parent)
     : QAbstractScrollArea(parent), file_(path), pageBytes_(qint64(qBound(1, previewKiB, 16384)) * 1024) {
     setObjectName("hexViewer");
-    setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    setFont(AppSettings::load().codeFont(true));
     file_.open(QIODevice::ReadOnly);
     rows_ = (file_.size() + 15) / 16;
     setToolTip(tr("只读十六进制预览；滚动时按需读取文件。"));
@@ -45,4 +47,9 @@ void HexViewer::paintEvent(QPaintEvent *) {
         painter.drawText(8 - horizontalScrollBar()->value(), row * height + fontMetrics().ascent(),
             QString("%1  %2  %3").arg(offset, 12, 16, QChar('0')).arg(QString::fromLatin1(bytes.toHex(' ')), -47).arg(ascii));
     }
+}
+
+void HexViewer::changeEvent(QEvent *event) {
+    QAbstractScrollArea::changeEvent(event);
+    if (event->type() == QEvent::FontChange) { updateRange(); viewport()->update(); }
 }

@@ -2,7 +2,12 @@
 #include <QJsonObject>
 #include <QSettings>
 #include <QStringList>
+#include <QFont>
 struct AppSettings {
+    QString language = "zh_CN", uiFontFamily, editorFontFamily, monoFontFamily;
+    int uiFontSize = 0, monoFontSize = 13;
+    QFont interfaceFont() const;
+    QFont codeFont(bool mono = false) const;
     QString pythonPath, nodePath, indexDirectory;
     int indexCacheGiB = 20;
     int scriptTimeout = 300;

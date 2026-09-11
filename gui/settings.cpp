@@ -1,8 +1,24 @@
 #include "settings.h"
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QFontDatabase>
+QFont AppSettings::interfaceFont() const {
+    auto font = QFontDatabase::systemFont(QFontDatabase::GeneralFont);
+    if (!uiFontFamily.isEmpty()) font.setFamily(uiFontFamily);
+    if (uiFontSize > 0) font.setPointSize(uiFontSize);
+    return font;
+}
+QFont AppSettings::codeFont(bool mono) const {
+    auto font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    const auto family = mono ? monoFontFamily : editorFontFamily;
+    if (!family.isEmpty()) font.setFamily(family);
+    font.setPointSize(mono ? monoFontSize : fontSize);
+    return font;
+}
 QJsonObject AppSettings::toJson() const {
-    return {{"indexDirectory", indexDirectory}, {"indexCacheGiB", indexCacheGiB}, {"pythonPath", pythonPath}, {"nodePath", nodePath}, {"scriptTimeout", scriptTimeout}, {"threads", threads},
+    return {{"language", language}, {"uiFontFamily", uiFontFamily}, {"editorFontFamily", editorFontFamily},
+            {"monoFontFamily", monoFontFamily}, {"uiFontSize", uiFontSize}, {"monoFontSize", monoFontSize},
+            {"indexDirectory", indexDirectory}, {"indexCacheGiB", indexCacheGiB}, {"pythonPath", pythonPath}, {"nodePath", nodePath}, {"scriptTimeout", scriptTimeout}, {"threads", threads},
             {"maxTabs", maxTabs},
             {"fontSize", fontSize},
             {"cacheMiB", cacheMiB},
@@ -27,13 +43,20 @@ QJsonObject AppSettings::toJson() const {
 }
 AppSettings AppSettings::fromJson(const QJsonObject &j) {
     AppSettings s;
+    s.language = j.value("language").toString("zh_CN");
+    s.uiFontFamily = j.value("uiFontFamily").toString();
+    s.editorFontFamily = j.value("editorFontFamily").toString();
+    s.monoFontFamily = j.value("monoFontFamily").toString();
+    s.uiFontSize = qBound(0, j.value("uiFontSize").toInt(0), 48);
+    if (s.uiFontSize > 0) s.uiFontSize = qMax(8, s.uiFontSize);
+    s.monoFontSize = qBound(8, j.value("monoFontSize").toInt(j.value("fontSize").toInt(13)), 48);
     s.indexDirectory = j.value("indexDirectory").toString();
     s.indexCacheGiB = qBound(1, j.value("indexCacheGiB").toInt(20), 1024);
     s.pythonPath = j.value("pythonPath").toString(); s.nodePath = j.value("nodePath").toString();
     s.scriptTimeout = qBound(1, j.value("scriptTimeout").toInt(300), 86400);
     s.threads = qBound(1, j.value("threads").toInt(s.threads), 16);
     s.maxTabs = qBound(1, j.value("maxTabs").toInt(s.maxTabs), 64);
-    s.fontSize = qBound(8, j.value("fontSize").toInt(s.fontSize), 32);
+    s.fontSize = qBound(8, j.value("fontSize").toInt(s.fontSize), 48);
     s.cacheMiB = qBound(16, j.value("cacheMiB").toInt(s.cacheMiB), 4096);
     s.hexPreviewKiB = qBound(1, j.value("hexPreviewKiB").toInt(s.hexPreviewKiB), 16384);
     s.sourceMiB = qBound(1, j.value("sourceMiB").toInt(s.sourceMiB), 64);

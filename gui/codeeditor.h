@@ -31,6 +31,7 @@ class CodeEditor : public QPlainTextEdit {
     void mousePressEvent(QMouseEvent *event) override;
     void contextMenuEvent(QContextMenuEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
+    void changeEvent(QEvent *event) override;
 
   private:
     void scheduleHighlight();
@@ -44,7 +45,7 @@ class CodeEditor : public QPlainTextEdit {
     bool light_ = false;
     class QSyntaxHighlighter *highlighter_;
     QVector<SourceSpan> spans_;
-    QWidget *gutter_;
+    QWidget *gutter_ = nullptr;
     QString findQuery_;
     bool findCaseSensitive_ = false, findWholeWords_ = false, findRegex_ = false;
 };

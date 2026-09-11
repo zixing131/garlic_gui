@@ -1,5 +1,6 @@
 #include "mainwindow.h"
 #include "theme.h"
+#include "localization.h"
 #include "mcpserver.h"
 #include <QApplication>
 #include <QCommandLineParser>
@@ -62,6 +63,10 @@ int main(int argc, char **argv) {
     app.setApplicationName("Garlic GUI");
     app.setOrganizationName("Garlic");
     app.setApplicationVersion(GARLIC_GUI_VERSION);
+    Localization translation;
+    translation.loadLanguage(AppSettings::load().language);
+    app.installTranslator(&translation);
+    app.setFont(AppSettings::load().interfaceFont());
     app.setStyle(QStyleFactory::create("Fusion"));
     QPalette palette;
     palette.setColor(QPalette::Window, QColor("#17212d"));

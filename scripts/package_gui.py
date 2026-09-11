@@ -96,6 +96,7 @@ def main():
     notices.mkdir(parents=True, exist_ok=True)
     for name in ('LICENSE', 'NOTICE', 'README.md'):
         shutil.copy2(root / 'gui/icons/jadx' / name, notices / name)
+    shutil.copytree(root / 'gui/languages', folder / 'languages', dirs_exist_ok=True)
     shutil.copy2(root / 'docs/garlic-gui.md', folder / 'README.md')
     shutil.copy2(root / 'docs/AI-HEADLESS.md', folder / 'AI-HEADLESS.md')
     for name in ('SCRIPTING-PYTHON.md', 'SCRIPTING-JAVASCRIPT.md'):
