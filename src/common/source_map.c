@@ -3,6 +3,7 @@
 #include "dalvik/dex_meta_helper.h"
 #include "dalvik/dex_structure.h"
 #include "file_tools.h"
+#include "decompiler/klass.h"
 #include "parser/class/class_tools.h"
 
 static __thread char *spans;
@@ -264,7 +265,7 @@ void source_map_expression(FILE *stream, long start, jd_exp *exp) {
     if (!spans || !exp->ins || !exp->ins->method)
         return;
     jd_ins *ins = exp->ins;
-    string id = NULL, token = NULL;
+    string id = NULL, token = NULL, constructor_owner = NULL;
     int method = exp->type == JD_EXPRESSION_INVOKE;
     int field = exp->type == JD_EXPRESSION_PUT_FIELD || exp->type == JD_EXPRESSION_GET_FIELD ||
                 exp->type == JD_EXPRESSION_GET_STATIC || exp->type == JD_EXPRESSION_PUT_STATIC;
@@ -278,6 +279,7 @@ void source_map_expression(FILE *stream, long start, jd_exp *exp) {
             ((ins->code >= 0x6e && ins->code <= 0x78) || ins->code == 0xfa || ins->code == 0xfb)) {
             dex_method_id *m = &meta->method_ids[idx];
             token = dex_str_of_idx(meta, m->name_idx);
+            constructor_owner = dex_str_of_type_id(meta, m->class_idx);
             dex_proto_id *proto = &meta->proto_ids[m->proto_idx];
             str_list *parts = str_list_init();
             str_concat(parts, "(");
@@ -301,6 +303,7 @@ void source_map_expression(FILE *stream, long start, jd_exp *exp) {
         jcp_info *cp = pool_item(jc, idx);
         if (method && (cp->tag == CONST_METHODREF_TAG || cp->tag == CONST_INTERFACEMETHODREF_TAG)) {
             token = get_method_name(jc, cp);
+            constructor_owner = get_method_class(jc, cp);
             id = str_create("L%s;->%s%s", get_method_class(jc, cp), token,
                             get_method_descriptor(jc, cp));
         } else if (field && cp->tag == CONST_FIELDREF_TAG) {
@@ -309,6 +312,11 @@ void source_map_expression(FILE *stream, long start, jd_exp *exp) {
                             get_field_descriptor(jc, cp));
         }
     }
+    // A constructor is emitted as `new Type(...)`, rather than `<init>(...)`.
+    // Keep its semantic constructor id but map the visible type token, so a
+    // constructor reference result can select the exact `Type` at the call site.
+    if (id && token && !strcmp(token, "<init>") && constructor_owner)
+        token = class_simple_name(constructor_owner);
     if (id && token && token[0] != '<')
         record(stream, start, id, token, 0);
 }

@@ -75,6 +75,30 @@ class ProjectTest : public QObject {
             if (span.id == "Landroidx/annotation/Nullable;" && doc.text[span.start - 1] == '@') ++references;
         QCOMPARE(references, 2);
     }
+    void constructorInvocationSourceMap() {
+        Project project;
+        const QString constructor = "Ldemo/Target;-><init>()V";
+        project.addClass({{"name", "demo/Use"}});
+        project.addClass({{"name", "demo/Target"}, {"methods", QJsonArray{
+            QJsonObject{{"id", constructor}, {"name", "<init>"}}}}});
+        QTemporaryDir dir;
+        const QString text = "class Use { void make() { new Target(); } }";
+        const int token = text.indexOf("Target");
+        QFile source(dir.filePath("Use.java")); QVERIFY(source.open(QIODevice::WriteOnly));
+        source.write(text.toUtf8()); source.close();
+        QFile map(dir.filePath("Use.map.json")); QVERIFY(map.open(QIODevice::WriteOnly));
+        map.write(QJsonDocument(QJsonArray{QJsonObject{{"start", token}, {"end", token + 6},
+            {"id", constructor}, {"token", "Target"}, {"declaration", false}}}).toJson()); map.close();
+        const auto doc = project.document("demo/Use", false, source.fileName());
+        bool found = false;
+        for (const auto &span : doc.spans) {
+            if (span.id != constructor) continue;
+            found = true;
+            QCOMPARE(span.start, token);
+            QCOMPARE(doc.text.mid(span.start, span.end - span.start), QString("Target"));
+        }
+        QVERIFY(found);
+    }
     void importedProjectClassIsNavigable() {
         Project project;
         project.addClass({{"name", "demo/Target"}});
