@@ -335,10 +335,10 @@ void CodeEditor::mouseDoubleClickEvent(QMouseEvent *event) {
     QPlainTextEdit::mouseDoubleClickEvent(event);
     if (event->button() != Qt::LeftButton)
         return;
-    if (!symbolAtCursor().isEmpty())
+    const auto id = symbolAtCursor();
+    // Unmapped words are plain text, not candidates for guessed declarations.
+    if (!id.isEmpty() && !goToSymbol(id))
         emit navigateRequested();
-    else
-        goToLocalDeclaration();
 }
 void CodeEditor::mousePressEvent(QMouseEvent *event) {
     QPlainTextEdit::mousePressEvent(event);
@@ -395,36 +395,6 @@ QString CodeEditor::selectedIdentifier() const {
     static const QRegularExpression identifier(
         "^[\\p{L}_$][\\p{L}\\p{N}_$]*$", QRegularExpression::UseUnicodePropertiesOption);
     return identifier.match(value).hasMatch() ? value : QString();
-}
-
-bool CodeEditor::goToLocalDeclaration() {
-    const auto name = selectedIdentifier();
-    const int before = textCursor().selectionStart();
-    if (name.isEmpty() || before <= 0)
-        return false;
-    // Local slots do not have a cross-class bytecode identity. Within this editor we can still
-    // provide the useful IDE behavior: select the latest typed declaration before the use.
-    const auto escaped = QRegularExpression::escape(name);
-    const QRegularExpression declaration(
-        "(?:^|[;{}(,])\\s*(?:(?:final|volatile|transient)\\s+)*(?:[\\p{L}_$][\\p{L}\\p{N}_$]*"
-        "(?:\\s*<[^{;}()]*>)?(?:\\s*\\[\\])?\\s+)+(" +
-            escaped + ")(?![\\p{L}\\p{N}_$])",
-        QRegularExpression::UseUnicodePropertiesOption);
-    auto matches = declaration.globalMatch(toPlainText().left(before));
-    int start = -1, end = -1;
-    while (matches.hasNext()) {
-        const auto match = matches.next();
-        start = match.capturedStart(1);
-        end = match.capturedEnd(1);
-    }
-    if (start < 0 || end <= start)
-        return false;
-    auto cursor = textCursor();
-    cursor.setPosition(start);
-    cursor.setPosition(end, QTextCursor::KeepAnchor);
-    setTextCursor(cursor);
-    centerCursor();
-    return true;
 }
 
 QRegularExpression CodeEditor::findExpression(const QString &query, bool caseSensitive,

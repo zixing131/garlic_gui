@@ -23,6 +23,24 @@ class InteractionTest : public QObject {
         QCOMPARE(editor.textCursor().selectedText(), QString("X"));
         QVERIFY(editor.extraSelections().size() >= 4);
     }
+    void unmappedDoubleClickStaysPut() {
+        CodeEditor editor(false);
+        const QString text = "public String first;\npublic String second;\nvoid a() { int value = 1; }\nvoid b() { value++; }\n";
+        editor.setSource({text, {}});
+        editor.resize(640, 240); editor.show();
+        QSignalSpy navigation(&editor, &CodeEditor::navigateRequested);
+        for (const auto &word : {QString("public"), QString("String"), QString("value")}) {
+            const int at = text.lastIndexOf(word);
+            QTextCursor cursor(editor.document()); cursor.setPosition(at + 1);
+            editor.setTextCursor(cursor);
+            const int scroll = editor.verticalScrollBar()->value();
+            QTest::mouseDClick(editor.viewport(), Qt::LeftButton, {}, editor.cursorRect(cursor).center());
+            QCOMPARE(editor.textCursor().selectionStart(), at);
+            QCOMPARE(editor.textCursor().selectedText(), word);
+            QCOMPARE(editor.verticalScrollBar()->value(), scroll);
+        }
+        QCOMPARE(navigation.count(), 0);
+    }
     void exactResultNavigation() {
         CodeEditor editor(false);
         const QString text = "@Override\nvoid run() {\n  X += X;\n  X += X;\n}\n";

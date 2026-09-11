@@ -764,7 +764,10 @@ class WindowTest : public QObject {
     void localVariableDoubleClick() {
         CodeEditor editor(false);
         const QString text = "void sample() { int answer = 7; return answer + 1; }";
-        editor.setSource({text, {}});
+        const QString id = "LExample;->sample()V@local:answer";
+        const int declaration = text.indexOf("answer"), usage = text.lastIndexOf("answer");
+        editor.setSource({text, {{declaration, declaration + 6, id, true},
+                                 {usage, usage + 6, id, false}}});
         editor.resize(640, 160);
         editor.show();
         const int use = text.lastIndexOf("answer");

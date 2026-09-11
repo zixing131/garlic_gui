@@ -42,7 +42,6 @@ class CodeEditor : public QPlainTextEdit {
     QRegularExpression findExpression(const QString &query, bool caseSensitive, bool wholeWords,
                                       bool regex) const;
     QString selectedIdentifier() const;
-    bool goToLocalDeclaration();
     bool light_ = false;
     class QSyntaxHighlighter *highlighter_;
     QVector<SourceSpan> spans_;

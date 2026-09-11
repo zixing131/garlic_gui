@@ -1032,11 +1032,19 @@ void MainWindow::navigateTo(const QString &id, int line, const QString &target, 
     }
     if (id.contains("->") && waitForMetadata([this, id, line, target, hit] { navigateTo(id, line, target, hit); }))
         return;
+    const auto destination = backend_.project()->canonicalId(id);
+    if (line == 0 && target.isEmpty() && hit.isEmpty()) {
+        if (editor() && editor()->goToSymbol(destination)) return;
+        const bool defined = destination.contains("->")
+            ? !backend_.project()->symbolInfo(destination).isEmpty()
+            : !backend_.project()->info(Project::classOf(destination)).isEmpty();
+        if (!defined) return;
+    }
     pendingId_ = backend_.project()->canonicalId(target.isEmpty() ? id : target);
     pendingLine_ = line;
-    pendingClass_ = Project::normalize(Project::classOf(id));
+    pendingClass_ = Project::normalize(Project::classOf(destination));
     pendingHit_ = hit;
-    openClass(Project::classOf(id));
+    openClass(Project::classOf(destination));
 }
 void MainWindow::showReferences(const QString &id) {
     if (id.isEmpty())
