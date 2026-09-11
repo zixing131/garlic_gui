@@ -63,6 +63,8 @@ class MainWindow : public QMainWindow {
     void syncEditor();
     bool flatPackages_ = true;
     QString pendingSyncResource_;
+    QString pendingSyncMember_;
+    int pendingSyncAttempts_ = 0;
     void goManifest();
     void refreshRecent();
     void closeTabs(int index, const QString &mode);

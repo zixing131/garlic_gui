@@ -1340,6 +1340,10 @@ void MainWindow::searchDialog() {
         return;
     if (!searchDialog_)
         searchDialog_ = new SearchDialog(this);
+    // Keep an intentionally selected expression; a mere cursor position must
+    // not overwrite the previous search query.
+    if (auto code = editor(); code && code->textCursor().hasSelection())
+        searchDialog_->setQuery(code->textCursor().selectedText());
     searchDialog_->show();
     searchDialog_->raise();
     searchDialog_->activateWindow();

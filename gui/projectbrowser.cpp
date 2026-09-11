@@ -576,6 +576,14 @@ void MainWindow::syncEditor() {
     filter_->clear();
     filterTree({});
     const auto cls = qobject_cast<ClassView *>(page);
+    QString member;
+    if (cls && editor()) {
+        member = editor()->symbolAtCursor();
+        if (member.contains("@local:"))
+            member = member.section("@local:", 0, 0);
+        if (!member.contains("->"))
+            member.clear();
+    }
     const auto key = page->property("resourceKey").toString();
     QModelIndex found, resourceTable;
     std::function<void(const QModelIndex &)> visit = [&](const QModelIndex &parent) {
@@ -620,4 +628,36 @@ void MainWindow::syncEditor() {
         tree_->expand(parent);
     tree_->setCurrentIndex(visible);
     tree_->scrollTo(visible, QAbstractItemView::PositionAtCenter);
+    if (member.isEmpty()) {
+        pendingSyncMember_.clear();
+        pendingSyncAttempts_ = 0;
+        return;
+    }
+    pendingSyncMember_ = member;
+    if (waitForMetadata([this] { syncEditor(); }))
+        return;
+    auto source = found;
+    populateMembers(visible);
+    std::function<QModelIndex(const QModelIndex &)> findMember = [&](const QModelIndex &parent) {
+        for (int row = 0; row < model_->rowCount(parent); ++row) {
+            const auto child = model_->index(row, 0, parent);
+            if (child.data(Qt::UserRole + 1).toString() == pendingSyncMember_)
+                return child;
+        }
+        return QModelIndex{};
+    };
+    const auto child = findMember(source);
+    if (child.isValid()) {
+        const auto memberVisible = proxy_->mapFromSource(child);
+        tree_->expand(visible);
+        tree_->setCurrentIndex(memberVisible);
+        tree_->scrollTo(memberVisible, QAbstractItemView::PositionAtCenter);
+        pendingSyncMember_.clear();
+        pendingSyncAttempts_ = 0;
+    } else if (++pendingSyncAttempts_ < 30) {
+        QTimer::singleShot(10, this, &MainWindow::syncEditor);
+    } else {
+        pendingSyncMember_.clear();
+        pendingSyncAttempts_ = 0;
+    }
 }

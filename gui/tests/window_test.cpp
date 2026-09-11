@@ -72,6 +72,22 @@ class WindowTest : public QObject {
         SearchDialog reopened(&window);
         QCOMPARE(reopened.findChild<QComboBox *>("searchHistory")->itemText(0), QString("term10"));
     }
+    void selectionSeedsProjectSearch() {
+        MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
+        window.openPath(qEnvironmentVariable("GARLIC_TEST_FIXTURES") + "/demo.jar");
+        QTRY_VERIFY_WITH_TIMEOUT(!window.backend()->busy(), 15000);
+        window.openClass("demo/Main");
+        QTRY_VERIFY_WITH_TIMEOUT(window.editor() && window.editor()->toPlainText().contains("greet"), 15000);
+        QVERIFY(window.editor()->goToSymbol("Ldemo/Main;->greet(I)Ljava/lang/String;"));
+        window.findChild<QAction *>("projectSearch")->trigger();
+        auto search = window.findChild<SearchDialog *>();
+        QVERIFY(search);
+        QCOMPARE(search->findChild<QLineEdit *>("projectQuery")->text(), QString("greet"));
+        auto cursor = window.editor()->textCursor(); cursor.clearSelection(); window.editor()->setTextCursor(cursor);
+        search->hide();
+        window.findChild<QAction *>("projectSearch")->trigger();
+        QCOMPARE(search->findChild<QLineEdit *>("projectQuery")->text(), QString("greet"));
+    }
     void deferAnalysisRebuild() {
         MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
         window.openPath(qEnvironmentVariable("GARLIC_TEST_FIXTURES") + "/demo.jar");
@@ -804,6 +820,10 @@ class WindowTest : public QObject {
         }
         window.openClass("demo/Main");
         QTRY_VERIFY_WITH_TIMEOUT(window.editor()->toPlainText().contains("greet"), 15000);
+        QVERIFY(window.editor()->goToSymbol("Ldemo/Main;->greet(I)Ljava/lang/String;"));
+        window.findChild<QAction *>("syncEditor")->trigger();
+        QTRY_COMPARE_WITH_TIMEOUT(tree->currentIndex().data(Qt::UserRole + 1).toString(),
+                                  QString("Ldemo/Main;->greet(I)Ljava/lang/String;"), 1000);
         QTest::mouseClick(window.editor()->viewport(), Qt::BackButton);
         QTRY_VERIFY(window.editor()->toPlainText().contains("return 7"));
         QTest::mouseClick(window.editor()->viewport(), Qt::ForwardButton);

@@ -337,3 +337,11 @@ void SearchDialog::setPackage(const QString &name) {
     query_->selectAll();
     startSearch();
 }
+
+void SearchDialog::setQuery(const QString &query) {
+    if (query.isEmpty())
+        return;
+    query_->setText(query);
+    query_->setFocus();
+    query_->selectAll();
+}

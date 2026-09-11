@@ -224,16 +224,25 @@ class BackendTest : public QObject {
         QVERIFY(text.contains("greet"));
         if (file != "Main.class")
             QVERIFY(text.contains("Details"));
+        if (smali) {
+            // A selected nested DEX class gets its own Java output. Anonymous
+            // classes are not guaranteed to appear in the outer source file.
+            backend.request("demo/Main$Details", false);
+            QTRY_COMPARE_WITH_TIMEOUT(source.count(), 2, 15000);
+            QFile nested(source.last().at(2).toString());
+            QVERIFY(nested.open(QIODevice::ReadOnly));
+            QVERIFY(nested.readAll().contains("Details"));
+        }
         const auto sourcePath = code.fileName();
         const QDir sourceDir(QFileInfo(sourcePath).absolutePath());
         QVERIFY(!QFileInfo::exists(sourceDir.filePath("Extra.java")));
         backend.request("demo/Main", false); // Disk cache hit, no process launch.
-        QCOMPARE(source.count(), 2);
+        QCOMPARE(source.count(), smali ? 3 : 2);
         QVERIFY(!backend.busy());
-        QCOMPARE(source.at(1).at(2).toString(), sourcePath);
+        QCOMPARE(source.last().at(2).toString(), sourcePath);
         if (smali) {
             backend.request("demo/Main", true);
-            QTRY_COMPARE_WITH_TIMEOUT(source.count(), 3, 15000);
+            QTRY_COMPARE_WITH_TIMEOUT(source.count(), 4, 15000);
             QFile assembly(source.last().at(2).toString());
             QVERIFY(assembly.open(QIODevice::ReadOnly));
             const auto smaliText = assembly.readAll();

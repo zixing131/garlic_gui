@@ -405,7 +405,12 @@ void Backend::request(const QString &name, bool smali) {
         return;
     }
     currentName_ = name;
-    argumentClass_ = smali ? name : project_.owner(name);
+    // An anonymous/nested DEX class is not emitted into its outer Java source
+    // in all cases. Request it explicitly so classes such as
+    // Handshake$Companion$handshake$1 still have a Java tab.
+    const bool nestedDex = name.contains('$') &&
+        project_.info(name).value("origin").toString().endsWith(".dex", Qt::CaseInsensitive);
+    argumentClass_ = smali || nestedDex ? name : project_.owner(name);
     const auto available = cachedPath(name, smali);
     if (!available.isEmpty()) {
         emit sourceReady(name, smali, available);
@@ -621,7 +626,7 @@ void Backend::finish(int code, QProcess::ExitStatus status) {
             map.chop(key.endsWith(":smali") ? 6 : 5);
             QFile::remove(map + ".map.json");
         }
-        persistSources(smali_ ? currentName_ : project_.owner(currentName_), smali_, path);
+        persistSources(smali_ ? currentName_ : argumentClass_, smali_, path);
         emit sourceReady(currentName_, smali_, path);
     } else {
         if (inputs_.size() > 1 && QFileInfo(process_.arguments().value(0)).suffix() == "class") {
@@ -758,13 +763,18 @@ QString Backend::cachedPath(const QString &name, bool smali) const {
         const auto path = Project::sourcePath(root, name, ".smali");
         if (QFileInfo::exists(root + "/.complete") && QFileInfo::exists(path)) return path;
     }
-    const auto persistent = IndexCache::cachedSource(sourceCacheDirectory_, smali ? name : project_.owner(name), smali);
+    const bool nestedDex = name.contains('$') &&
+        project_.info(name).value("origin").toString().endsWith(".dex", Qt::CaseInsensitive);
+    const auto sourceName = smali || nestedDex ? name : project_.owner(name);
+    const auto persistent = IndexCache::cachedSource(sourceCacheDirectory_, sourceName, smali);
     if (!persistent.isEmpty()) return persistent;
     if (fullReady_ && !smali && workspace_) {
         if (!restoredSourceRoot_.isEmpty() && IndexCache::fullSources(sourceCacheDirectory_).isEmpty()) return {};
         const auto directory = sourceRoot();
         const auto path = inputs_.size() == 1 && QFileInfo(input_).suffix() == "class"
             ? directory + "/source.java" : Project::sourcePath(directory, project_.owner(name), ".java");
+        if (nestedDex)
+            return {};
         if (QFileInfo::exists(path) || QFileInfo::exists(directory + "/java-sources.bin"))
             return path;
     }
