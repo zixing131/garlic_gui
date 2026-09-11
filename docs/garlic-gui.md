@@ -1,8 +1,13 @@
-# Garlic GUI 0.5.37（C++ / Qt 6）
+# Garlic GUI 0.5.38（C++ / Qt 6）
 
 原生桌面浏览器，使用本项目的 garlic C 引擎。Qt 界面通过 `QProcess` 调用引擎，
 先建立类型、成员和引用索引，点击类时生成 Java / Smali。索引读取 CLASS / DEX
 元数据与引用，不执行方法反编译。JAR 索引会读取其中的 CLASS 内容。
+
+## 0.5.38 Native Smali 与索引进度
+
+- Smali 导出不再跳过 `code_off=0` 的 Native 和 abstract 方法，输出完整的 `.method` / `.end method` 声明且不写入无效的 `.registers`。
+- 底部索引进度条加宽至 280–320 像素，使“构建查询索引 100%”等状态完整可见，并向左预留显示空间。
 
 ## 0.5.37 编辑器位置同步
 

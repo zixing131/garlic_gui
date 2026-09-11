@@ -562,6 +562,7 @@ class WindowTest : public QObject {
         QCOMPARE(bar->value(), 42);
         QVERIFY(bar->text().contains("42%"));
         QVERIFY(bar->isTextVisible());
+        QVERIFY(bar->minimumWidth() >= 280);
     }
     void progressiveNavigation() {
         MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE"));

@@ -45,9 +45,10 @@ static void smali_method_defination(jd_meta_dex *dex,
         fprintf(_smali_stream(stream), ")%s\n", str_return);
     }
 
-    fprintf(_smali_stream(stream),
-            "\t.registers %d\n\n",
-            code->registers_size);
+    // Native and abstract methods have code_off == 0.  They still need a method
+    // declaration in Smali, but must not receive a register directive.
+    if (code != NULL)
+        fprintf(_smali_stream(stream), "\t.registers %d\n\n", code->registers_size);
 }
 
 static void smali_instruction_header(encoded_method *m,
@@ -77,7 +78,7 @@ static void smali_write_method(jd_meta_dex *dex,
 {
     smali_method_defination(dex, m, code, type, stream);
 
-    for (int i = 0; i < code->insns_size; ++i) {
+    for (int i = 0; code != NULL && i < code->insns_size; ++i) {
         u2 *item = &code->insns[i];
         u1 opcode = *item & 0xFF;
 
@@ -1110,16 +1111,12 @@ void dex_class_def_to_smali(jd_meta_dex *dex, dex_class_def *cf, FILE *stream)
     for (int j = 0; j < class_data->direct_methods_size; ++j) {
         encoded_method *m = &class_data->direct_methods[j];
         dex_code_item *code = m->code;
-        if (code == NULL)
-            continue;
         smali_write_method(dex, m, code, 0, stream);
     }
 
     for (int j = 0; j < class_data->virtual_methods_size; ++j) {
         encoded_method *m = &class_data->virtual_methods[j];
         dex_code_item *code = m->code;
-        if (code == NULL)
-            continue;
         smali_write_method(dex, m, code, 1, stream);
     }
 }

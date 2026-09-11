@@ -472,7 +472,10 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     status_ = new QLabel(tr("就绪"));
     statusBar()->addWidget(status_, 1);
     progress_ = new QProgressBar;
-    progress_->setMaximumWidth(240);
+    // Keep long translated phases such as “构建查询索引 100%” visible and leave
+    // some breathing room from the window edge by reserving a wider right segment.
+    progress_->setMinimumWidth(280);
+    progress_->setMaximumWidth(320);
     progress_->setMinimumHeight(20);
     progress_->setTextVisible(true);
     connect(&backend_, &Backend::loadProgress, this, [this](const QString &phase, int percent) {
