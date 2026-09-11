@@ -83,24 +83,10 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
             renameSymbol(editor()->symbolAtCursor());
     });
     edit->addAction(tr("撤销重命名"), QKeySequence::Undo, backend_.project(), &Project::undoRename);
-    auto back = edit->addAction(tr("后退"), QKeySequence("Alt+Left"), this, [this] {
-        if (historyIndex_ <= 0)
-            return;
-        --historyIndex_;
-        restoringHistory_ = true;
-        const auto at = history_[historyIndex_];
-        navigateTo(at.first, at.second);
-        restoringHistory_ = false;
-    });
-    auto forward = edit->addAction(tr("前进"), QKeySequence("Alt+Right"), this, [this] {
-        if (historyIndex_ + 1 >= history_.size())
-            return;
-        ++historyIndex_;
-        restoringHistory_ = true;
-        const auto at = history_[historyIndex_];
-        navigateTo(at.first, at.second);
-        restoringHistory_ = false;
-    });
+    auto back = edit->addAction(tr("后退"), QKeySequence("Alt+Left"), this, [this] { moveHistory(-1); });
+    auto forward = edit->addAction(tr("前进"), QKeySequence("Alt+Right"), this, [this] { moveHistory(1); });
+    back->setEnabled(false);
+    forward->setEnabled(false);
     auto scriptsAction = edit->addAction(tr("脚本执行…"), this, [this] {
         auto dialog = findChild<ScriptDialog *>();
         if (!dialog) dialog = new ScriptDialog(this);
@@ -368,6 +354,11 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
         pages_->setCurrentIndex(i < 0 ? 0 : 1);
         if (i >= 0) {
             status_->setText(selectedClass());
+            if (!openingClass_ && !pendingClass_.isEmpty() && selectedClass() != pendingClass_) {
+                // A user-selected tab supersedes an asynchronous jump still loading.
+                pendingId_.clear(); pendingClass_.clear(); pendingHit_ = {}; pendingLine_ = 0;
+                navigating_ = restoringHistory_ = false;
+            }
             recordHistory();
             QTimer::singleShot(0, this, &MainWindow::loadCurrent);
         }
@@ -550,6 +541,8 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     connect(&backend_, &Backend::preparationChanged, this, &MainWindow::updateBusy);
     connect(&backend_, &Backend::log, logs_, &QPlainTextEdit::appendPlainText);
     connect(&backend_, &Backend::failed, this, [this](const QString &text) {
+        navigating_ = restoringHistory_ = false;
+        pendingId_.clear(); pendingClass_.clear(); pendingHit_ = {}; pendingLine_ = 0;
         logs_->appendPlainText(text);
         logDock_->show();
         status_->setText(tr("操作失败，详情见日志"));
@@ -644,7 +637,9 @@ void MainWindow::openPaths(const QStringList &paths) {
     filter_->clear();
     logs_->clear();
     history_.clear();
+    navigating_ = restoringHistory_ = false;
     historyIndex_ = -1;
+    updateHistoryActions();
     pendingId_.clear();
     pendingLine_ = 0;
     fileLabel_->setText(QFileInfo(path).fileName());
@@ -827,6 +822,7 @@ void MainWindow::populateMembers(const QModelIndex &index) {
     (*step)();
 }
 void MainWindow::openClass(const QString &name, bool smali) {
+    QScopedValueRollback<bool> opening(openingClass_, true);
     const auto n = Project::normalize(name);
     if (backend_.project()->info(n).isEmpty()) {
         status_->setText(tr("当前项目未包含：%1").arg(n));
@@ -845,11 +841,18 @@ void MainWindow::openClass(const QString &name, bool smali) {
         delete tabs_->widget(0);
     auto page = new ClassView(n, backend_.supportsSmali(n), backend_.settings());
     connect(page, &ClassView::modeChanged, this, [this, page] {
-        if (page == view())
+        if (page == view()) {
+            recordHistory();
             loadCurrent();
+        }
     });
     for (int i = 0; i < 2; i++) {
         auto code = page->editor(i);
+        connect(code, &QPlainTextEdit::cursorPositionChanged, this, &MainWindow::updateHistoryPosition);
+        connect(code->verticalScrollBar(), &QScrollBar::valueChanged, this, &MainWindow::updateHistoryPosition);
+        connect(code->horizontalScrollBar(), &QScrollBar::valueChanged, this, &MainWindow::updateHistoryPosition);
+        connect(code, &CodeEditor::localJumpStarted, this, [this] { recordHistory(); navigating_ = true; });
+        connect(code, &CodeEditor::localJumpFinished, this, [this] { navigating_ = false; recordHistory(); });
         connect(code, &CodeEditor::navigateRequested, this,
                 [this, code] { navigateTo(code->symbolAtCursor()); });
         connect(code, &CodeEditor::referencesRequested, this,
@@ -873,13 +876,26 @@ void MainWindow::loadCurrent() {
     if (!page)
         return;
     if (page->loaded(page->smali())) {
-        if ((!pendingId_.isEmpty() || pendingLine_) && page->name() == pendingClass_ && !page->smali()) {
-            if (!pendingHit_.isEmpty()) {
+        if ((!pendingId_.isEmpty() || pendingLine_) && page->name() == pendingClass_ && page->smali() == pendingSmali_) {
+            if (pendingHit_.contains("position")) {
+                auto code = page->editor();
+                auto cursor = code->textCursor();
+                const int limit = code->document()->characterCount() - 1;
+                cursor.setPosition(qBound(0, pendingHit_.value("anchor").toInt(), limit));
+                cursor.setPosition(qBound(0, pendingHit_.value("position").toInt(), limit), QTextCursor::KeepAnchor);
+                code->setTextCursor(cursor);
+                code->verticalScrollBar()->setValue(pendingHit_.value("vertical").toInt());
+                code->horizontalScrollBar()->setValue(pendingHit_.value("horizontal").toInt());
+            } else if (!pendingHit_.isEmpty()) {
                 if (!page->editor()->goToHit(pendingHit_))
                     status_->setText(tr("源码已变化，无法精确定位，请重新搜索。"));
             } else if (!page->editor()->goToSymbol(pendingId_, pendingLine_) && pendingLine_)
                 page->editor()->goToLine(pendingLine_);
             pendingId_.clear(); pendingLine_ = 0; pendingHit_ = {}; pendingClass_.clear();
+            navigating_ = false;
+            if (!restoringHistory_) recordHistory();
+            restoringHistory_ = false;
+            updateHistoryActions();
         }
         return;
     }
@@ -1011,19 +1027,52 @@ bool MainWindow::waitForMetadata(std::function<void()> action) {
     timer->start(50);
     return true;
 }
+MainWindow::HistoryPosition MainWindow::currentPosition() const {
+    HistoryPosition at;
+    if (!view()) return at;
+    at.name = selectedClass(); at.smali = view()->smali();
+    at.position = editor()->textCursor().position();
+    at.anchor = editor()->textCursor().anchor();
+    at.vertical = editor()->verticalScrollBar()->value();
+    at.horizontal = editor()->horizontalScrollBar()->value();
+    return at;
+}
+void MainWindow::updateHistoryActions() {
+    if (auto action = findChild<QAction *>("navigateBack")) action->setEnabled(historyIndex_ > 0);
+    if (auto action = findChild<QAction *>("navigateForward")) action->setEnabled(historyIndex_ + 1 < history_.size());
+}
+void MainWindow::updateHistoryPosition() {
+    if (navigating_ || restoringHistory_ || !view() || !view()->loaded(view()->smali()) || historyIndex_ < 0) return;
+    const auto at = currentPosition();
+    if (history_[historyIndex_].name == at.name && history_[historyIndex_].smali == at.smali)
+        history_[historyIndex_] = at;
+}
 void MainWindow::recordHistory() {
-    if (restoringHistory_ || !view())
-        return;
-    QPair<QString, int> at{Project::classId(selectedClass()),
-                           editor() ? editor()->textCursor().blockNumber() + 1 : 1};
-    if (historyIndex_ >= 0 && history_[historyIndex_].first == at.first)
-        return;
-    while (history_.size() > historyIndex_ + 1)
-        history_.removeLast();
+    if (restoringHistory_ || navigating_ || !view()) return;
+    const auto at = currentPosition();
+    if (historyIndex_ >= 0) {
+        const auto &last = history_[historyIndex_];
+        if (last.name == at.name && last.smali == at.smali && last.position == at.position && last.anchor == at.anchor) return;
+    }
+    while (history_.size() > historyIndex_ + 1) history_.removeLast();
     history_.append(at);
-    if (history_.size() > 100)
-        history_.removeFirst();
+    if (history_.size() > 100) history_.removeFirst();
     historyIndex_ = history_.size() - 1;
+    updateHistoryActions();
+}
+void MainWindow::moveHistory(int direction) {
+    const int next = historyIndex_ + direction;
+    if (next < 0 || next >= history_.size()) return;
+    updateHistoryPosition();
+    historyIndex_ = next;
+    const auto at = history_[next];
+    restoringHistory_ = navigating_ = true;
+    pendingClass_ = at.name; pendingSmali_ = at.smali;
+    pendingId_ = Project::classId(at.name); pendingLine_ = 0;
+    pendingHit_ = {{"position", at.position}, {"anchor", at.anchor},
+                   {"vertical", at.vertical}, {"horizontal", at.horizontal}};
+    openClass(at.name, at.smali);
+    updateHistoryActions();
 }
 void MainWindow::navigateTo(const QString &id, int line, const QString &target, const QJsonObject &hit) {
     if (id.isEmpty()) {
@@ -1034,17 +1083,26 @@ void MainWindow::navigateTo(const QString &id, int line, const QString &target, 
         return;
     const auto destination = backend_.project()->canonicalId(id);
     if (line == 0 && target.isEmpty() && hit.isEmpty()) {
-        if (editor() && editor()->goToSymbol(destination)) return;
+        if (editor()) {
+            recordHistory();
+            navigating_ = true;
+            const bool found = editor()->goToSymbol(destination);
+            navigating_ = false;
+            if (found) { recordHistory(); return; }
+        }
         const bool defined = destination.contains("->")
             ? !backend_.project()->symbolInfo(destination).isEmpty()
             : !backend_.project()->info(Project::classOf(destination)).isEmpty();
         if (!defined) return;
     }
+    recordHistory();
+    navigating_ = true;
+    pendingSmali_ = hit.value("smali").toBool();
     pendingId_ = backend_.project()->canonicalId(target.isEmpty() ? id : target);
     pendingLine_ = line;
     pendingClass_ = Project::normalize(Project::classOf(destination));
     pendingHit_ = hit;
-    openClass(Project::classOf(destination));
+    openClass(Project::classOf(destination), pendingSmali_);
 }
 void MainWindow::showReferences(const QString &id) {
     if (id.isEmpty())

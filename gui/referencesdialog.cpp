@@ -386,7 +386,7 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
             }
             if (found) resolvedMethods.insert(from);
             if (!found) {
-                QString key = from + ":" + ref.value("kind").toString();
+                QString key = from + ":" + ref.value("kind").toString() + ":" + QString::number(ref.value("offset").toInt(-1));
                 if (seen.contains(key))
                     continue;
                 seen.insert(key);
@@ -400,7 +400,9 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
                     text = ref.value("kind").toString() +
                            QString(" · bytecode +%1 · ").arg(ref.value("offset").toInt()) + id;
                 rows.append(QJsonObject{{"from", from}, {"line", line}, {"text", text},
-                    {"hit", QJsonObject{{"symbol", ref.value("target").toString(id)}, {"scope", from}}}});
+                    {"hit", QJsonObject{{"symbol", ref.value("target").toString(id)}, {"scope", from},
+                        {"smali", ref.value("kind") == "bytecode" && ref.value("offset").toInt(-1) >= 0},
+                        {"offset", ref.value("offset").toInt(-1)}}}});
             }
         }
         if (!rows.isEmpty())

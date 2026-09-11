@@ -94,6 +94,9 @@ class MainWindow : public QMainWindow {
     void saveProject();
     void openProject();
     void recordHistory();
+    void updateHistoryPosition();
+    void moveHistory(int direction);
+    void updateHistoryActions();
     Backend backend_;
     McpServer *mcp_;
     SearchDialog *searchDialog_ = nullptr;
@@ -117,7 +120,14 @@ class MainWindow : public QMainWindow {
     int pendingLine_ = 0;
     QString pendingClass_;
     QJsonObject pendingHit_;
-    QVector<QPair<QString, int>> history_;
+    struct HistoryPosition {
+        QString name;
+        bool smali = false;
+        int position = 0, anchor = 0, vertical = 0, horizontal = 0;
+    };
+    HistoryPosition currentPosition() const;
+    QVector<HistoryPosition> history_;
+    bool navigating_ = false, pendingSmali_ = false, openingClass_ = false;
     int historyIndex_ = -1;
     bool restoringHistory_ = false;
 };

@@ -22,6 +22,8 @@ class CodeEditor : public QPlainTextEdit {
     int gutterWidth() const;
     void paintGutter(QPaintEvent *event);
   signals:
+    void localJumpStarted();
+    void localJumpFinished();
     void navigateRequested();
     void referencesRequested();
     void callGraphRequested();

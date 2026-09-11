@@ -295,7 +295,7 @@ void SearchDialog::navigate() {
         window_->openResource(hit.value("path").toString(), hit.value("entry").toString(),
                               hit.value("generated").toString(), hit.value("line").toInt(), hit);
     } else window_->navigateTo(id.isEmpty() ? Project::classId(hit.value("class").toString()) : id,
-                        hit.value("line").toInt(), {}, hit.value("kind") == "code" ? hit : QJsonObject{});
+                        hit.value("line").toInt(), {}, hit.value("line").toInt() > 0 ? hit : QJsonObject{});
     if (!keep_->isChecked())
         hide();
 }

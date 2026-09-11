@@ -83,6 +83,7 @@ static void smali_write_method(jd_meta_dex *dex,
 
 
         int len = dex_opcode_len(opcode);
+        fprintf(_smali_stream(stream), "\t# @offset %d\n", i);
         smali_instruction_header(m, opcode, i, stream);
         switch(opcode) {
             case DEX_INS_NOP: { // nop

@@ -146,6 +146,8 @@ class WindowTest : public QObject {
         MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
         auto settings = window.backend()->settings(); settings.background = false; settings.mcpEnabled = false; settings.deobfuscate = false;
         window.backend()->configure(settings); window.openPath(qEnvironmentVariable("GARLIC_TEST_FIXTURES") + "/resources.apks");
+        QTRY_VERIFY_WITH_TIMEOUT(!window.backend()->busy() && !window.backend()->project()->classes().isEmpty(), 15000);
+        window.backend()->prepareMetadata();
         QTRY_VERIFY_WITH_TIMEOUT(window.backend()->metadataReady(), 15000);
         ScriptDialog dialog(&window, qEnvironmentVariable("GARLIC_TEST_GUI"));
         dialog.findChild<QComboBox *>("scriptLanguage")->setCurrentIndex(python ? 0 : 1);
@@ -367,6 +369,75 @@ class WindowTest : public QObject {
         QTRY_VERIFY_WITH_TIMEOUT(!window.backend()->busy() && window.backend()->project()->classCount() > 0, 15000);
         window.openClass("demo/Flattened");
         QTRY_VERIFY_WITH_TIMEOUT(window.editor() && window.editor()->toPlainText().contains("compareDispatcher"), 15000);
+    }
+    void hexSelectionFormats() {
+        QTemporaryFile file; QVERIFY(file.open());
+        file.write("ABC\0\xff", 5); file.flush();
+        HexViewer viewer(file.fileName(), 1); viewer.resize(900, 240); viewer.show();
+        viewer.setFont(QFont("Arial", 12));
+        QVERIFY(QFontDatabase::isFixedPitch(viewer.font().family()));
+        const int cell = qMax(viewer.fontMetrics().horizontalAdvance('W'), viewer.fontMetrics().horizontalAdvance('0'));
+        const int y = viewer.fontMetrics().height() / 2;
+        QTest::mousePress(viewer.viewport(), Qt::LeftButton, {}, QPoint(8 + 14 * cell + 1, y));
+        QTest::mouseMove(viewer.viewport(), QPoint(8 + 20 * cell + 1, y));
+        QTest::mouseRelease(viewer.viewport(), Qt::LeftButton, {}, QPoint(8 + 20 * cell + 1, y));
+        QCOMPARE(viewer.selectionStart(), 0); QCOMPARE(viewer.selectionEnd(), 3);
+        viewer.copySelection(); QCOMPARE(QApplication::clipboard()->text(), QString("ABC"));
+        viewer.copySelection("hex"); QCOMPARE(QApplication::clipboard()->text(), QString("41 42 43"));
+        viewer.copySelection("base64"); QCOMPARE(QApplication::clipboard()->text(), QString("QUJD"));
+        QTest::mousePress(viewer.viewport(), Qt::LeftButton, {}, QPoint(8 + 20 * cell + 1, y));
+        QTest::mouseMove(viewer.viewport(), QPoint(8 + 14 * cell + 1, y));
+        QTest::mouseRelease(viewer.viewport(), Qt::LeftButton, {}, QPoint(8 + 14 * cell + 1, y));
+        QCOMPARE(viewer.selectionStart(), 0); QCOMPARE(viewer.selectionEnd(), 3);
+        QTest::keySequence(&viewer, QKeySequence::SelectAll);
+        QCOMPARE(viewer.selectionEnd(), 5);
+        viewer.copySelection("hex"); QCOMPARE(QApplication::clipboard()->text(), QString("41 42 43 00 ff"));
+    }
+    void preciseNavigationHistory() {
+        MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE")); window.show();
+        window.openPath(qEnvironmentVariable("GARLIC_TEST_FIXTURES") + "/demo.jar");
+        QTRY_VERIFY_WITH_TIMEOUT(!window.backend()->busy() && !window.backend()->project()->classes().isEmpty(), 15000);
+        window.backend()->prepareMetadata();
+        QTRY_VERIFY_WITH_TIMEOUT(window.backend()->metadataReady(), 15000);
+        window.openClass("demo/Main");
+        QTRY_VERIFY_WITH_TIMEOUT(window.editor() && window.editor()->toPlainText().contains("greet"), 15000);
+        auto original = window.editor();
+        QTextCursor cursor(original->document()); cursor.setPosition(2); original->setTextCursor(cursor);
+        window.navigateTo("Ldemo/Main;->greet(I)Ljava/lang/String;");
+        const int methodPosition = original->textCursor().position();
+        QVERIFY(methodPosition != 2);
+        auto back = window.findChild<QAction *>("navigateBack");
+        auto forward = window.findChild<QAction *>("navigateForward");
+        QVERIFY(back->isEnabled()); back->trigger();
+        QCOMPARE(original->textCursor().position(), 2);
+        QVERIFY(forward->isEnabled()); forward->trigger();
+        QCOMPARE(original->textCursor().position(), methodPosition);
+        window.openClass("demo/deep/nested/Leaf");
+        QTRY_VERIFY_WITH_TIMEOUT(window.editor()->toPlainText().contains("return 7"), 15000);
+        QTest::mouseClick(window.editor()->viewport(), Qt::BackButton);
+        QCOMPARE(window.selectedClass(), QString("demo/Main"));
+        QCOMPARE(window.editor()->textCursor().position(), methodPosition);
+        QTest::mouseClick(window.editor()->viewport(), Qt::ForwardButton);
+        QCOMPARE(window.selectedClass(), QString("demo/deep/nested/Leaf"));
+        back->trigger();
+        window.navigateTo("Ldemo/Main;", 1);
+        QVERIFY(!forward->isEnabled());
+    }
+    void bytecodeOffsetNavigation() {
+        MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
+        window.openPath(qEnvironmentVariable("GARLIC_TEST_FIXTURES") + "/cases.dex");
+        QTRY_VERIFY_WITH_TIMEOUT(!window.backend()->busy() && !window.backend()->project()->classes().isEmpty(), 15000);
+        window.backend()->prepareMetadata();
+        QTRY_VERIFY_WITH_TIMEOUT(window.backend()->metadataReady(), 15000);
+        const QString from = "Ldemo/cases/Foo;->identify()I";
+        window.navigateTo(from, 0, from, {{"symbol", from}, {"scope", from}, {"smali", true}, {"offset", 0}});
+        QTRY_VERIFY_WITH_TIMEOUT(window.editor() && window.editor()->toPlainText().contains("# @offset 0"), 15000);
+        QTRY_VERIFY_WITH_TIMEOUT(!window.editor()->textCursor().selectedText().isEmpty(), 15000);
+        QVERIFY(window.editor()->textCursor().selectedText().contains("const"));
+        window.openClass("demo/cases/Foo", false);
+        QTRY_VERIFY_WITH_TIMEOUT(window.editor()->toPlainText().contains("identify"), 15000);
+        window.findChild<QAction *>("navigateBack")->trigger();
+        QTRY_VERIFY(window.editor()->toPlainText().contains("# @offset 0"));
     }
     void pagedHexLargeFile() {
         QTemporaryFile file; QVERIFY(file.open());

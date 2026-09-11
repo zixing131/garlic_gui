@@ -291,12 +291,30 @@ bool CodeEditor::goToHit(const QJsonObject &hit) {
             scopeStart = -1;
             for (const auto &span : spans_) {
                 if (span.declaration && span.id == scope) scopeStart = span.start;
-                else if (scopeStart >= 0 && span.start > scopeStart && span.declaration &&
+                else if (scope.contains("->") && scopeStart >= 0 && span.start > scopeStart && span.declaration &&
                          span.id.contains("->") && !span.id.contains("@local:")) {
                     scopeEnd = span.start; break;
                 }
             }
             if (scopeStart < 0) return false;
+        }
+        if (hit.value("smali").toBool() && hit.value("offset").toInt(-1) >= 0) {
+            const QString marker = "# @offset " + QString::number(hit.value("offset").toInt());
+            for (auto block = document()->findBlock(scopeStart); block.isValid() && block.position() < scopeEnd; block = block.next()) {
+                if (block.text().trimmed() != marker) continue;
+                const auto instruction = block.next();
+                if (!instruction.isValid()) return false;
+                for (const auto &span : spans_)
+                    if (span.start >= instruction.position() && span.end <= instruction.position() + instruction.length() &&
+                        span.id == hit.value("symbol").toString()) {
+                        auto cursor = textCursor(); cursor.setPosition(span.start);
+                        cursor.setPosition(span.end, QTextCursor::KeepAnchor); setTextCursor(cursor); centerCursor(); return true;
+                    }
+                auto cursor = QTextCursor(instruction);
+                cursor.movePosition(QTextCursor::EndOfBlock, QTextCursor::KeepAnchor);
+                setTextCursor(cursor); centerCursor(); return true;
+            }
+            return false;
         }
         for (const auto &span : spans_)
             if (!span.declaration && span.start >= scopeStart && span.start < scopeEnd &&
@@ -337,8 +355,12 @@ void CodeEditor::mouseDoubleClickEvent(QMouseEvent *event) {
         return;
     const auto id = symbolAtCursor();
     // Unmapped words are plain text, not candidates for guessed declarations.
-    if (!id.isEmpty() && !goToSymbol(id))
-        emit navigateRequested();
+    if (!id.isEmpty()) {
+        emit localJumpStarted();
+        const bool found = goToSymbol(id);
+        emit localJumpFinished();
+        if (!found) emit navigateRequested();
+    }
 }
 void CodeEditor::mousePressEvent(QMouseEvent *event) {
     QPlainTextEdit::mousePressEvent(event);
