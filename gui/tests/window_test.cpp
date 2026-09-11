@@ -16,6 +16,41 @@
 class WindowTest : public QObject {
     Q_OBJECT
   private slots:
+    void resultNavigationAfterPresentation() {
+        MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
+        window.openPath(qEnvironmentVariable("GARLIC_TEST_FIXTURES") + "/demo.jar");
+        QTRY_VERIFY_WITH_TIMEOUT(!window.backend()->busy() &&
+            !window.backend()->project()->classes().isEmpty(), 15000);
+        window.openClass("demo/Main");
+        QTRY_VERIFY_WITH_TIMEOUT(window.editor() && window.editor()->toPlainText().contains("greet"), 15000);
+        ClassView *page = nullptr;
+        for (auto candidate : window.findChildren<ClassView *>())
+            if (candidate->name() == "demo/Main") page = candidate;
+        QVERIFY(page);
+        const auto raw = window.backend()->project()->applyAliases(page->rawDocument(false), false);
+        const auto lines = raw.text.split('\n');
+        int row = -1;
+        for (int i = 0; i < lines.size(); ++i)
+            if (lines[i].contains("return ")) { row = i; break; }
+        QVERIFY(row >= 0);
+        int occurrence = 0;
+        for (int i = 0; i < row; ++i) if (lines[i] == lines[row]) ++occurrence;
+        window.navigateTo("Ldemo/Main;", row + 1, {},
+            {{"sourceLine", lines[row]}, {"lineOccurrence", occurrence},
+             {"column", lines[row].indexOf("return")}, {"length", 6}});
+        QCOMPARE(window.editor()->textCursor().selectedText(), QString("return"));
+
+        QTemporaryDir dir;
+        QFile resource(dir.filePath("test.txt"));
+        QVERIFY(resource.open(QIODevice::WriteOnly));
+        resource.write("first needle\nsecond needle\n"); resource.close();
+        window.openResource(resource.fileName(), {}, {}, 1,
+            {{"sourceLine", "first needle"}, {"column", 6}, {"length", 6}});
+        window.openResource(resource.fileName(), {}, {}, 2,
+            {{"sourceLine", "second needle"}, {"column", 7}, {"length", 6}});
+        QTRY_VERIFY_WITH_TIMEOUT(window.editor() && window.editor()->textCursor().selectedText() == "needle", 10000);
+        QCOMPARE(window.editor()->textCursor().blockNumber(), 1);
+    }
     void appearanceLanguagesAndFonts() {
         const auto oldPreferences = QSettings().value("preferences");
         const auto originalFont = qApp->font();

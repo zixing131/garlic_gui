@@ -153,7 +153,18 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
         }
         elapsed.restart();
     };
+    QHash<QString, int> resourceHitOccurrences;
     auto append = [&](QJsonObject hit) {
+        if (hit.value("kind") == "resource" && hit.value("line").toInt() > 0) {
+            const auto text = hit.take("fullLine").toString();
+            const auto match = re.match(text);
+            const int column = o.regex ? match.capturedStart() : text.indexOf(o.query, 0,
+                o.caseSensitive ? Qt::CaseSensitive : Qt::CaseInsensitive);
+            hit.insert("lineOccurrence", resourceHitOccurrences[hit.value("path").toString() + "!" + hit.value("entry").toString() + "!" + hit.value("generated").toString() + "\n" + text]++);
+            hit.insert("sourceLine", text);
+            hit.insert("column", column);
+            hit.insert("length", o.regex ? match.capturedLength() : o.query.size());
+        }
         result.hits.append(hit);
         batch.append(hit);
         if (batch.size() >= 50 || elapsed.elapsed() > 100)
@@ -182,7 +193,7 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
                 const auto sourceEntry = entry.value("sourceEntry").toString(name);
                 auto hit = [&](const QString &text, int line) {
                     append({{"kind", "resource"}, {"node", name}, {"text", text.left(1200)},
-                            {"line", line}, {"path", path}, {"entry", sourceEntry}});
+                            {"fullLine", text}, {"line", line}, {"path", path}, {"entry", sourceEntry}});
                 };
                 if (contains(name)) hit(name, 0);
                 if (stopped()) break;
@@ -241,7 +252,7 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
                 for (int line = 0; line < document->lines.size() && !stopped(); ++line)
                     if (contains(document->lines[line])) {
                         if (suffix == "arsc") append({{"kind", "resource"}, {"node", part.key()}, {"text", document->lines[line].left(1200)},
-                            {"line", line + 1}, {"path", path}, {"entry", sourceEntry}, {"generated", part.key()}});
+                            {"fullLine", document->lines[line]}, {"line", line + 1}, {"path", path}, {"entry", sourceEntry}, {"generated", part.key()}});
                         else hit(document->lines[line], line + 1);
                     }
                 }
@@ -435,10 +446,12 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
                     ++result.indexRejected;
                     continue;
                 }
+                QHash<QString, int> lineOccurrences;
                 for (int row = 0; row < document->lines.size() && !stopped(); row++) {
                     const auto &line = document->lines[row];
                     const auto &searchable = document->searchable[row];
                     const int lineNumber = row + 1;
+                    const int lineOccurrence = lineOccurrences[line]++;
                     const int matchStart = o.regex
                                                ? re.match(searchable).capturedStart()
                                                : searchable.indexOf(
@@ -452,6 +465,8 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
                                 {"kind", "code"},
                                 {"icon_kind", project->info(name).value("kind")},
                                 {"flags", project->info(name).value("flags")},
+                                {"sourceLine", line}, {"lineOccurrence", lineOccurrence},
+                                {"column", matchStart}, {"length", o.regex ? re.match(searchable).capturedLength() : o.query.size()},
                                 {"line", lineNumber},
                                 {"text", line.mid(crop, 1200)}});
                     }

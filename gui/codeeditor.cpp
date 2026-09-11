@@ -271,7 +271,7 @@ QString CodeEditor::symbolAtCursor() const {
 }
 bool CodeEditor::goToSymbol(const QString &id, int line) {
     for (const auto &s : spans_)
-        if ((s.id == id || (line > 0 && id.endsWith(';') && s.id.startsWith(id + "->") && !s.id.contains("@local:"))) && (line > 0 ? document()->findBlock(s.start).blockNumber() + 1 == line : s.declaration)) {
+        if ((s.id == id) && (line > 0 ? document()->findBlock(s.start).blockNumber() + 1 == line : s.declaration)) {
             auto cursor = textCursor();
             cursor.setPosition(s.start);
             cursor.setPosition(s.end, QTextCursor::KeepAnchor);
@@ -280,6 +280,49 @@ bool CodeEditor::goToSymbol(const QString &id, int line) {
             return true;
         }
     return false;
+}
+bool CodeEditor::goToHit(const QJsonObject &hit) {
+    int start = -1, length = 0;
+    if (hit.contains("symbol")) {
+        int occurrence = hit.value("occurrence").toInt();
+        int scopeStart = 0, scopeEnd = document()->characterCount();
+        const auto scope = hit.value("scope").toString();
+        if (!scope.isEmpty()) {
+            scopeStart = -1;
+            for (const auto &span : spans_) {
+                if (span.declaration && span.id == scope) scopeStart = span.start;
+                else if (scopeStart >= 0 && span.start > scopeStart && span.declaration &&
+                         span.id.contains("->") && !span.id.contains("@local:")) {
+                    scopeEnd = span.start; break;
+                }
+            }
+            if (scopeStart < 0) return false;
+        }
+        for (const auto &span : spans_)
+            if (!span.declaration && span.start >= scopeStart && span.start < scopeEnd &&
+                span.id == hit.value("symbol").toString() && occurrence-- == 0) {
+                start = span.start; length = span.end - span.start; break;
+            }
+    } else if (hit.contains("sourceLine")) {
+        int occurrence = hit.value("lineOccurrence").toInt();
+        auto text = hit.value("sourceLine").toString();
+        if (text.endsWith('\r')) text.chop(1);
+        for (auto block = document()->begin(); block.isValid(); block = block.next())
+            if (block.text() == text && occurrence-- == 0) {
+                const int column = hit.value("column").toInt();
+                length = hit.value("length").toInt();
+                if (column >= 0 && length >= 0 && column + length <= text.size())
+                    start = block.position() + column;
+                break;
+            }
+    }
+    if (start < 0) return false;
+    auto cursor = textCursor();
+    cursor.setPosition(start);
+    cursor.setPosition(start + length, QTextCursor::KeepAnchor);
+    setTextCursor(cursor);
+    centerCursor();
+    return true;
 }
 void CodeEditor::goToLine(int line) {
     auto block = document()->findBlockByNumber(qMax(0, line - 1));

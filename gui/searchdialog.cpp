@@ -217,7 +217,10 @@ SearchDialog::SearchDialog(MainWindow *window) : QDialog(window), window_(window
     });
     connect(close, &QPushButton::clicked, this, &QDialog::close);
     connect(go, &QPushButton::clicked, this, &SearchDialog::navigate);
-    connect(table_, &QTableView::doubleClicked, this, [this] { navigate(); });
+    connect(table_, &QTableView::doubleClicked, this, [this](const QModelIndex &index) {
+        table_->setCurrentIndex(index);
+        navigate();
+    });
     connect(copy, &QPushButton::clicked, this, [this] {
         QString text;
         for (const auto &v : static_cast<ResultsModel *>(model_)->hits) {
@@ -290,9 +293,9 @@ void SearchDialog::navigate() {
     const auto id = hit.value("id").toString();
     if (hit.value("kind") == "resource") {
         window_->openResource(hit.value("path").toString(), hit.value("entry").toString(),
-                              hit.value("generated").toString(), hit.value("line").toInt());
+                              hit.value("generated").toString(), hit.value("line").toInt(), hit);
     } else window_->navigateTo(id.isEmpty() ? Project::classId(hit.value("class").toString()) : id,
-                        hit.value("line").toInt());
+                        hit.value("line").toInt(), {}, hit.value("kind") == "code" ? hit : QJsonObject{});
     if (!keep_->isChecked())
         hide();
 }

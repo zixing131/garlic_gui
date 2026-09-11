@@ -873,10 +873,13 @@ void MainWindow::loadCurrent() {
     if (!page)
         return;
     if (page->loaded(page->smali())) {
-        if (!pendingId_.isEmpty() || pendingLine_) {
-            if (!page->editor()->goToSymbol(pendingId_, pendingLine_) && pendingLine_)
+        if ((!pendingId_.isEmpty() || pendingLine_) && page->name() == pendingClass_ && !page->smali()) {
+            if (!pendingHit_.isEmpty()) {
+                if (!page->editor()->goToHit(pendingHit_))
+                    status_->setText(tr("源码已变化，无法精确定位，请重新搜索。"));
+            } else if (!page->editor()->goToSymbol(pendingId_, pendingLine_) && pendingLine_)
                 page->editor()->goToLine(pendingLine_);
-            pendingId_.clear(); pendingLine_ = 0;
+            pendingId_.clear(); pendingLine_ = 0; pendingHit_ = {}; pendingClass_.clear();
         }
         return;
     }
@@ -1022,15 +1025,17 @@ void MainWindow::recordHistory() {
         history_.removeFirst();
     historyIndex_ = history_.size() - 1;
 }
-void MainWindow::navigateTo(const QString &id, int line, const QString &target) {
+void MainWindow::navigateTo(const QString &id, int line, const QString &target, const QJsonObject &hit) {
     if (id.isEmpty()) {
         status_->setText(tr("此位置没有可定位的符号。"));
         return;
     }
-    if (id.contains("->") && waitForMetadata([this, id, line, target] { navigateTo(id, line, target); }))
+    if (id.contains("->") && waitForMetadata([this, id, line, target, hit] { navigateTo(id, line, target, hit); }))
         return;
     pendingId_ = backend_.project()->canonicalId(target.isEmpty() ? id : target);
     pendingLine_ = line;
+    pendingClass_ = Project::normalize(Project::classOf(id));
+    pendingHit_ = hit;
     openClass(Project::classOf(id));
 }
 void MainWindow::showReferences(const QString &id) {

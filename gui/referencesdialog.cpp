@@ -11,10 +11,13 @@ struct ReferenceDocument {
     QVector<int> lines{0};
     QVector<SourceSpan> members, matches;
     QHash<QString, int> declarations;
+    QHash<int, int> occurrences;
     explicit ReferenceDocument(SourceDocument source = {}, const QString &id = {}) : doc(std::move(source)) {
         for (int i = 0; i < doc.text.size(); ++i)
             if (doc.text[i] == '\n') lines.append(i + 1);
+        QHash<QString, int> counts;
         for (const auto &span : doc.spans) {
+            if (!span.declaration) occurrences.insert(span.start, counts[span.id]++);
             if (span.declaration) {
                 if (!declarations.contains(span.id)) declarations.insert(span.id, span.start);
                 if (span.id.contains("->") && !span.id.contains("@local:")) members.append(span);
@@ -24,6 +27,9 @@ struct ReferenceDocument {
         const auto order = [](const SourceSpan &a, const SourceSpan &b) { return a.start < b.start; };
         std::sort(members.begin(), members.end(), order);
         std::sort(matches.begin(), matches.end(), order);
+    }
+    QJsonObject hit(const SourceSpan &span) const {
+        return {{"symbol", span.id}, {"occurrence", occurrences.value(span.start)}};
     }
     int start(const QString &from) const { return declarations.value(from, -1); }
     int end(const QString &from) const {
@@ -199,7 +205,7 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
             return;
         auto first = index.siblingAtColumn(0);
         window->navigateTo(first.data(Qt::UserRole + 1).toString(),
-                           first.data(Qt::UserRole + 2).toInt(), id);
+                           first.data(Qt::UserRole + 2).toInt(), id, first.data(Qt::UserRole + 4).toJsonObject());
         if (!keep->isChecked())
             this->close();
     };
@@ -210,7 +216,7 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
             window->navigateTo(i.data(Qt::UserRole + 1).toString());
     });
     connect(table, &QTableView::doubleClicked, this,
-            [navigate](const QModelIndex &) { navigate(); });
+            [navigate, table](const QModelIndex &index) { table->setCurrentIndex(index); navigate(); });
     connect(copy, &QPushButton::clicked, this, [proxy] {
         QString text;
         for (int i = 0; i < proxy->rowCount(); i++)
@@ -274,6 +280,7 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
                                     snippet->setText(doc.text(match->start));
                                     snippet->setData(doc.highlights(match->start), Qt::UserRole + 3);
                                     target->setData(doc.line(match->start), Qt::UserRole + 2);
+                                    target->setData(doc.hit(*match), Qt::UserRole + 4);
                                     if (replaced) model->appendRow({target, snippet});
                                     replaced = true;
                                 }
@@ -309,6 +316,7 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
                                  : QString()));
                     node->setData(symbol, Qt::UserRole + 1);
                     node->setData(row.value("line").toInt(), Qt::UserRole + 2);
+                    node->setData(row.value("hit").toObject(), Qt::UserRole + 4);
                     auto snippet = new QStandardItem(row.value("text").toString());
                     snippet->setData(row.value("highlights").toArray(), Qt::UserRole + 3);
                     model->appendRow({node, snippet});
@@ -374,7 +382,7 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
                 if (seen.contains(key)) continue;
                 seen.insert(key);
                 rows.append(QJsonObject{{"from", doc.container(span.start, from)},
-                                        {"line", line}, {"text", doc.text(span.start)}, {"highlights", doc.highlights(span.start)}});
+                                        {"hit", doc.hit(span)}, {"line", line}, {"text", doc.text(span.start)}, {"highlights", doc.highlights(span.start)}});
             }
             if (found) resolvedMethods.insert(from);
             if (!found) {
@@ -391,7 +399,8 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
                 if (text.isEmpty())
                     text = ref.value("kind").toString() +
                            QString(" · bytecode +%1 · ").arg(ref.value("offset").toInt()) + id;
-                rows.append(QJsonObject{{"from", from}, {"line", line}, {"text", text}});
+                rows.append(QJsonObject{{"from", from}, {"line", line}, {"text", text},
+                    {"hit", QJsonObject{{"symbol", ref.value("target").toString(id)}, {"scope", from}}}});
             }
         }
         if (!rows.isEmpty())

@@ -32,9 +32,9 @@ class MainWindow : public QMainWindow {
     QString selectedClass() const;
     CodeEditor *editor() const;
     void openClass(const QString &name, bool smali = false);
-    void navigateTo(const QString &id, int line = 0, const QString &target = {});
+    void navigateTo(const QString &id, int line = 0, const QString &target = {}, const QJsonObject &hit = {});
     void showReferences(const QString &id);
-    void openResource(const QString &path, const QString &entry, const QString &generated = {}, int line = 0);
+    void openResource(const QString &path, const QString &entry, const QString &generated = {}, int line = 0, const QJsonObject &hit = {});
     void showCallGraph(const QString &id);
     void applySettings(const AppSettings &settings);
     QString mcpEndpoint() const;
@@ -115,6 +115,8 @@ class MainWindow : public QMainWindow {
     QAction *openAction_, *exportAction_, *stopAction_, *settingsAction_;
     QString pendingId_, pendingProject_;
     int pendingLine_ = 0;
+    QString pendingClass_;
+    QJsonObject pendingHit_;
     QVector<QPair<QString, int>> history_;
     int historyIndex_ = -1;
     bool restoringHistory_ = false;

@@ -81,7 +81,14 @@ class ProjectTest : public QObject {
         auto warm = run(options); QVERIFY(warm.hits.isEmpty());
         QCOMPARE(index->filters.size(), 1); QCOMPARE(index->documents.size(), 0);
         options.indexOnly = false;
-        QVERIFY(!run(options).hits.isEmpty());
+        const auto hits = run(options).hits;
+        QVERIFY(!hits.isEmpty());
+        const auto hit = hits.first().toObject();
+        QCOMPARE(hit.value("sourceLine").toString().mid(hit.value("column").toInt(), hit.value("length").toInt()), QString("needle"));
+        options.regex = true; options.query = "nee[a-z]+";
+        const auto regexHit = run(options).hits.first().toObject();
+        QCOMPARE(regexHit.value("length").toInt(), 6);
+        options.regex = false;
         options.code = false; options.comments = true; options.query = "commentToken";
         QVERIFY(!run(options).hits.isEmpty());
         options.query = "absentUniqueToken"; QVERIFY(run(options).hits.isEmpty());

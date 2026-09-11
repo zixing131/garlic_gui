@@ -130,15 +130,17 @@ void MainWindow::projectNodes() {
     tree_->expand(proxy_->mapFromSource(root->index()));
     tree_->expand(proxy_->mapFromSource(sourceRoot_->index()));
 }
-void MainWindow::openResource(const QString &path, const QString &entry, const QString &generated, int line) {
+void MainWindow::openResource(const QString &path, const QString &entry, const QString &generated, int line, const QJsonObject &hit) {
     const QString key = path + "!" + entry + (generated.isEmpty() ? "" : "!" + generated);
     const bool decoded = !generated.isEmpty();
     const QString decodedText = decodedResources_.value(path + "!" + entry).value(generated);
     const QString displayEntry = decoded ? generated : entry;
     for (int i = 0; i < tabs_->count(); i++)
         if (tabs_->widget(i)->property("resourceKey") == key) {
+            tabs_->widget(i)->setProperty("navigationHit", hit);
+            tabs_->widget(i)->setProperty("navigationLine", line);
             tabs_->setCurrentIndex(i);
-            if (auto code = tabs_->widget(i)->findChild<CodeEditor *>()) if (line) code->goToLine(line);
+            if (auto code = tabs_->widget(i)->findChild<CodeEditor *>()) { if (hit.contains("sourceLine")) code->goToHit(hit); else if (line) code->goToLine(line); }
             syncEditor();
             return;
         }
@@ -146,6 +148,8 @@ void MainWindow::openResource(const QString &path, const QString &entry, const Q
         delete tabs_->widget(0);
     auto page = new QWidget;
     page->setProperty("resourceKey", key);
+    page->setProperty("navigationHit", hit);
+    page->setProperty("navigationLine", line);
     auto layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
     auto code = new CodeEditor(false);
@@ -192,7 +196,7 @@ void MainWindow::openResource(const QString &path, const QString &entry, const Q
     auto task = new QFutureWatcher<Preview>(page);
     auto limit = backend_.settings().sourceMiB;
     const int hexKiB = backend_.settings().hexPreviewKiB;
-    connect(task, &QFutureWatcher<Preview>::finished, page, [this, task, code, layout, hexKiB, path, entry, line] {
+    connect(task, &QFutureWatcher<Preview>::finished, page, [this, task, code, layout, hexKiB, path, entry, page] {
         auto result = task->result();
         task->deleteLater();
         if (!result.binaryPath.isEmpty()) {
@@ -209,7 +213,9 @@ void MainWindow::openResource(const QString &path, const QString &entry, const Q
         } else {
             if (!result.files.isEmpty()) decodedResources_[path + "!" + entry] = result.files;
             code->setSource({result.error.isEmpty() ? result.text : result.error, {}});
-            if (line) code->goToLine(line);
+            const auto hit = page->property("navigationHit").toJsonObject();
+            if (hit.contains("sourceLine")) code->goToHit(hit);
+            else if (const int line = page->property("navigationLine").toInt()) code->goToLine(line);
             syncEditor();
         }
     });

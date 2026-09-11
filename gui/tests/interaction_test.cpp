@@ -23,6 +23,29 @@ class InteractionTest : public QObject {
         QCOMPARE(editor.textCursor().selectedText(), QString("X"));
         QVERIFY(editor.extraSelections().size() >= 4);
     }
+    void exactResultNavigation() {
+        CodeEditor editor(false);
+        const QString text = "@Override\nvoid run() {\n  X += X;\n  X += X;\n}\n";
+        const int first = text.indexOf("X"), second = text.indexOf("X", first + 1);
+        editor.setSource({text, {{first, first + 1, "local:X", false},
+                                {second, second + 1, "local:X", false}}});
+        QVERIFY(editor.goToHit({{"symbol", "local:X"}, {"occurrence", 1}}));
+        QCOMPARE(editor.textCursor().selectionStart(), second);
+        QVERIFY(editor.goToHit({{"sourceLine", "  X += X;"}, {"lineOccurrence", 1},
+                               {"column", 7}, {"length", 1}}));
+        QCOMPARE(editor.textCursor().selectionStart(), text.lastIndexOf("X"));
+        QCOMPARE(editor.textCursor().selectedText(), QString("X"));
+        QVERIFY(!editor.goToHit({{"sourceLine", "stale result"}, {"column", 0}, {"length", 5}}));
+        editor.setSource({"Foo.call();\r\n", {{4, 8, "LFoo;->call()V", false}}});
+        QVERIFY(!editor.goToSymbol("LFoo;", 1));
+        QVERIFY(editor.goToHit({{"sourceLine", "Foo.call();\r"}, {"column", 4}, {"length", 4}}));
+        QCOMPARE(editor.textCursor().selectedText(), QString("call"));
+        editor.setSource({"void a(){ X; } void b(){ X; }",
+                          {{5, 6, "LC;->a()V", true}, {10, 11, "local:X", false},
+                           {19, 20, "LC;->b()V", true}, {24, 25, "local:X", false}}});
+        QVERIFY(editor.goToHit({{"symbol", "local:X"}, {"scope", "LC;->b()V"}}));
+        QCOMPARE(editor.textCursor().selectionStart(), 24);
+    }
     void ghidraDecompile() {
         const auto home = qEnvironmentVariable("GARLIC_TEST_GHIDRA_HOME");
         const auto input = qEnvironmentVariable("GARLIC_TEST_NATIVE_ELF");
