@@ -1,8 +1,16 @@
-# Garlic GUI 0.5.13（C++ / Qt 6）
+# Garlic GUI 0.5.14（C++ / Qt 6）
 
 原生桌面浏览器，使用本项目的 garlic C 引擎。Qt 界面通过 `QProcess` 调用引擎，
 先建立类型、成员和引用索引，点击类时生成 Java / Smali。索引读取 CLASS / DEX
 元数据与引用，不执行方法反编译。JAR 索引会读取其中的 CLASS 内容。
+
+## 0.5.14 Python / JavaScript 脚本
+
+- 导航菜单新增“脚本执行”：编辑、打开/保存、JSON 参数、stdout/stderr 日志、超时和停止。Python / Node.js 在独立进程执行，草稿自动保存。
+- 设置新增“脚本”页：自动查找 PATH 内解释器，支持指定 Python 虚拟环境或 Node.js 可执行文件，默认超时 300 秒。
+- 脚本通过内置 SDK 调用当前 GUI 项目的完整 MCP 工具，不要求启用 MCP 或开放 HTTP 端口；新增资源列表/读取、源码符号（含局部变量）、精确重命名、别名、调用关系和导航接口。
+- [Python 脚本文档](SCRIPTING-PYTHON.md)与 [JavaScript 脚本文档](SCRIPTING-JAVASCRIPT.md)包含解密、批处理、资源与重命名示例，随构建产物、macOS app 和发布包一起分发。SDK 源文件同时复制到 scripts/。
+- Python 需系统安装 Python 3.8+，JavaScript 需 Node.js（建议 18+）；脚本具备当前用户权限。项目别名可撤销，脚本不自动重写 APK 或替换反编译源码。
 
 ## 0.5.13 导航与后台源码缓存
 

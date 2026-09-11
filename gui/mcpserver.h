@@ -12,7 +12,7 @@ class McpServer : public QObject {
     McpServer(MainWindow *window, QObject *parent = nullptr);
     McpServer(Backend *backend, QObject *parent = nullptr);
     ~McpServer() override { stop(); }
-    bool start(QString *error = nullptr);
+    bool start(QString *error = nullptr, bool privateSession = false);
     void stop();
     QString endpoint() const { return endpoint_; }
     QJsonObject clientConfig() const;

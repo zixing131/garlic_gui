@@ -1,6 +1,7 @@
 #include "mainwindow.h"
 #include "mcpserver.h"
 #include "theme.h"
+#include "scriptdialog.h"
 #include <QtConcurrent>
 #include <QtWidgets>
 
@@ -309,6 +310,23 @@ void MainWindow::settingsDialog() {
         "的重命名会同步到当前项目，可撤销。"));
     mcpNote->setWordWrap(true);
     mcp->addRow(mcpNote);
+    auto scripting = page(tr("脚本"));
+    auto interpreter = [&](const QString &label, const QString &value, bool python) {
+        auto row = new QWidget; auto layout = new QHBoxLayout(row); layout->setContentsMargins(0, 0, 0, 0);
+        auto field = new QLineEdit(value); field->setObjectName(python ? "pythonPath" : "nodePath");
+        field->setPlaceholderText(tr("自动：") + ScriptDialog::interpreter({}, python));
+        auto browse = new QPushButton(tr("浏览…")); layout->addWidget(field, 1); layout->addWidget(browse);
+        connect(browse, &QPushButton::clicked, &dialog, [&, field] {
+            auto path = QFileDialog::getOpenFileName(&dialog, tr("选择解释器可执行文件"), field->text());
+            if (!path.isEmpty()) field->setText(path);
+        });
+        scripting->addRow(label, row); return field;
+    };
+    auto pythonPath = interpreter("Python", settings.pythonPath, true);
+    auto nodePath = interpreter("JavaScript / Node.js", settings.nodePath, false);
+    auto scriptTimeout = spin(scripting, tr("脚本超时（秒）"), settings.scriptTimeout, 1, 86400);
+    auto scriptNote = new QLabel(tr("留空按当前进程 PATH 查找 python3/python 或 node/nodejs。\n可选择 venv/Conda 的 python 可执行文件；不要填写 shell 命令。\n脚本使用该解释器安装的包，并具有当前用户的文件与网络权限。"));
+    scriptNote->setWordWrap(true); scripting->addRow(scriptNote);
     auto capabilities = page(tr("引擎能力"));
     auto supported = new QLabel(
         tr("已接入：线程数、包排除、后台生成、Unicode 转义、\n注解显示、缓存、代码外观、快捷键和 "
@@ -329,6 +347,7 @@ void MainWindow::settingsDialog() {
     connect(buttons->button(QDialogButtonBox::RestoreDefaults), &QPushButton::clicked, &dialog,
             [&] {
                 AppSettings defaults;
+                pythonPath->clear(); nodePath->clear(); scriptTimeout->setValue(defaults.scriptTimeout);
                 threads->setValue(defaults.threads);
                 cacheMode->setCurrentIndex(0);
                 memory->setChecked(defaults.showMemory);
@@ -357,6 +376,8 @@ void MainWindow::settingsDialog() {
             });
     if (dialog.exec() != QDialog::Accepted)
         return;
+    settings.pythonPath = pythonPath->text().trimmed(); settings.nodePath = nodePath->text().trimmed();
+    settings.scriptTimeout = scriptTimeout->value();
     settings.cacheMode = cacheMode->currentData().toString();
     settings.showMemory = memory->isChecked();
     settings.mcpHost = host->text().trimmed();

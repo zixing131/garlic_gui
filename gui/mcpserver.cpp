@@ -1,5 +1,6 @@
 #include "mcpserver.h"
 #include "mainwindow.h"
+#include "resources.h"
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDir>
@@ -98,6 +99,16 @@ QJsonArray toolsList() {
     add("save_project", "Save input identity and aliases to a Garlic project file.", {"path"},
         {{"path", prop("string")}});
     add("cancel_task", "Stop foreground/background decompilation and pending search.");
+    add("get_source_symbols", "Read source symbol IDs and UTF-16 offsets, including local variables; call before rename_symbol.", {"class_name"},
+        {{"class_name", prop("string")}, {"offset", prop("integer")}, {"count", prop("integer")}});
+    add("rename_symbol", "Rename an exact source symbol ID, including a local variable. Reversible alias only.", {"id", "new_name"}, {{"id", prop("string")}, {"new_name", prop("string")}});
+    add("get_aliases", "Read all current symbol aliases.");
+    add("get_call_graph", "Read callers and callees for an exact method ID, with pagination.", {"id"}, {{"id", prop("string")}, {"offset", prop("integer")}, {"count", prop("integer")}});
+    add("navigate_to", "Select and reveal a symbol in the GUI; optional 1-based source line.", {"id"}, {{"id", prop("string")}, {"line", prop("integer")}});
+    add("list_resources", "Read merged APK/APKS resource metadata and paginated entries. Defaults to current input.", {},
+        {{"path", prop("string")}, {"offset", prop("integer")}, {"count", prop("integer")}});
+    add("read_resource", "Read resource bytes as base64, hex, text, or decoded XML. Limit 4 MiB; use entry sourcePath/sourceEntry from list_resources.", {"entry"},
+        {{"path", prop("string")}, {"entry", prop("string")}, {"encoding", prop("string")}, {"limit", prop("integer")}});
     return out;
 }
 QJsonArray paginate(const QJsonArray &data, const QJsonObject &args) {
@@ -177,9 +188,14 @@ McpServer::McpServer(Backend *backend, QObject *parent) : QObject(parent), backe
         }
     });
 }
-bool McpServer::start(QString *error) {
+bool McpServer::start(QString *error, bool privateSession) {
+    if (privateSession && server_.isListening()) return true;
+    if (privateSession) endpoint_ = QDir::tempPath() + "/garlic-script-" + QUuid::createUuid().toString(QUuid::WithoutBraces);
+#ifdef Q_OS_WIN
+    if (privateSession) endpoint_ = QFileInfo(endpoint_).fileName();
+#endif
     const auto settings = backend_->settings();
-    if (settings.mcpTransport == "http") {
+    if (!privateSession && settings.mcpTransport == "http") {
         QHostAddress address;
         if (!address.setAddress(settings.mcpHost)) {
             if (error)
@@ -201,7 +217,7 @@ bool McpServer::start(QString *error) {
         return true;
     if (server_.listen(endpoint_)) {
         QFile registry(QDir::homePath() + "/.garlic/mcp-endpoint");
-        if (window_ && registry.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        if (window_ && !privateSession && registry.open(QIODevice::WriteOnly | QIODevice::Truncate))
             registry.write(endpoint_.toUtf8());
         return true;
     }
@@ -213,7 +229,7 @@ bool McpServer::start(QString *error) {
         QLocalServer::removeServer(endpoint_);
     if (server_.listen(endpoint_)) {
         QFile registry(QDir::homePath() + "/.garlic/mcp-endpoint");
-        if (window_ && registry.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        if (window_ && !privateSession && registry.open(QIODevice::WriteOnly | QIODevice::Truncate))
             registry.write(endpoint_.toUtf8());
         return true;
     }
@@ -417,6 +433,31 @@ void McpServer::dispatch(QLocalSocket *socket, const QJsonObject &request) {
             true);
         return;
     }
+    if (name == "list_resources" || name == "read_resource") {
+        const auto path = args.value("path").toString(backend->input());
+        auto watcher = new QFutureWatcher<QJsonObject>(socket);
+        connect(watcher, &QFutureWatcher<QJsonObject>::finished, socket, [watcher, respond] {
+            auto result = watcher->result(); watcher->deleteLater(); respond(result, true, result.contains("error"));
+        });
+        watcher->setFuture(QtConcurrent::run([name, args, path] {
+            if (name == "list_resources") {
+                auto info = Resources::inspect(path);
+                auto entries = info.value("entries").toArray(); info["entries"] = paginate(entries, args); info["total"] = entries.size(); return info;
+            }
+            QString error;
+            auto bytes = Resources::read(path, args.value("entry").toString(), qBound(1, args.value("limit").toInt(1048576), 4 * 1048576), &error);
+            if (!error.isEmpty()) return QJsonObject{{"error", error}};
+            const auto encoding = args.value("encoding").toString("base64");
+            QString data;
+            if (encoding == "base64") data = QString::fromLatin1(bytes.toBase64());
+            else if (encoding == "hex") data = QString::fromLatin1(bytes.toHex());
+            else if (encoding == "text") data = QString::fromUtf8(bytes);
+            else if (encoding == "xml") data = Resources::decodeXml(bytes);
+            else return QJsonObject{{"error", "Unknown encoding"}};
+            return QJsonObject{{"data", data}, {"encoding", encoding}, {"size", bytes.size()}};
+        }));
+        return;
+    }
     if (project->classCount() == 0) {
         fail("Input is not indexed yet; poll get_status and retry");
         return;
@@ -439,13 +480,37 @@ void McpServer::dispatch(QLocalSocket *socket, const QJsonObject &request) {
         timer->start(50);
         return;
     }
+    if (name == "get_aliases") { respond(QJsonObject{{"aliases", project->aliases()}}, true); return; }
+    if (name == "rename_symbol") {
+        const auto symbol = args.value("id").toString();
+        auto error = project->rename(symbol, args.value("new_name").toString());
+        if (!error.isEmpty()) fail(error);
+        else respond(QJsonObject{{"id", symbol}, {"alias", project->alias(symbol)}}, true);
+        return;
+    }
+    if (name == "navigate_to") {
+        if (!window_) { fail("Navigation requires a GUI"); return; }
+        window_->navigateTo(args.value("id").toString(), args.value("line").toInt());
+        respond(QJsonObject{{"requested", true}}, true); return;
+    }
+    if (name == "get_call_graph") {
+        auto snapshot = project->snapshot(); auto watcher = new QFutureWatcher<QJsonObject>(socket);
+        connect(watcher, &QFutureWatcher<QJsonObject>::finished, socket, [watcher, respond] { auto value = watcher->result(); watcher->deleteLater(); respond(value, true); });
+        watcher->setFuture(QtConcurrent::run([snapshot, args] {
+            const auto id = args.value("id").toString();
+            auto callers = snapshot->xrefs(id), callees = snapshot->callees(id);
+            return QJsonObject{{"callers", paginate(callers, args)}, {"callees", paginate(callees, args)}, {"caller_count", callers.size()}, {"callee_count", callees.size()}};
+        })); return;
+    }
     if (name == "get_all_classes") {
         QJsonArray values;
-        for (const auto &n : project->classes())
-            values.append(QJsonObject{{"name", n},
-                                      {"display_name", project->displayName(n)},
-                                      {"kind", project->info(n).value("kind")}});
-        respond(QJsonObject{{"classes", paginate(values, args)}, {"total", values.size()}}, true);
+        const auto classes = project->classes();
+        const int offset = qMax(0, args.value("offset").toInt()), count = qBound(1, args.value("count").toInt(100), 1000);
+        for (int i = offset; i < classes.size() && values.size() < count; ++i) {
+            const auto &n = classes[i];
+            values.append(QJsonObject{{"name", n}, {"display_name", project->displayName(n)}, {"kind", project->info(n).value("kind")}});
+        }
+        respond(QJsonObject{{"classes", values}, {"total", classes.size()}}, true);
         return;
     }
     if (name == "get_package_tree") {
@@ -579,7 +644,7 @@ void McpServer::dispatch(QLocalSocket *socket, const QJsonObject &request) {
             return;
         }
     }
-    const auto deliver = [this, done, project, clazz, smali, methodId](const QString &path) {
+    const auto deliver = [this, done, project, clazz, smali, methodId, name, args](const QString &path) {
         if (QFileInfo(path).size() > 8 * 1024 * 1024) {
             done({{"error", "Source exceeds MCP 8 MiB response limit"}}, true);
             return;
@@ -589,10 +654,16 @@ void McpServer::dispatch(QLocalSocket *socket, const QJsonObject &request) {
         connect(watcher, &QFutureWatcher<QJsonObject>::finished, this, [watcher, done] {
             auto result = watcher->result();
             watcher->deleteLater();
-            done(result);
+            done(result, result.contains("error"));
         });
-        watcher->setFuture(QtConcurrent::run([snapshot, clazz, smali, methodId, path] {
+        watcher->setFuture(QtConcurrent::run([snapshot, clazz, smali, methodId, path, name, args] {
             const auto document = snapshot->document(clazz, smali, path);
+            if (name == "get_source_symbols") {
+                QJsonArray symbols;
+                for (const auto &span : document.spans) symbols.append(QJsonObject{{"id", span.id}, {"start", span.start}, {"end", span.end}, {"declaration", span.declaration}, {"token", document.text.mid(span.start, span.end - span.start)}});
+                return QJsonObject{{"class_name", clazz}, {"symbols", paginate(symbols, args)}, {"total", symbols.size()}};
+            }
+            if (document.text.toUtf8().size() > 8 * 1048576) return QJsonObject{{"error", "Source exceeds MCP 8 MiB response limit"}};
             QJsonObject result{{"class_name", clazz}, {"code", document.text}};
             if (!methodId.isEmpty()) {
                 int position = -1;

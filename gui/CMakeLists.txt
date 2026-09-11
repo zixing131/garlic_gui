@@ -1,15 +1,18 @@
-set(GARLIC_GUI_VERSION "0.5.13")
+set(GARLIC_GUI_VERSION "0.5.14")
 find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Network Concurrent)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 qt_add_library(garlic-gui-core STATIC
+    scriptdialog.cpp scriptdialog.h
     memoryusage.cpp memoryusage.h mainwindow.cpp mainwindow.h backend.cpp backend.h codeeditor.cpp codeeditor.h
     settings.cpp settings.h project.cpp project.h classview.cpp classview.h
     referencesdialog.cpp referencesdialog.h callgraphdialog.cpp callgraphdialog.h
     nativeanalysisdialog.cpp nativeanalysisdialog.h projectbrowser.cpp hexviewer.cpp hexviewer.h resources.cpp resources.h ${CMAKE_CURRENT_SOURCE_DIR}/../src/libs/zip/zip.c
     nodeicons.cpp nodeicons.h preferences.cpp mcpserver.cpp mcpserver.h search.cpp search.h searchdialog.cpp searchdialog.h)
+qt_add_resources(SCRIPT_RESOURCES scripts/scripts.qrc)
+target_sources(garlic-gui-core PRIVATE ${SCRIPT_RESOURCES})
 qt_add_resources(NODE_ICON_RESOURCES icons/jadx/jadx_icons.qrc)
 target_sources(garlic-gui-core PRIVATE ${NODE_ICON_RESOURCES})
 set_property(TARGET garlic-gui-core PROPERTY INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -59,6 +62,14 @@ add_custom_target(garlic-gui-docs ALL
         ${CMAKE_SOURCE_DIR}/docs/AI-HEADLESS.md ${CMAKE_CURRENT_BINARY_DIR}/AI-HEADLESS.md
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         ${CMAKE_SOURCE_DIR}/docs/garlic-gui.md ${CMAKE_CURRENT_BINARY_DIR}/README.md)
+foreach(SCRIPT_DOC SCRIPTING-PYTHON.md SCRIPTING-JAVASCRIPT.md)
+    add_custom_command(TARGET garlic-gui-docs POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_SOURCE_DIR}/docs/${SCRIPT_DOC} "${GARLIC_AI_DOC_DIR}/${SCRIPT_DOC}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_SOURCE_DIR}/docs/${SCRIPT_DOC} ${CMAKE_CURRENT_BINARY_DIR}/${SCRIPT_DOC})
+endforeach()
+add_custom_command(TARGET garlic-gui-docs POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/scripts
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/scripts/garlic.py ${CMAKE_CURRENT_SOURCE_DIR}/scripts/garlic.js ${CMAKE_CURRENT_BINARY_DIR}/scripts)
 add_dependencies(garlic-gui garlic-gui-docs)
 
 option(GARLIC_GUI_TESTS "Build GUI integration tests" OFF)
@@ -96,7 +107,7 @@ if(GARLIC_GUI_TESTS)
         PROPERTIES WIN32_EXECUTABLE FALSE)
     add_test(NAME garlic-gui-window COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_qttest.py $<TARGET_FILE:garlic-gui-window-tests>)
-    set_tests_properties(garlic-gui-window PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;GARLIC_TEST_ENGINE=$<TARGET_FILE:garlic>;GARLIC_TEST_FIXTURES=${CMAKE_BINARY_DIR}/fixtures")
+    set_tests_properties(garlic-gui-window PROPERTIES ENVIRONMENT "GARLIC_TEST_GUI=$<TARGET_FILE:garlic-gui>;QT_QPA_PLATFORM=offscreen;GARLIC_TEST_ENGINE=$<TARGET_FILE:garlic>;GARLIC_TEST_FIXTURES=${CMAKE_BINARY_DIR}/fixtures")
     add_test(NAME garlic-gui-backend COMMAND garlic-gui-tests)
     add_test(NAME garlic-gui-headless COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/headless_test.py $<TARGET_FILE:garlic-gui> ${CMAKE_BINARY_DIR}/fixtures)
     set_tests_properties(garlic-gui-headless PROPERTIES TIMEOUT 90)

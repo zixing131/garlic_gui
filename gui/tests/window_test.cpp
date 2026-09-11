@@ -1,4 +1,5 @@
 #include "classview.h"
+#include "scriptdialog.h"
 #include "mainwindow.h"
 #include "nodeicons.h"
 #include "referencesdialog.h"
@@ -13,6 +14,53 @@
 class WindowTest : public QObject {
     Q_OBJECT
   private slots:
+    void scripts_data() {
+        QTest::addColumn<bool>("python"); QTest::newRow("python") << true; QTest::newRow("javascript") << false;
+    }
+    void scripts() {
+        QFETCH(bool, python);
+        if (ScriptDialog::interpreter({}, python).isEmpty()) QSKIP("Interpreter not installed");
+        MainWindow window(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
+        auto settings = window.backend()->settings(); settings.background = false; settings.mcpEnabled = false; settings.deobfuscate = false;
+        window.backend()->configure(settings); window.openPath(qEnvironmentVariable("GARLIC_TEST_FIXTURES") + "/resources.apks");
+        QTRY_VERIFY_WITH_TIMEOUT(window.backend()->metadataReady(), 15000);
+        ScriptDialog dialog(&window, qEnvironmentVariable("GARLIC_TEST_GUI"));
+        dialog.findChild<QComboBox *>("scriptLanguage")->setCurrentIndex(python ? 0 : 1);
+        auto code = dialog.findChild<QPlainTextEdit *>("scriptCode");
+        auto output = dialog.findChild<QPlainTextEdit *>("scriptOutput");
+        auto run = dialog.findChild<QPushButton *>("runScript");
+        dialog.findChild<QLineEdit *>("scriptArguments")->setText("{\"key\":42}");
+        code->setPlainText(python ?
+            "from garlic import api\nassert api.get_status()['class_count'] == 2\nassert len(list(api.classes())) == 2\nassert api.get_source_symbols(class_name='demo/cases/Foo')['symbols']\nassert api.read_resource(entry='base.apk!assets/base.txt', encoding='text')['data'] == 'base'\nprint(bytes(x ^ api.arguments['key'] for x in [98,79,70,70,69]).decode())\nprint('SDK_OK')\n"
+            : "if ((await garlic.get_status()).class_count !== 2) throw Error('classes');\nconst symbols = await garlic.get_source_symbols({class_name:'demo/cases/Foo'}); if (!symbols.symbols.length) throw Error('symbols');\nconsole.log(Buffer.from([98,79,70,70,69].map(x => x ^ garlic.arguments.key)).toString());\nconsole.log('SDK_OK');\n");
+        // Resource entry routing uses the merged metadata, not a guessed nested delimiter.
+        if (python) code->setPlainText(code->toPlainText().replace("assert api.read_resource(entry='base.apk!assets/base.txt', encoding='text')['data'] == 'base'", "entry = next(e for e in api.list_resources()['entries'] if e['name'] == 'assets/base.txt')\nassert api.read_resource(path=entry['sourcePath'], entry=entry['sourceEntry'], encoding='text')['data'] == 'base'"));
+        run->click();
+        QTRY_VERIFY_WITH_TIMEOUT(run->isEnabled(), 20000);
+        QVERIFY2(output->toPlainText().contains("SDK_OK"), qPrintable(output->toPlainText()));
+        QVERIFY(output->toPlainText().contains("Hello")); QVERIFY(output->toPlainText().contains("exit=0"));
+        QVERIFY(!window.backend()->settings().mcpEnabled);
+        code->setPlainText(python ? "import time\nprint('WAIT', flush=True)\ntime.sleep(30)" : "console.log('WAIT'); await new Promise(resolve => setTimeout(resolve, 30000));");
+        run->click(); QTRY_VERIFY_WITH_TIMEOUT(output->toPlainText().contains("WAIT"), 5000);
+        dialog.findChild<QPushButton *>("stopScript")->click();
+        QTRY_VERIFY_WITH_TIMEOUT(run->isEnabled(), 3000);
+        code->setPlainText(python ? "raise RuntimeError('EXPECTED')" : "throw new Error('EXPECTED');");
+        run->click(); QTRY_VERIFY_WITH_TIMEOUT(run->isEnabled(), 5000);
+        QVERIFY(output->toPlainText().contains("EXPECTED")); QVERIFY(output->toPlainText().contains("exit=1"));
+        settings.scriptTimeout = 1; window.backend()->configure(settings);
+        code->setPlainText(python ? "import time\nprint('WAIT', flush=True)\ntime.sleep(30)" : "await new Promise(resolve => setTimeout(resolve, 30000));");
+        run->click(); QTRY_VERIFY_WITH_TIMEOUT(run->isEnabled(), 4000);
+        QVERIFY(output->toPlainText().contains("超时"));
+        if (python) settings.pythonPath = QDir::tempPath() + "/missing-garlic-python";
+        else settings.nodePath = QDir::tempPath() + "/missing-garlic-node";
+        window.backend()->configure(settings); run->click();
+        QTRY_VERIFY_WITH_TIMEOUT(run->isEnabled(), 3000);
+        QVERIFY(!output->toPlainText().contains("exit=0"));
+        settings.pythonPath.clear(); settings.nodePath.clear(); settings.scriptTimeout = 300; window.backend()->configure(settings);
+        code->setPlainText(python ? "print('RECOVERED')" : "console.log('RECOVERED');");
+        run->click(); QTRY_VERIFY_WITH_TIMEOUT(run->isEnabled(), 3000);
+        QVERIFY(output->toPlainText().contains("RECOVERED")); QVERIFY(output->toPlainText().contains("exit=0"));
+    }
     void largeSourceHighlighting() {
         CodeEditor editor(false);
         editor.setSource({QString("// padding\n").repeated(60000) + "public class Highlighted {}\n", {}});

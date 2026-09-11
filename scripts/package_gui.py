@@ -98,6 +98,11 @@ def main():
         shutil.copy2(root / 'gui/icons/jadx' / name, notices / name)
     shutil.copy2(root / 'docs/garlic-gui.md', folder / 'README.md')
     shutil.copy2(root / 'docs/AI-HEADLESS.md', folder / 'AI-HEADLESS.md')
+    for name in ('SCRIPTING-PYTHON.md', 'SCRIPTING-JAVASCRIPT.md'):
+        shutil.copy2(root / 'docs' / name, folder / name)
+    (folder / 'scripts').mkdir(exist_ok=True)
+    for name in ('garlic.py', 'garlic.js'):
+        shutil.copy2(root / 'gui/scripts' / name, folder / 'scripts' / name)
     for candidate in [qt / 'Licenses', qt / 'licenses', qt / 'share/licenses/qt6-base']:
         if candidate.is_dir():
             shutil.copytree(candidate, folder / 'Qt-Licenses', dirs_exist_ok=True)

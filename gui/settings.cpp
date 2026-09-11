@@ -2,7 +2,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 QJsonObject AppSettings::toJson() const {
-    return {{"threads", threads},
+    return {{"pythonPath", pythonPath}, {"nodePath", nodePath}, {"scriptTimeout", scriptTimeout}, {"threads", threads},
             {"maxTabs", maxTabs},
             {"fontSize", fontSize},
             {"cacheMiB", cacheMiB},
@@ -27,6 +27,8 @@ QJsonObject AppSettings::toJson() const {
 }
 AppSettings AppSettings::fromJson(const QJsonObject &j) {
     AppSettings s;
+    s.pythonPath = j.value("pythonPath").toString(); s.nodePath = j.value("nodePath").toString();
+    s.scriptTimeout = qBound(1, j.value("scriptTimeout").toInt(300), 86400);
     s.threads = qBound(1, j.value("threads").toInt(s.threads), 16);
     s.maxTabs = qBound(1, j.value("maxTabs").toInt(s.maxTabs), 64);
     s.fontSize = qBound(8, j.value("fontSize").toInt(s.fontSize), 32);

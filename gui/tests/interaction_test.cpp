@@ -310,7 +310,8 @@ class InteractionTest : public QObject {
             if (!dialog)
                 return;
             auto nav = dialog->findChild<QListWidget *>("preferencesNavigation");
-            checked = nav && nav->count() == 6 && nav->item(0)->text() == "反编译";
+            checked = nav && nav->count() == 7 && nav->item(0)->text() == "反编译" &&
+                dialog->findChild<QLineEdit *>("pythonPath") && dialog->findChild<QLineEdit *>("nodePath");
             if (!qEnvironmentVariable("GARLIC_SCREENSHOTS").isEmpty())
                 dialog->grab().save(qEnvironmentVariable("GARLIC_SCREENSHOTS") +
                                     "/preferences.png");

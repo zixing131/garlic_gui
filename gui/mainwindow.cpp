@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "scriptdialog.h"
 #include "hookcode.h"
 #include "callgraphdialog.h"
 #include "mcpserver.h"
@@ -92,6 +93,12 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
         navigateTo(at.first, at.second);
         restoringHistory_ = false;
     });
+    auto scriptsAction = edit->addAction(tr("脚本执行…"), this, [this] {
+        auto dialog = findChild<ScriptDialog *>();
+        if (!dialog) dialog = new ScriptDialog(this);
+        dialog->show(); dialog->raise(); dialog->activateWindow();
+    });
+    scriptsAction->setObjectName("scripts");
     auto viewMenu = menuBar()->addMenu(tr("视图"));
     auto showFindAction = viewMenu->addAction(tr("查找当前代码"), QKeySequence::Find, this,
                                                &MainWindow::showFindBar);
@@ -1214,6 +1221,7 @@ void MainWindow::dropEvent(QDropEvent *event) {
     }
 }
 void MainWindow::closeEvent(QCloseEvent *event) {
+    for (auto dialog : findChildren<ScriptDialog *>()) dialog->close();
     QSettings().setValue("geometry", saveGeometry());
     QSettings().setValue("windowState", saveState());
     backend_.project()->cancelPendingWork();
