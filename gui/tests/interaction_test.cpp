@@ -101,6 +101,19 @@ class InteractionTest : public QObject {
         cursor.setPosition(text.indexOf("void caller") + 7); editor.setTextCursor(cursor);
         QCOMPARE(editor.scopeSymbolAtCursor(), caller);
     }
+    void constructorReferenceHitUsesConstructorScope() {
+        CodeEditor editor(false);
+        const QString constructor = "LUse;-><init>()V", target = "LTarget;-><init>()V";
+        const QString text = "class Use { Use() { new Target(); } void other() { new Target(); } }";
+        const int declaration = text.indexOf("Use()"), first = text.indexOf("Target"),
+                  second = text.lastIndexOf("Target");
+        editor.setSource({text, {{declaration, declaration + 3, constructor, true},
+                                {first, first + 6, target, false},
+                                {second, second + 6, target, false}}});
+        QVERIFY(editor.goToHit({{"symbol", target}, {"occurrence", 0}, {"scope", constructor}}));
+        QCOMPARE(editor.textCursor().selectionStart(), first);
+        QCOMPARE(editor.textCursor().selectedText(), QString("Target"));
+    }
     void smaliSearchOptIn() {
         Backend backend; backend.setEngine(qEnvironmentVariable("GARLIC_TEST_ENGINE"));
         backend.open(qEnvironmentVariable("GARLIC_TEST_FIXTURES") + "/cases.dex");

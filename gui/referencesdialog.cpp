@@ -295,7 +295,13 @@ ReferencesDialog::ReferencesDialog(MainWindow *window, const QString &id) : QDia
                                     snippet->setText(doc.text(match->start));
                                     snippet->setData(doc.highlights(match->start), Qt::UserRole + 3);
                                     target->setData(doc.line(match->start), Qt::UserRole + 2);
-                                    target->setData(doc.hit(*match), Qt::UserRole + 4);
+                                    auto hit = doc.hit(*match);
+                                    // The same target can occur in several methods.  Keep the
+                                    // caller scope so a constructor's reference selects the
+                                    // occurrence inside that constructor rather than another
+                                    // matching call elsewhere in the class.
+                                    hit["scope"] = from;
+                                    target->setData(hit, Qt::UserRole + 4);
                                     if (replaced) model->appendRow({target, snippet});
                                     replaced = true;
                                 }
