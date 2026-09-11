@@ -6,6 +6,106 @@
 #include <QStandardPaths>
 #include <QJsonDocument>
 #include <QSaveFile>
+#include <QSyntaxHighlighter>
+
+namespace {
+class ScriptHighlighter : public QSyntaxHighlighter {
+  public:
+    explicit ScriptHighlighter(QPlainTextEdit *editor)
+        : QSyntaxHighlighter(editor->document()), editor_(editor) {
+        editor->installEventFilter(this);
+    }
+    void setPython(bool python) { python_ = python; rehighlight(); }
+  protected:
+    bool eventFilter(QObject *object, QEvent *event) override {
+        if (event->type() == QEvent::PaletteChange || event->type() == QEvent::ApplicationPaletteChange)
+            rehighlight();
+        return QSyntaxHighlighter::eventFilter(object, event);
+    }
+    void highlightBlock(const QString &text) override {
+        const bool light = editor_->palette().color(QPalette::Base).lightness() > 128;
+        const QColor keyword(light ? "#6530a3" : "#c4a3ff"),
+            string(light ? "#267650" : "#a4e4bd"), comment(light ? "#5c7483" : "#8b9bac"),
+            number(light ? "#925800" : "#e6b878"), function(light ? "#2556a8" : "#82aaff");
+        static const QRegularExpression pythonWords(QStringLiteral(
+            "^(?:False|None|True|and|as|assert|async|await|break|class|continue|def|del|elif|else|except|"
+            "finally|for|from|global|if|import|in|is|lambda|nonlocal|not|or|pass|raise|return|try|while|with|yield)$"));
+        static const QRegularExpression javascriptWords(QStringLiteral(
+            "^(?:async|await|break|case|catch|class|const|continue|debugger|default|delete|do|else|export|"
+            "extends|false|finally|for|from|function|if|import|in|instanceof|let|new|null|of|return|static|"
+            "super|switch|this|throw|true|try|typeof|undefined|var|void|while|with|yield)$"));
+        static const QRegularExpression numeric(QStringLiteral(
+            "(?:0[xX][0-9a-fA-F_]+|0[bB][01_]+|0[oO][0-7_]+|[0-9][0-9_]*(?:\\.[0-9_]*)?(?:[eE][+-]?[0-9_]+)?)[njJ]?"));
+        // States: JS block comment, Python triple quotes, JS template literal.
+        int state = qMax(0, previousBlockState()), i = 0;
+        setCurrentBlockState(0);
+        auto quoted = [&](int start, int content, const QString &delimiter, int continuation) {
+            int end = content;
+            bool closed = false;
+            while (end < text.size()) {
+                if (text[end] == '\\') { end += 2; continue; }
+                if (text.mid(end, delimiter.size()) == delimiter) {
+                    end += delimiter.size(); closed = true; break;
+                }
+                ++end;
+            }
+            end = qMin(end, int(text.size()));
+            setFormat(start, end - start, string);
+            if (!closed && continuation) setCurrentBlockState(continuation);
+            i = end;
+        };
+        while (i < text.size()) {
+            const int start = i;
+            if (state == 1 || (!python_ && text.mid(i, 2) == "/*")) {
+                const int end = text.indexOf("*/", i + (state == 1 ? 0 : 2));
+                i = end < 0 ? text.size() : end + 2;
+                setFormat(start, i - start, comment);
+                if (end < 0) setCurrentBlockState(1);
+                state = 0; continue;
+            }
+            if (state >= 2) {
+                const QString delimiter = state == 2 ? "'''" : state == 3 ? "\"\"\"" : "`";
+                quoted(i, i, delimiter, state); state = 0; continue;
+            }
+            if ((python_ && text[i] == '#') || (!python_ && text.mid(i, 2) == "//")) {
+                setFormat(i, text.size() - i, comment); break;
+            }
+            if (text[i] == '\'' || text[i] == '"' || (!python_ && text[i] == '`')) {
+                const auto quote = text[i];
+                const bool triple = python_ && text.mid(i, 3) == QString(3, quote);
+                const int continuation = triple ? (quote == '\'' ? 2 : 3) : quote == '`' ? 4 : 0;
+                quoted(i, i + (triple ? 3 : 1), QString(triple ? 3 : 1, quote), continuation);
+                continue;
+            }
+            if (text[i].isDigit()) {
+                const auto match = numeric.match(text, i, QRegularExpression::NormalMatch,
+                                                 QRegularExpression::AnchorAtOffsetMatchOption);
+                if (match.hasMatch()) {
+                    i += match.capturedLength(); setFormat(start, i - start, number); continue;
+                }
+            }
+            if (text[i].isLetter() || text[i] == '_' || (!python_ && text[i] == '$')) {
+                while (i < text.size() && (text[i].isLetterOrNumber() || text[i] == '_' || (!python_ && text[i] == '$'))) ++i;
+                const auto word = text.mid(start, i - start);
+                if ((python_ ? pythonWords : javascriptWords).match(word).hasMatch())
+                    setFormat(start, i - start, keyword);
+                else {
+                    int next = i;
+                    while (next < text.size() && text[next].isSpace()) ++next;
+                    if ((next < text.size() && text[next] == '(') || (python_ && start > 0 && text[start - 1] == '@'))
+                        setFormat(start, i - start, function);
+                }
+                continue;
+            }
+            ++i;
+        }
+        if (text.isEmpty()) setCurrentBlockState(state);
+    }
+  private:
+    QPlainTextEdit *editor_;
+    bool python_ = true;
+};
+} // namespace
 
 QString ScriptDialog::interpreter(const QString &configured, bool python) {
     if (!configured.trimmed().isEmpty()) {
@@ -39,11 +139,13 @@ ScriptDialog::ScriptDialog(MainWindow *window, const QString &host) : QDialog(wi
     auto split = new QSplitter(Qt::Vertical);
     code_ = new QPlainTextEdit; code_->setObjectName("scriptCode"); code_->setLineWrapMode(QPlainTextEdit::NoWrap);
     code_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    auto highlighter = new ScriptHighlighter(code_);
     output_ = new QPlainTextEdit; output_->setObjectName("scriptOutput"); output_->setReadOnly(true); output_->setMaximumBlockCount(2000);
     split->addWidget(code_); split->addWidget(output_); split->setStretchFactor(0, 3); split->setStretchFactor(1, 1); layout->addWidget(split);
     code_->setPlainText(QSettings().value("scripts/python", "from garlic import api\nprint(api.get_status())\nprint([tool['name'] for tool in api.tools()])\n").toString());
-    connect(language_, &QComboBox::currentIndexChanged, this, [this] {
+    connect(language_, &QComboBox::currentIndexChanged, this, [this, highlighter] {
         saveDraft(); draftLanguage_ = language_->currentData().toString(); file_->clear();
+        highlighter->setPython(draftLanguage_ == "python");
         code_->setPlainText(QSettings().value("scripts/" + draftLanguage_, draftLanguage_ == "python"
             ? "from garlic import api\nprint(api.get_status())\n"
             : "console.log(await garlic.get_status());\nconsole.log((await garlic.tools()).map(tool => tool.name));\n").toString());
