@@ -184,6 +184,11 @@ class McpTest : public QObject {
         bridge.start(qEnvironmentVariable("GARLIC_TEST_GUI"),
                      {"--mcp", "--socket", "garlic-gui-legacy-missing-endpoint"});
         QVERIFY(bridge.waitForStarted(3000));
+        QVERIFY(bridge.waitForFinished(4000));
+        QVERIFY(bridge.exitCode() != 0); // Explicit endpoints must not attach to another project.
+        QVERIFY(bridge.readAllStandardOutput().isEmpty());
+        bridge.start(qEnvironmentVariable("GARLIC_TEST_GUI"), {"--mcp"});
+        QVERIFY(bridge.waitForStarted(3000));
         bridge.write("{\"jsonrpc\":\"2.0\",\"id\":42,\"method\":\"tools/list\"}\n");
         bridge.closeWriteChannel();
         QElapsedTimer timer;

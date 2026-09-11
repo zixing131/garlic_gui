@@ -654,17 +654,17 @@ static void init_dex_ins_default_jump(jd_dex_ins *ins)
 static void init_dex_packed_switch_jump(jd_dex_ins *ins)
 {
     jd_method *m = ins->method;
-    s4 packed_offset = (s4)ins->param[2] << 16 | ins->param[1];
+    s4 packed_offset = (s4)((u4)ins->param[2] << 16 | ins->param[1]);
     hashmap *map = m->offset2id_map;
     int payload_idx = hget_i2i(map, ins->offset + packed_offset);
     jd_dex_ins *packed_ins = lget_obj(m->instructions, payload_idx);
 
     int size = packed_ins->param[1];
-    int first_key = packed_ins->param[3] << 16 | packed_ins->param[2];
+    int first_key = (s4)((u4)packed_ins->param[3] << 16 | packed_ins->param[2]);
 
     for (int i = 0; i < size; ++i) {
-        int offset = packed_ins->param[5 + i * 2] << 16 |
-                     packed_ins->param[4 + i * 2];
+        int offset = (s4)((u4)packed_ins->param[5 + i * 2] << 16 |
+                         packed_ins->param[4 + i * 2]);
         jd_dex_ins *target_ins = ins_of_offset(m, ins->offset+offset);
         ladd_obj(ins->targets, target_ins);
         ladd_obj(ins->jumps, target_ins);
@@ -678,15 +678,15 @@ static void init_dex_packed_switch_jump(jd_dex_ins *ins)
 static void init_dex_sparse_switch_jump(jd_dex_ins *ins)
 {
     jd_method *m = ins->method;
-    s4 offset = ins->param[2] << 16 | ins->param[1];
+    s4 offset = (s4)((u4)ins->param[2] << 16 | ins->param[1]);
     int payload_idx = hget_i2i(m->offset2id_map, ins->offset + offset);
     jd_dex_ins *packed_ins = lget_obj(m->instructions, payload_idx);
     int size = packed_ins->param[1];
 
     u2 *params = packed_ins->param;
     for (int i = 0; i < size; ++i) {
-        int key = params[3+i*2] << 16 | params[2+i*2];
-        int val = params[3+size*2+i*2] << 16 | params[2+size*2+i*2];
+        int key = (s4)((u4)params[3+i*2] << 16 | params[2+i*2]);
+        int val = (s4)((u4)params[3+size*2+i*2] << 16 | params[2+size*2+i*2]);
         int target_id = hget_i2i(m->offset2id_map, ins->offset + val);
         jd_dex_ins *target_ins = get_dex_ins(m, target_id);
         ladd_obj(ins->targets, target_ins);

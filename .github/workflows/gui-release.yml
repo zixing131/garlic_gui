@@ -68,6 +68,13 @@ jobs:
             ctest --test-dir build --rerun-failed -V --timeout 120 || true
             exit 1
           fi
+      - name: Preserve failed CLI test sources
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-test-failure-${{ matrix.platform }}
+          path: build/cli-test-failures/
+          if-no-files-found: ignore
       - name: Package runtime and smoke test
         shell: bash
         env:
@@ -133,6 +140,13 @@ jobs:
             ctest --test-dir build --rerun-failed -V --timeout 120 || true
             exit 1
           fi
+      - name: Preserve failed CLI test sources
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-test-failure-${{ matrix.platform }}
+          path: build/cli-test-failures/
+          if-no-files-found: ignore
       - name: Package runtime and smoke test
         env:
           TARGET_PLATFORM: ${{ matrix.platform }}

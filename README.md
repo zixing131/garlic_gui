@@ -12,6 +12,13 @@ Android/Java decompiler written in C
 
 Tool for produces java source code from class/jar/dex/apk file
 
+### AI headless / 无头模式
+
+AI 给定软件目录和 APK 路径后，请先阅读 [无头模式与 MCP 自动接入](docs/garlic-gui.md#ai-无头模式与-mcp-自动接入)。
+使用 `garlic-gui --headless --apk /absolute/path/app.apk --print-mcp-config` 生成配置；
+客户端启动该命令即可自动打开 APK，无需先启动 GUI。macOS 请使用应用包内
+`Garlic.app/Contents/MacOS/garlic-gui`。移除 `--print-mcp-config` 即运行服务。
+
 ### Native C++ GUI
 
 An optional Qt 6 desktop browser provides typed class/member trees, bottom Java/Smali

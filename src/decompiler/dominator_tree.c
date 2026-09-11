@@ -116,7 +116,10 @@ static const jd_bblock* same_dom_block(const jd_bblock *b1,
     return same_dom_block(b2, b1->idom);
 }
 
-static bool compute_dominator_cb(jd_bblock *block)
+/* Match traversal_cb exactly. Calling a bool-returning function through an
+ * int-returning pointer is undefined and can leave nonzero upper return bits
+ * on x86, causing the fixed-point loop to stop before joins are dominated. */
+static int compute_dominator_cb(jd_bblock *block)
 {
     jd_bblock *dominator_block = NULL;
 

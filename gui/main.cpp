@@ -9,6 +9,9 @@
 #include <cstdio>
 
 int main(int argc, char **argv) {
+    for (int i = 1; i < argc; ++i)
+        if (std::strcmp(argv[i], "--headless") == 0)
+            return runHeadless(argc, argv);
     for (int i = 1; i < argc; i++) {
         if (std::strcmp(argv[i], "--mcp") == 0)
             return runMcpBridge(argc, argv);

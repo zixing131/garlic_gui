@@ -33,6 +33,7 @@ QJsonArray toolsList() {
                                {"inputSchema", schema(required, properties)}});
     };
     const QJsonObject clazz{{"class_name", prop("string")}};
+    add("get_status", "Read input paths, class count and indexing/preparation status.");
     add("fetch_current_class", "Read the selected GUI class and current code view.");
     add("get_selected_text", "Read text selected in the active code editor.");
     add("get_all_classes", "List classes, interfaces, enums and annotations with pagination.", {},
@@ -135,7 +136,10 @@ QString memberId(Project *project, const QString &kind, const QJsonObject &args,
     return matches.first();
 }
 } // namespace
-McpServer::McpServer(MainWindow *window, QObject *parent) : QObject(parent), window_(window) {
+McpServer::McpServer(MainWindow *window, QObject *parent)
+    : McpServer(window->backend(), parent) { window_ = window; }
+
+McpServer::McpServer(Backend *backend, QObject *parent) : QObject(parent), backend_(backend) {
     connect(&http_, &QTcpServer::newConnection, this, &McpServer::acceptHttp);
     QDir().mkpath(QDir::homePath() + "/.garlic");
 #ifdef Q_OS_WIN
@@ -174,7 +178,7 @@ McpServer::McpServer(MainWindow *window, QObject *parent) : QObject(parent), win
     });
 }
 bool McpServer::start(QString *error) {
-    const auto settings = window_->backend()->settings();
+    const auto settings = backend_->settings();
     if (settings.mcpTransport == "http") {
         QHostAddress address;
         if (!address.setAddress(settings.mcpHost)) {
@@ -197,7 +201,7 @@ bool McpServer::start(QString *error) {
         return true;
     if (server_.listen(endpoint_)) {
         QFile registry(QDir::homePath() + "/.garlic/mcp-endpoint");
-        if (registry.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        if (window_ && registry.open(QIODevice::WriteOnly | QIODevice::Truncate))
             registry.write(endpoint_.toUtf8());
         return true;
     }
@@ -209,7 +213,7 @@ bool McpServer::start(QString *error) {
         QLocalServer::removeServer(endpoint_);
     if (server_.listen(endpoint_)) {
         QFile registry(QDir::homePath() + "/.garlic/mcp-endpoint");
-        if (registry.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        if (window_ && registry.open(QIODevice::WriteOnly | QIODevice::Truncate))
             registry.write(endpoint_.toUtf8());
         return true;
     }
@@ -233,7 +237,7 @@ void McpServer::stop() {
         socket->disconnectFromServer();
 }
 QJsonObject McpServer::clientConfig() const {
-    if (window_->backend()->settings().mcpTransport == "http")
+    if (backend_->settings().mcpTransport == "http")
         return httpConfig();
     return {{"mcpServers",
              QJsonObject{
@@ -301,7 +305,7 @@ void McpServer::dispatch(QLocalSocket *socket, const QJsonObject &request) {
     auto params = request.value("params").toObject();
     const auto name = params.value("name").toString();
     const auto args = params.value("arguments").toObject();
-    auto backend = window_->backend();
+    auto backend = backend_;
     auto project = backend->project();
     QJsonObject toolSchema;
     for (const auto &v : toolsList()) {
@@ -332,6 +336,16 @@ void McpServer::dispatch(QLocalSocket *socket, const QJsonObject &request) {
             return;
         }
     }
+    if (name == "get_status") {
+        respond(QJsonObject{{"inputs", QJsonArray::fromStringList(backend->inputs())},
+                            {"class_count", backend->project()->classes().size()},
+                            {"busy", backend->busy()}, {"metadata_ready", backend->metadataReady()},
+                            {"metadata_preparing", backend->metadataPreparing()},
+                            {"sources_ready", backend->projectReady()},
+                            {"preparing", backend->preparing()},
+                            {"search_ready", backend->searchReady()}}, true);
+        return;
+    }
     if (name == "cancel_task") {
         backend->cancel();
         respond(QJsonObject{{"canceled", true}}, true);
@@ -360,9 +374,16 @@ void McpServer::dispatch(QLocalSocket *socket, const QJsonObject &request) {
             j[i.key()] = i.value();
         }
         auto settings = AppSettings::fromJson(j);
-        settings.save();
+        if (window_) {
+            settings.save();
+            QTimer::singleShot(0, window_, [this, settings] { window_->applySettings(settings); });
+        } else {
+            settings.mcpTransport = backend->settings().mcpTransport;
+            settings.mcpHost = backend->settings().mcpHost;
+            settings.mcpPort = backend->settings().mcpPort;
+            backend->configure(settings);
+        }
         respond(settings.toJson(), true);
-        QTimer::singleShot(0, window_, [this, settings] { window_->applySettings(settings); });
         return;
     }
     if (name == "get_cache_stats") {
@@ -376,6 +397,10 @@ void McpServer::dispatch(QLocalSocket *socket, const QJsonObject &request) {
         }
         backend->clearCache();
         respond(backend->cacheStats(), true);
+        return;
+    }
+    if (!window_ && (name == "fetch_current_class" || name == "get_selected_text")) {
+        fail("No GUI selection in headless mode; use get_class_source with class_name");
         return;
     }
     if (name == "fetch_current_class") {
@@ -393,7 +418,7 @@ void McpServer::dispatch(QLocalSocket *socket, const QJsonObject &request) {
         return;
     }
     if (project->classes().isEmpty()) {
-        fail("Open an input file in Garlic GUI first");
+        fail("Input is not indexed yet; poll get_status and retry");
         return;
     }
     if (!backend->metadataReady() && name != "get_all_classes" && name != "get_package_tree" &&
@@ -600,14 +625,14 @@ void McpServer::dispatch(QLocalSocket *socket, const QJsonObject &request) {
 }
 
 QString McpServer::httpUrl() const {
-    auto host = window_->backend()->settings().mcpHost;
+    auto host = backend_->settings().mcpHost;
     if (host == "0.0.0.0" || host == "::")
         host = "127.0.0.1";
     if (host.contains(':'))
         host = "[" + host + "]";
     return QString("http://%1:%2/mcp")
         .arg(host)
-        .arg(http_.isListening() ? http_.serverPort() : window_->backend()->settings().mcpPort);
+        .arg(http_.isListening() ? http_.serverPort() : backend_->settings().mcpPort);
 }
 QJsonObject McpServer::httpConfig(int port) const {
     QUrl url(httpUrl());
@@ -767,6 +792,10 @@ int runMcpBridge(int argc, char **argv) {
         return socket.waitForConnected(1500);
     };
     if (!connectEndpoint(endpoint)) {
+        if (!endpoint.isEmpty()) {
+            std::cerr << "MCP endpoint unavailable: " << endpoint.toStdString() << "\n";
+            return 1;
+        }
         QFile registry(QDir::homePath() + "/.garlic/mcp-endpoint");
         if (registry.open(QIODevice::ReadOnly))
             endpoint = QString::fromUtf8(registry.readAll()).trimmed();
