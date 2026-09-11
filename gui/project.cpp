@@ -1164,7 +1164,10 @@ SourceDocument Project::applyAliases(SourceDocument result, bool smali) const {
 }
 
 QString Project::canonicalId(const QString &id) const {
-    if (id.contains("@local:") || symbols_.contains(id) || !id.contains("->"))
+    // Constructors and static initializers belong only to their declaring class;
+    // they are never inherited and must not resolve to a parent's same signature.
+    if (id.contains("@local:") || id.contains("-><init>(") || id.contains("-><clinit>(") ||
+        symbols_.contains(id) || !id.contains("->"))
         return id;
     const QString suffix = id.mid(id.indexOf("->"));
     const auto owner = classOf(id);

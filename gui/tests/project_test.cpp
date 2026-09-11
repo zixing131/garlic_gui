@@ -99,6 +99,30 @@ class ProjectTest : public QObject {
         }
         QVERIFY(found);
     }
+    void constructorIdIsNeverInherited() {
+        Project project;
+        const QString parentConstructor = "Ldemo/Base;-><init>()V";
+        project.addClass({{"name", "demo/Base"}, {"methods", QJsonArray{
+            QJsonObject{{"id", parentConstructor}, {"name", "<init>"}}}}});
+        project.addClass({{"name", "demo/n"}, {"refs", QJsonArray{
+            QJsonObject{{"from", "Ldemo/n;"}, {"target", "Ldemo/Base;"}, {"kind", "extends"}}}}});
+        QTemporaryDir dir;
+        const QString text = "class Use { Object make() { return new n(); } }";
+        const int token = text.indexOf("n()");
+        const QString constructor = "Ldemo/n;-><init>()V";
+        QFile source(dir.filePath("Use.java")); QVERIFY(source.open(QIODevice::WriteOnly));
+        source.write(text.toUtf8()); source.close();
+        QFile map(dir.filePath("Use.map.json")); QVERIFY(map.open(QIODevice::WriteOnly));
+        map.write(QJsonDocument(QJsonArray{QJsonObject{{"start", token}, {"end", token + 1},
+            {"id", constructor}, {"token", "n"}, {"declaration", false}}}).toJson()); map.close();
+        const auto doc = project.document("demo/Use", false, source.fileName());
+        QVERIFY(std::any_of(doc.spans.cbegin(), doc.spans.cend(), [&](const SourceSpan &span) {
+            return span.id == constructor && span.start == token && !span.declaration;
+        }));
+        QVERIFY(std::none_of(doc.spans.cbegin(), doc.spans.cend(), [&](const SourceSpan &span) {
+            return span.id == parentConstructor && !span.declaration;
+        }));
+    }
     void importedProjectClassIsNavigable() {
         Project project;
         project.addClass({{"name", "demo/Target"}});

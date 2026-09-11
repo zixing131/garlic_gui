@@ -256,17 +256,28 @@ void source_map_location(FILE *stream, long start, jd_ins *ins) {
     append_bytes(header, size); append_json_string(location_scope); append_bytes("}", 1);
 }
 int source_map_tracks_expression(jd_exp *exp) {
-    if (!spans || !exp->ins || !exp->ins->method) return 0;
+    if (!spans || !exp) return 0;
+    if (exp->type == JD_EXPRESSION_INITIALIZE) {
+        jd_exp_initialize *initialize = exp->data;
+        return initialize && initialize->constructor && initialize->constructor->method;
+    }
+    if (!exp->ins || !exp->ins->method) return 0;
     return exp->type == JD_EXPRESSION_INVOKE || exp->type == JD_EXPRESSION_PUT_FIELD ||
            exp->type == JD_EXPRESSION_GET_FIELD || exp->type == JD_EXPRESSION_GET_STATIC ||
            exp->type == JD_EXPRESSION_PUT_STATIC;
 }
 void source_map_expression(FILE *stream, long start, jd_exp *exp) {
-    if (!spans || !exp->ins || !exp->ins->method)
+    if (!spans || !exp)
         return;
     jd_ins *ins = exp->ins;
     string id = NULL, token = NULL, constructor_owner = NULL;
-    int method = exp->type == JD_EXPRESSION_INVOKE;
+    int method = exp->type == JD_EXPRESSION_INVOKE || exp->type == JD_EXPRESSION_INITIALIZE;
+    if (exp->type == JD_EXPRESSION_INITIALIZE) {
+        jd_exp_initialize *initialize = exp->data;
+        ins = initialize ? initialize->constructor : NULL;
+    }
+    if (!ins || !ins->method)
+        return;
     int field = exp->type == JD_EXPRESSION_PUT_FIELD || exp->type == JD_EXPRESSION_GET_FIELD ||
                 exp->type == JD_EXPRESSION_GET_STATIC || exp->type == JD_EXPRESSION_PUT_STATIC;
     if (!method && !field)

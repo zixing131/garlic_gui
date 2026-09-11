@@ -97,6 +97,19 @@ with test_workspace() as root:
     generic.write_text(code, encoding='utf-8')
     run(['javac', '-d', str(root / 'generic-check'), str(generic)], check=True, capture_output=True, timeout=20)
 
+    # A transformed object initialization must retain the constructor symbol so
+    # reference navigation can select the type token in `new Type(...)`.
+    constructor_output = root / 'constructor-map'
+    constructor_output.mkdir()
+    environment = dict(os.environ, GARLIC_SOURCE_MAP_DIR=str(constructor_output))
+    run([str(engine), str(fixtures / 'demo.jar'), '-o', str(constructor_output),
+         '-c', 'demo/Folded', '-t', '1'], env=environment,
+        check=True, capture_output=True, timeout=20)
+    constructor_records = json.loads((constructor_output / 'demo/Folded.map.json').read_text(encoding='utf-8'))
+    assert any(record.get('id') == 'Ljava/lang/String;-><init>([C)V'
+               and record.get('token') == 'String' and not record.get('declaration')
+               for record in constructor_records), constructor_records
+
     # Encoded paths remain distinct after Windows case folding.
     for mode in (['explicit', 'windows-default'] if os.name == 'nt' else ['explicit']):
         safe = root / ('safe-output-' + mode)
