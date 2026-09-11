@@ -17,7 +17,7 @@ int main(int argc, char **argv) {
             return runMcpBridge(argc, argv);
         if (std::strcmp(argv[i], "--version") == 0) {
             // QCommandLineParser shows a blocking message box for Windows GUI applications.
-            std::puts("Garlic GUI 0.5.7");
+            std::puts("Garlic GUI " GARLIC_GUI_VERSION);
             return 0;
         }
     }
@@ -32,7 +32,7 @@ int main(int argc, char **argv) {
         }
     app.setApplicationName("Garlic GUI");
     app.setOrganizationName("Garlic");
-    app.setApplicationVersion("0.5.7");
+    app.setApplicationVersion(GARLIC_GUI_VERSION);
     app.setStyle(QStyleFactory::create("Fusion"));
     QPalette palette;
     palette.setColor(QPalette::Window, QColor("#17212d"));

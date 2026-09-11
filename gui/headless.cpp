@@ -12,7 +12,7 @@ int runHeadless(int argc, char **argv) {
     QCoreApplication app(argc, argv);
     app.setApplicationName("Garlic Headless");
     app.setOrganizationName("Garlic");
-    app.setApplicationVersion("0.5.7");
+    app.setApplicationVersion(GARLIC_GUI_VERSION);
     QCommandLineParser parser;
     parser.setApplicationDescription("Garlic headless APK analysis and MCP server (no display required)");
     parser.addHelpOption();

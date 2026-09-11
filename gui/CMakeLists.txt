@@ -1,3 +1,4 @@
+set(GARLIC_GUI_VERSION "0.5.8")
 find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Network Concurrent)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_CXX_STANDARD 17)
@@ -30,12 +31,13 @@ elseif(WIN32)
     target_sources(garlic-gui PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/app.rc)
 endif()
 set_property(TARGET garlic-gui PROPERTY INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(garlic-gui-core PUBLIC GARLIC_GUI_VERSION="${GARLIC_GUI_VERSION}")
 target_link_libraries(garlic-gui PRIVATE garlic-gui-core)
 set_target_properties(garlic-gui PROPERTIES
     MACOSX_BUNDLE_BUNDLE_NAME "Garlic"
     MACOSX_BUNDLE_GUI_IDENTIFIER "org.garlic.gui"
-    MACOSX_BUNDLE_BUNDLE_VERSION "0.5.7"
-    MACOSX_BUNDLE_SHORT_VERSION_STRING "0.5.7")
+    MACOSX_BUNDLE_BUNDLE_VERSION "${GARLIC_GUI_VERSION}"
+    MACOSX_BUNDLE_SHORT_VERSION_STRING "${GARLIC_GUI_VERSION}")
 # Refresh the adjacent engine even when only C sources have changed.
 add_custom_target(garlic-gui-engine
     COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:garlic-gui>

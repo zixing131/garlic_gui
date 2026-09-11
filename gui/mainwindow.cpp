@@ -15,7 +15,7 @@
 
 MainWindow::MainWindow(const QString &engine, QWidget *parent)
     : QMainWindow(parent), backend_(this) {
-    setWindowTitle(QString("Garlic - 代码浏览器 v %1").arg(QCoreApplication::applicationVersion().isEmpty() ? "0.5.7" : QCoreApplication::applicationVersion()));
+    setWindowTitle(QString("Garlic - 代码浏览器 v %1").arg(QCoreApplication::applicationVersion().isEmpty() ? GARLIC_GUI_VERSION : QCoreApplication::applicationVersion()));
     setMinimumSize(640, 440);
     resize(1360, 860);
     setAcceptDrops(true);
