@@ -183,13 +183,16 @@ void dex_reserve_output_paths(jd_meta_dex *meta, bool decompile)
             continue;
 
         string fname = class_full_name(dex_str_of_type_id(meta, cf->class_idx));
+        if (!class_selection_accept(dex_str_of_type_id(meta, cf->class_idx)))
+            continue;
         string sname = class_simple_name_without_primitive(fname);
         string pname = class_package_name_of(fname);
-        if (pname == NULL)
-            pname = (string) g_str_default;
+        string full_dir = (pname != NULL && pname[0] != '\0')
+                          ? str_create("%s/%s", meta->source_dir, pname)
+                          : str_dup(meta->source_dir);
 
         if (output_path_reserve(
-                    str_create("%s/%s", meta->source_dir, pname),
+                    full_dir,
                     decompile ? str_create("%s.java", sname)
                               : str_create("%s.smali", sname)))
             collided++;
@@ -253,9 +256,6 @@ FILE* dex_class_smali_save_dir(jd_dex *dex, dex_class_def *cf)
     string fname = class_full_name(desc);
     string sname = class_simple_name_without_primitive(fname);
     string pname = class_package_name_of(fname);
-    // if package name is null, make it as default
-    if (pname == NULL)
-        pname = (string) g_str_default;
 
     char *mapped = source_layout_mapped_path(meta->source_dir, desc, ".smali");
     if (mapped) {
@@ -266,7 +266,10 @@ FILE* dex_class_smali_save_dir(jd_dex *dex, dex_class_def *cf)
         return stream;
     }
 
-    string full_dir = str_create("%s/%s", meta->source_dir, pname ? pname : "");
+    /* A root-package class has no directory. Do not invent a "default" folder. */
+    string full_dir = (pname != NULL && pname[0] != '\0')
+                      ? str_create("%s/%s", meta->source_dir, pname)
+                      : str_dup(meta->source_dir);
     mkdir_p(full_dir);
 
     string path;
@@ -642,7 +645,8 @@ void dex_file_analyse(string path, string save_dir, int thread_num, jd_dex_task_
     mem_init_pool();
     jd_meta_dex *meta = parse_dex_file(path);
     meta->source_dir = save_dir;
-    dex_reserve_output_paths(meta, type == JD_DEX_TASK_DECOMPILE);
+    if (!class_selection_indexing())
+        dex_reserve_output_paths(meta, type == JD_DEX_TASK_DECOMPILE);
     jd_dex *dex = dex_init(meta, thread_num);
 
     if (class_selection_indexing()) {

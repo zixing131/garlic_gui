@@ -10,6 +10,8 @@
 #include "expression_node.h"
 #include "ssa.h"
 #include "control_flow.h"
+#include "parser/class/class_tools.h"
+#include "dalvik/dex_meta_helper.h"
 
 static __thread FILE *class_output;
 static inline FILE* file_output(jsource_file *jf)
@@ -548,7 +550,18 @@ static void write_field(jsource_file *jf, jd_node *node)
         }
         long field_start=ftell(stream);
         fprintf(stream, "%s%s;\n", ident, field->defination);
-        source_map_definition(stream,field_start,jf->fname,field->name,field->signature,field->name,0);
+        const char *desc = field->signature;
+        if (desc == NULL || desc[0] == '\0') {
+            if (jf->type == JD_TYPE_JVM && field->meta != NULL) {
+                jfield *jvm_field = field->meta;
+                desc = pool_str(jf->jclass, jvm_field->descriptor_index);
+            }
+            else if (jf->type == JD_TYPE_DALVIK && field->meta != NULL && jf->meta != NULL) {
+                jd_dex *dex = jf->meta;
+                desc = dex_field_desc(dex->meta, field->meta);
+            }
+        }
+        source_map_definition(stream,field_start,jf->fname,field->name,desc,field->name,0);
         wrote_field = true;
     }
     if (jf->enum_constants == NULL || wrote_field)

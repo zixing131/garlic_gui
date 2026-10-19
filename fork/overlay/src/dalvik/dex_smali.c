@@ -703,6 +703,8 @@ static void smali_write_instructions(jd_meta_dex *dex, const dex_code_item *code
         if (label != NULL)
             fprintf(stream, "  :%s\n", label);
 
+        /* The GUI pairs each instruction with its DEX offset. */
+        fprintf(stream, "    # @offset %d\n", i);
         fprintf(stream, "    %s", dex_opcode_name(op));
         smali_write_operands(stream, dex, code, i, labels);
         fputc('\n', stream);
