@@ -10,6 +10,8 @@ void dex_decompile_main_thread_start(jd_dex *dex);
 
 void dex_file_analyse(string path, string save_dir, int thread_num, jd_dex_task_type type);
 
+void dex_reserve_output_paths(jd_meta_dex *meta, bool decompile);
+
 jd_dex* dex_init_without_thread(jd_meta_dex *meta);
 
 void dex_decompile_thread_task(jd_dex_task *task);
@@ -33,5 +35,13 @@ jd_method *dex_method(jsource_file *jf, encoded_method *em);
 FILE* dex_class_smali_save_dir(jd_dex *dex, dex_class_def *cf);
 
 void dex_to_source(string dex_path, string save_dir);
+
+void dex_decompile_class(jd_dex *dex, dex_class_def *cf);
+
+void dex_smali_class(jd_dex *dex, dex_class_def *cf);
+
+void dex_decompile_class(jd_dex *dex, dex_class_def *cf);
+
+void dex_smali_class(jd_dex *dex, dex_class_def *cf);
 
 #endif

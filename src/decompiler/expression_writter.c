@@ -478,7 +478,8 @@ static void write_notice(jsource_file *jf)
 static void write_import(jsource_file *jf)
 {
     FILE *stream = file_output(jf);
-    if (jf->pname != NULL) {
+
+    if (jf->pname != NULL && strcmp(jf->pname, g_str_default) != 0) {
         fprintf(stream, "package ");
         for (int i = 0; i < strlen(jf->pname); ++i) {
             unsigned char c = jf->pname[i];
@@ -517,10 +518,23 @@ static void write_method_annotation(jsource_file *jf, jd_node *node)
     }
 }
 
+static void write_enum_constants(jsource_file *jf, jd_node *node)
+{
+    if (jf->enum_constants == NULL)
+        return;
+
+    FILE *stream = file_output(jf);
+    fprintf(stream, "%s", get_node_ident(node));
+    expression_to_stream(stream, node, jf->enum_constants);
+    fprintf(stream, ";\n\n");
+}
+
 static void write_field(jsource_file *jf, jd_node *node)
 {
     string ident = get_node_ident(node);
     FILE *stream = file_output(jf);
+    write_enum_constants(jf, node);
+    bool wrote_field = false;
     for (int i = 0; i < jf->fields_count; ++i) {
         jd_field *field = &jf->fields[i];
         if (field_is_hide(field) || field_is_assert(field))
@@ -535,8 +549,10 @@ static void write_field(jsource_file *jf, jd_node *node)
         long field_start=ftell(stream);
         fprintf(stream, "%s%s;\n", ident, field->defination);
         source_map_definition(stream,field_start,jf->fname,field->name,field->signature,field->name,0);
+        wrote_field = true;
     }
-    fprintf(stream, "\n");
+    if (jf->enum_constants == NULL || wrote_field)
+        fprintf(stream, "\n");
 }
 
 static void write_node_debug_info(jsource_file *jf, jd_node *node)
@@ -628,6 +644,24 @@ static void write_basic_block(FILE *stream, jsource_file *jf, jd_node *n)
 {
     string ident = get_node_ident(n);
     for (int j = n->start_idx; j <= n->end_idx; ++j) {
+        jd_exp *exp = get_exp(n->method, j);
+        if (exp_is_nopped(exp) ||
+            exp_is_empty(exp))
+            continue;
+        fprintf(stream, "%s", ident);
+        write_expression(jf, n, exp, exp->ins, true);
+    }
+}
+
+static void write_if_return_node(FILE *stream, jsource_file *jf, jd_node *n)
+{
+    jd_bblock *block = n->data;
+    if (block == NULL || block->ub == NULL || block->ub->nblock == NULL)
+        return;
+
+    jd_nblock *nb = block->ub->nblock;
+    string ident = get_node_ident(n);
+    for (int j = nb->start_idx; j <= nb->end_idx; ++j) {
         jd_exp *exp = get_exp(n->method, j);
         if (exp_is_nopped(exp) ||
             exp_is_empty(exp))
@@ -814,6 +848,9 @@ void writter_for_class(jsource_file *jf, jd_node *node)
                 break;
             case JD_NODE_DELETED:
                 break;
+            case JD_NODE_IF_RETURN:
+                write_if_return_node(stream, jf, child);
+                break;
             case JD_NODE_IF:
             case JD_NODE_ELSE_IF:
                 write_if_node(stream, jf, child);
@@ -895,6 +932,9 @@ void writter_for_anonymous_class(jsource_file *jf, jd_node *node)
                 write_basic_block(stream, jf, child);
                 break;
             case JD_NODE_DELETED:
+                break;
+            case JD_NODE_IF_RETURN:
+                write_if_return_node(stream, jf, child);
                 break;
             case JD_NODE_IF:
             case JD_NODE_ELSE_IF:

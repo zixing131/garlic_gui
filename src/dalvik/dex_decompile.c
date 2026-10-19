@@ -2,10 +2,12 @@
 #include "browse_index.h"
 #include "class_selection.h"
 #include <errno.h>
+#include "common/output_error.h"
 #include "dalvik/dex_decompile.h"
 #include "dalvik/dex_structure.h"
 #include "dalvik/dex_ins.h"
 #include "dalvik/dex_class.h"
+#include "dalvik/dex_lambda.h"
 #include "dalvik/dex_exception.h"
 #include "dalvik/dex_optimizer.h"
 #include "dalvik/dex_simulator.h"
@@ -13,7 +15,11 @@
 
 #include "decompiler/descriptor.h"
 #include "decompiler/method.h"
+#include "decompiler/expression_enum.h"
+#include "decompiler/expression_synchronized.h"
+#include "decompiler/exception.h"
 #include "decompiler/expression_writter.h"
+#include "common/output_path.h"
 #include "parser/dex/metadata.h"
 #include "jvm/jvm_ins.h"
 #include "dex_pre_optimizer.h"
@@ -23,6 +29,7 @@
 #include "dex_annotation.h"
 #include "dex_dump.h"
 #include "dex_smali.h"
+#include "common/jd_progress.h"
 
 static int dex_progress_len = 0;
 
@@ -31,11 +38,17 @@ void dex_status(jd_dex *dex)
     if (dex->threadpool)
         pthread_mutex_lock(dex->threadpool->lock);
     dex->done++;
-    for (int i = 0; i < dex_progress_len; i++) putchar('\b');
-    dex_progress_len = printf("Progress : %d (%d)", dex->done, dex->added);
-    fflush(stdout);
+    const int done = dex->done;
+    const int total = dex->added;
+    if (!jd_progress_has()) {
+        for (int i = 0; i < dex_progress_len; i++) putchar('\b');
+        dex_progress_len = printf("Progress : %d (%d)", done, total);
+        fflush(stdout);
+    }
     if (dex->threadpool)
         pthread_mutex_unlock(dex->threadpool->lock);
+    if (jd_progress_has())
+        jd_progress_report(done, total, "dex");
 }
 
 void dex_main_thread_status(jd_dex *dex)
@@ -49,27 +62,27 @@ void dex_init_ins_fn(jd_dex *dex)
 {
     // setup instruction's interface
     jd_ins_fn *fn = make_obj(jd_ins_fn);
-    fn->is_compare = dex_ins_is_compare;
-    fn->is_return = dex_ins_is_return_op;
-    fn->is_void_return = dex_ins_is_return_void;
-    fn->is_switch = dex_ins_is_switch;
-    fn->is_goto = dex_ins_is_goto_jump;
-    fn->is_unconditional_jump = dex_ins_is_unconditional_jump;
-    fn->is_conditional_jump = dex_ins_is_conditional_jump;
-    fn->is_goto_back = dex_ins_is_goto_back;
-    fn->is_jump_dst = dex_ins_is_jump_destination;
-    fn->is_block_start = dex_ins_is_block_start;
-    fn->is_block_end = dex_ins_is_block_end;
-    fn->is_store = dex_ins_is_store;
-    fn->is_load = dex_ins_is_load;
-    fn->is_if = dex_ins_is_if;
-    fn->is_branch = dex_ins_is_branch;
-    fn->is_athrow = dex_ins_is_throw;
-    fn->is_invoke_static = dex_ins_is_invokestatic;
-    fn->is_invoke_virtual = dex_ins_is_invokevirtual;
-    fn->is_invoke_interface = dex_ins_is_invokeinterface;
-    fn->is_invoke_dynamic = dex_ins_is_invokedymamic;
-    fn->is_invoke_special = dex_ins_is_invokespecial;
+    fn->is_compare = (ins_checker) dex_ins_is_compare;
+    fn->is_return = (ins_checker) dex_ins_is_return_op;
+    fn->is_void_return = (ins_checker) dex_ins_is_return_void;
+    fn->is_switch = (ins_checker) dex_ins_is_switch;
+    fn->is_goto = (ins_checker) dex_ins_is_goto_jump;
+    fn->is_unconditional_jump = (ins_checker) dex_ins_is_unconditional_jump;
+    fn->is_conditional_jump = (ins_checker) dex_ins_is_conditional_jump;
+    fn->is_goto_back = (ins_checker) dex_ins_is_goto_back;
+    fn->is_jump_dst = (ins_checker) dex_ins_is_jump_destination;
+    fn->is_block_start = (ins_checker) dex_ins_is_block_start;
+    fn->is_block_end = (ins_checker) dex_ins_is_block_end;
+    fn->is_store = (ins_checker) dex_ins_is_store;
+    fn->is_load = (ins_checker) dex_ins_is_load;
+    fn->is_if = (ins_checker) dex_ins_is_if;
+    fn->is_branch = (ins_checker) dex_ins_is_branch;
+    fn->is_athrow = (ins_checker) dex_ins_is_throw;
+    fn->is_invoke_static = (ins_checker) dex_ins_is_invokestatic;
+    fn->is_invoke_virtual = (ins_checker) dex_ins_is_invokevirtual;
+    fn->is_invoke_interface = (ins_checker) dex_ins_is_invokeinterface;
+    fn->is_invoke_dynamic = (ins_checker) dex_ins_is_invokedymamic;
+    fn->is_invoke_special = (ins_checker) dex_ins_is_invokespecial;
 
     dex->ins_fn = fn;
 }
@@ -77,7 +90,7 @@ void dex_init_ins_fn(jd_dex *dex)
 void dex_init_method_fn(jd_dex *dex)
 {
     jd_method_fn *fn = make_obj(jd_method_fn);
-    fn->access_flags_fn = dex_method_access_flags;
+    fn->access_flags_fn = (jd_access_flag_fn) dex_method_access_flags;
     fn->param_val_fn = dex_method_parameter_val;
     fn->param_annotation_fn = dex_method_parameter_annotation;
     fn->is_native = dex_method_is_native;
@@ -92,7 +105,7 @@ void dex_init_method_fn(jd_dex *dex)
 
 jd_method *dex_method(jsource_file *jf, encoded_method *em)
 {
-    jd_method *m = make_obj(jd_method);
+    jd_method *m = make_obj_zero(jd_method);
 
     dex_method_init(jf, m, em);
 
@@ -110,6 +123,30 @@ jd_method *dex_method(jsource_file *jf, encoded_method *em)
     optimize_dex_method(m);
 
     return m;
+}
+
+static int dex_hide_rebuilt_lambda_bodies(jsource_file *jf)
+{
+    jd_dex *dex = jf->meta;
+    jd_meta_dex *meta = dex->meta;
+    if (meta->rebuilt_lambda_bodies == NULL || jf->methods == NULL)
+        return 0;
+
+    int hidden = 0;
+    for (int i = 0; i < jf->methods->size; ++i) {
+        jd_method *m = lget_obj(jf->methods, i);
+        if (m == NULL || m->meta_method == NULL)
+            continue;
+        encoded_method *em = m->meta_method;
+        pthread_mutex_lock(&meta->lambda_lock);
+        void *hit = hget_u4obj(meta->rebuilt_lambda_bodies, em->method_id);
+        pthread_mutex_unlock(&meta->lambda_lock);
+        if (hit == NULL)
+            continue;
+        method_mark_lambda(m);
+        hidden++;
+    }
+    return hidden;
 }
 
 static void dex_methods(jsource_file *jf)
@@ -131,6 +168,41 @@ static void dex_methods(jsource_file *jf)
     }
 }
 
+void dex_reserve_output_paths(jd_meta_dex *meta, bool decompile)
+{
+    if (meta->source_dir == NULL)
+        return;
+
+    int collided = 0;
+    for (int i = 0; i < meta->header->class_defs_size; ++i) {
+        dex_class_def *cf = &meta->class_defs[i];
+        if (decompile &&
+            (dex_class_is_inner_class(meta, cf) ||
+             dex_class_is_anonymous_class(meta, cf) ||
+             dex_class_is_rebuilt_lambda_class(meta, cf)))
+            continue;
+
+        string fname = class_full_name(dex_str_of_type_id(meta, cf->class_idx));
+        string sname = class_simple_name_without_primitive(fname);
+        string pname = class_package_name_of(fname);
+        if (pname == NULL)
+            pname = (string) g_str_default;
+
+        if (output_path_reserve(
+                    str_create("%s/%s", meta->source_dir, pname),
+                    decompile ? str_create("%s.java", sname)
+                              : str_create("%s.smali", sname)))
+            collided++;
+    }
+
+    if (collided > 0) {
+        fprintf(stderr, "[garlic] warning: %d classes under %s share a file "
+                        "name with a class differing only in case; the later "
+                        "ones are written with a _N suffix\n",
+                collided, meta->source_dir);
+    }
+}
+
 static void dex_class_source_save_dir(jd_dex *dex, jsource_file *jf)
 {
     jd_meta_dex *meta = dex->meta;
@@ -142,25 +214,33 @@ static void dex_class_source_save_dir(jd_dex *dex, jsource_file *jf)
     if (mapped) {
         jf->source = fopen(mapped, "wb");
         if (jf->source == NULL)
-            fprintf(stdout, "[error]: open file %s failed: %d\n", mapped, errno);
+            output_open_failed(mapped);
         free(mapped);
         return;
     }
-    string path;
     if (source_safe_paths_enabled()) {
         char *stem = source_storage_name(jf->fname);
-        path = str_create("%s/%s.java", meta->source_dir, stem);
+        string path = str_create("%s/%s.java", meta->source_dir, stem);
         free(stem);
         char *parent = str_dup(path), *slash = strrchr(parent, '/');
         if (slash) { *slash = 0; mkdir_p(parent); }
-    } else {
-        string full_dir = str_create("%s/%s", meta->source_dir, jf->pname ? jf->pname : "");
-        mkdir_p(full_dir);
-        path = str_create("%s/%s.java", full_dir, jf->sname);
+        FILE *safe = fopen(path, "wb");
+        if (safe == NULL) {
+            output_open_failed(path);
+            return;
+        }
+        jf->source = safe;
+        return;
     }
+    string full_dir = str_create("%s/%s", meta->source_dir, jf->pname ? jf->pname : "");
+    mkdir_p(full_dir);
+
+    string path = str_create("%s/%s", full_dir,
+                             output_path_resolve(
+                                     full_dir, str_create("%s.java", jf->sname)));
     FILE *stream = fopen(path, "wb");
     if (stream == NULL) {
-        fprintf(stdout, "[error]: open file %s failed: %d\n", path, errno);
+        output_open_failed(path);
         return;
     }
     jf->source = stream;
@@ -173,12 +253,15 @@ FILE* dex_class_smali_save_dir(jd_dex *dex, dex_class_def *cf)
     string fname = class_full_name(desc);
     string sname = class_simple_name_without_primitive(fname);
     string pname = class_package_name_of(fname);
+    // if package name is null, make it as default
+    if (pname == NULL)
+        pname = (string) g_str_default;
 
     char *mapped = source_layout_mapped_path(meta->source_dir, desc, ".smali");
     if (mapped) {
         FILE *stream = fopen(mapped, "wb");
         if (stream == NULL)
-            fprintf(stdout, "[error]: open file %s failed: %d\n", mapped, errno);
+            output_open_failed(mapped);
         free(mapped);
         return stream;
     }
@@ -186,17 +269,21 @@ FILE* dex_class_smali_save_dir(jd_dex *dex, dex_class_def *cf)
     string full_dir = str_create("%s/%s", meta->source_dir, pname ? pname : "");
     mkdir_p(full_dir);
 
-    string path = str_create("%s/%s.smali", full_dir, sname);
+    string path;
     if (source_safe_paths_enabled()) {
         char *stem = source_storage_name(desc);
         path = str_create("%s/%s.smali", meta->source_dir, stem);
         free(stem);
         char *parent = str_dup(path), *slash = strrchr(parent, '/');
         if (slash) { *slash = 0; mkdir_p(parent); }
+    } else {
+        path = str_create("%s/%s", full_dir,
+                          output_path_resolve(
+                                  full_dir, str_create("%s.smali", sname)));
     }
     FILE *stream = fopen(path, "wb");
     if (stream == NULL) {
-        fprintf(stdout, "[error]: open file %s failed: %d\n", path, errno);
+        output_open_failed(path);
         return NULL;
     }
     return stream;
@@ -217,7 +304,7 @@ jsource_file* dex_class_inside(jd_dex *dex,
                                jsource_file *parent)
 {
     dex_class_data_item *class_data = cf->class_data;
-    jsource_file *jf = make_obj(jsource_file);
+    jsource_file *jf = make_obj_zero(jsource_file);
     string desc = dex_str_of_type_id(dex->meta, cf->class_idx);
     jf->fname = class_full_name(desc);
     jf->sname = class_simple_name_without_primitive(jf->fname);
@@ -225,8 +312,10 @@ jsource_file* dex_class_inside(jd_dex *dex,
     jf->imports = trie_create_node("");
     jf->meta = dex;
     jf->jclass = cf;
-    string super_cname = dex_str_of_type_id(dex->meta, cf->superclass_idx);
-    jf->super_cname = class_simple_name(super_cname);
+    string super_cname = dex_str_of_superclass(dex->meta, cf);
+    jf->super_cname = super_cname != NULL
+                      ? class_simple_name(super_cname)
+                      : (string) g_str_Object;
     jf->interfaces = linit_object();
 
     if (cf->interfaces != NULL) {
@@ -238,7 +327,8 @@ jsource_file* dex_class_inside(jd_dex *dex,
     }
 
     jf->type = JD_TYPE_DALVIK;
-    jf->access_flags_fn = dex_class_access_flag;
+    jf->enum_constants = NULL;
+    jf->access_flags_fn = (jd_access_flag_fn) dex_class_access_flag;
     jf->is_anonymous = dex_class_is_anonymous_class(dex->meta, cf);
     jf->is_inner = dex_class_is_inner_class(dex->meta, cf);
     jf->parent = parent;
@@ -254,15 +344,19 @@ jsource_file* dex_class_inside(jd_dex *dex,
         jf->fields = NULL;
         jf->methods = linit_object();
         jf->methods_count = 0;
-        class_create_definations(jf);
         dex_class_annotations(jf);
         class_create_blocks(jf);
+        class_create_definations(jf);
         return jf;
     }
 
     dex_fields(jf);
 
     dex_methods(jf);
+
+    dex_hide_rebuilt_lambda_bodies(jf);
+
+    optimize_enum_class(jf);
 
     dex_class_annotations(jf);
 
@@ -294,27 +388,28 @@ jsource_file* dex_inner_class(jd_dex *dex,
 
 void dex_decompile_class(jd_dex *dex, dex_class_def *cf)
 {
-    mem_init_pool();
-    if (dex_class_is_inner_class(dex->meta, cf) ||
-        dex_class_is_anonymous_class(dex->meta, cf))
-        return;
-
-    jsource_file *jf = dex_class_inside(dex, cf, NULL);
-    if (jf->parent == NULL) {
-        writter_for_class(jf, NULL);
-        if (jf->source) fclose(jf->source);
+    mem_pool *outer = mem_scratch_enter();
+    if (!dex_class_is_inner_class(dex->meta, cf) &&
+        !dex_class_is_anonymous_class(dex->meta, cf) &&
+        !dex_class_is_rebuilt_lambda_class(dex->meta, cf)) {
+        jsource_file *jf = dex_class_inside(dex, cf, NULL);
+        if (jf->parent == NULL) {
+            writter_for_class(jf, NULL);
+            output_close(jf->source, jf->fname);
+        }
     }
-    mem_free_pool();
+    mem_scratch_leave(outer);
 }
 
 void dex_smali_class(jd_dex *dex, dex_class_def *cf)
 {
-    mem_init_pool();
+    mem_pool *outer = mem_scratch_enter();
     FILE *stream = dex_class_smali_save_dir(dex, cf);
-    dex_class_def_to_smali(dex->meta, cf, stream);
-    if (stream != NULL)
-        fclose(stream);
-    mem_free_pool();
+    if (stream != NULL) {
+        dex_class_def_to_smali(dex->meta, cf, stream);
+        output_close(stream, dex_str_of_type_id(dex->meta, cf->class_idx));
+    }
+    mem_scratch_leave(outer);
 }
 
 void dex_to_source(string dex_path, string save_dir)
@@ -322,6 +417,7 @@ void dex_to_source(string dex_path, string save_dir)
     jd_meta_dex *meta = parse_dex_file(dex_path);
     meta->source_dir = save_dir;
     mkdir_p(meta->source_dir);
+    dex_reserve_output_paths(meta, true);
     dex_analyse(meta);
 }
 
@@ -373,6 +469,8 @@ jd_dex* dex_init(jd_meta_dex *meta, int thread_num)
     dex_init_method_fn(dex);
     dex_inner_and_anonymous_class(dex);
 
+    dex_lambda_collect_bodies(dex);
+
     if (thread_num > 1) {
         dex->threadpool = threadpool_create_in(meta->pool, thread_num, 0);
     }
@@ -388,6 +486,8 @@ jd_dex* dex_init_without_thread(jd_meta_dex *meta)
     dex_init_ins_fn(dex);
     dex_init_method_fn(dex);
     dex_inner_and_anonymous_class(dex);
+
+    dex_lambda_collect_bodies(dex);
     return dex;
 }
 
@@ -402,7 +502,7 @@ void dex_decompile_thread_task(jd_dex_task *task)
     jsource_file *jf = dex_class_inside(dex, cf, NULL);
     if (jf->parent == NULL) {
         writter_for_class(jf, NULL);
-        if (jf->source) fclose(jf->source);
+        output_close(jf->source, jf->fname);
     }
     mem_pool_free(tls->pool);
     tls->pool = NULL;
@@ -423,7 +523,7 @@ void dex_smali_thread_task(jd_dex_task *task)
     dex_class_def_to_smali(dex->meta, cf, stream);
 
     if (stream != NULL)
-        fclose(stream);
+        output_close(stream, dex_str_of_type_id(dex->meta, cf->class_idx));
 
     mem_pool_free(tls->pool);
     tls->pool = NULL;
@@ -436,6 +536,8 @@ void dex_decompile_threadpool_start(jd_dex *dex)
     jd_meta_dex *meta = dex->meta;
     for (int i = 0; i < meta->header->class_defs_size; ++i) {
         dex_class_def *cf = &meta->class_defs[i];
+        if (dex_class_is_rebuilt_lambda_class(dex->meta, cf))
+            continue;
         if (!class_selection_explicit() && (dex_class_is_inner_class(dex->meta, cf) ||
             dex_class_is_anonymous_class(dex->meta, cf)))
             continue;
@@ -447,7 +549,7 @@ void dex_decompile_threadpool_start(jd_dex *dex)
             jd_dex_task *t = make_obj(jd_dex_task);
             t->dex = dex;
             t->cf = cf;
-            int ret = threadpool_add(dex->threadpool, &dex_decompile_thread_task, t, 0);
+            int ret = threadpool_add(dex->threadpool, (void (*)(void *)) &dex_decompile_thread_task, t, 0);
             if (ret != 0) {
                 fprintf(stderr, "[garlic] Warning: threadpool_add failed with %d\n", ret);
             }
@@ -464,26 +566,25 @@ void dex_decompile_threadpool_start(jd_dex *dex)
 void dex_decompile_main_thread_start(jd_dex *dex)
 {
     jd_meta_dex *meta = dex->meta;
-    mem_pool *parse_pool = global_pool;
     for (int i = 0; i < meta->header->class_defs_size; ++i) {
+        mem_pool *outer = mem_scratch_enter();
         dex_class_def *cf = &meta->class_defs[i];
-        if (!class_selection_explicit() && (dex_class_is_inner_class(dex->meta, cf) ||
-            dex_class_is_anonymous_class(dex->meta, cf)))
-            continue;
-
-        if (!class_selection_accept(dex_str_of_type_id(meta, cf->class_idx)))
-            continue;
-
-        mem_init_pool();
-        jsource_file *jf = dex_class_inside(dex, cf, NULL);
-        if (jf->parent == NULL) {
-            writter_for_class(jf, NULL);
-            if (jf->source) fclose(jf->source);
+        /* Skipped classes still close the pool they opened; only the
+         * counted ones advance the progress. */
+        if (!dex_class_is_rebuilt_lambda_class(dex->meta, cf) &&
+            (class_selection_explicit() ||
+             (!dex_class_is_inner_class(dex->meta, cf) &&
+              !dex_class_is_anonymous_class(dex->meta, cf))) &&
+            class_selection_accept(dex_str_of_type_id(meta, cf->class_idx))) {
+            jsource_file *jf = dex_class_inside(dex, cf, NULL);
+            if (jf->parent == NULL) {
+                writter_for_class(jf, NULL);
+                output_close(jf->source, jf->fname);
+            }
+            dex->done ++;
+            dex_main_thread_status(dex);
         }
-        mem_free_pool();
-        global_pool = parse_pool;
-        dex->done ++;
-        dex_main_thread_status(dex);
+        mem_scratch_leave(outer);
     }
 }
 
@@ -498,7 +599,7 @@ void dex_smali_threadpool_start(jd_dex *dex)
         t->dex = dex;
         t->cf = cf;
         t->type = JD_DEX_TASK_SMALI;
-        threadpool_add(dex->threadpool, &dex_smali_thread_task, t, 0);
+        threadpool_add(dex->threadpool, (void (*)(void *)) &dex_smali_thread_task, t, 0);
         dex->added++;
     }
 }
@@ -506,21 +607,18 @@ void dex_smali_threadpool_start(jd_dex *dex)
 void dex_smali_main_thread_start(jd_dex *dex)
 {
     jd_meta_dex *meta = dex->meta;
-    mem_pool *parse_pool = global_pool;
     for (int i = 0; i < meta->header->class_defs_size; ++i) {
         dex_class_def *cf = &meta->class_defs[i];
         if (!class_selection_accept(dex_str_of_type_id(meta, cf->class_idx)))
             continue;
 
-        mem_init_pool();
+        mem_pool *outer = mem_scratch_enter();
         FILE *stream = dex_class_smali_save_dir(dex, cf);
-
-        dex_class_def_to_smali(dex->meta, cf, stream);
-        if (stream != NULL)
-            fclose(stream);
-
-        mem_free_pool();
-        global_pool = parse_pool;
+        if (stream != NULL) {
+            dex_class_def_to_smali(dex->meta, cf, stream);
+            output_close(stream, dex_str_of_type_id(dex->meta, cf->class_idx));
+        }
+        mem_scratch_leave(outer);
         dex->done ++;
         dex_main_thread_status(dex);
     }
@@ -544,6 +642,7 @@ void dex_file_analyse(string path, string save_dir, int thread_num, jd_dex_task_
     mem_init_pool();
     jd_meta_dex *meta = parse_dex_file(path);
     meta->source_dir = save_dir;
+    dex_reserve_output_paths(meta, type == JD_DEX_TASK_DECOMPILE);
     jd_dex *dex = dex_init(meta, thread_num);
 
     if (class_selection_indexing()) {
@@ -564,6 +663,9 @@ void dex_file_analyse(string path, string save_dir, int thread_num, jd_dex_task_
         }
     }
 
+    dex_lambda_report(meta);
+    expand_stat_report();
+    sync_stat_report();
     dex_release(dex);
     if (thread_num <= 1)
         mem_free_pool();
@@ -614,6 +716,8 @@ void dex_analyse_in_apk_task(jd_meta_dex *meta)
 
     for (int i = 0; i < meta->header->class_defs_size; ++i) {
         dex_class_def *cf = &meta->class_defs[i];
+        if (dex_class_is_rebuilt_lambda_class(dex->meta, cf))
+            continue;
         if (!class_selection_explicit() && (dex_class_is_inner_class(dex->meta, cf) ||
             dex_class_is_anonymous_class(dex->meta, cf)))
             continue;
@@ -621,7 +725,7 @@ void dex_analyse_in_apk_task(jd_meta_dex *meta)
         jsource_file *jf = dex_class_inside(dex, cf, NULL);
         if (jf->parent == NULL) {
             writter_for_class(jf, NULL);
-            if (jf->source) fclose(jf->source);
+            output_close(jf->source, jf->fname);
         }
     }
 

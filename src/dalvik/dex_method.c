@@ -1,6 +1,7 @@
 #include "decompiler/method.h"
 #include "dalvik/dex_method.h"
 #include "dex_descriptor.h"
+#include "decompiler/descriptor.h"
 #include "dex_exception.h"
 #include "parser/dex/metadata.h"
 #include "dex_annotation.h"
@@ -611,27 +612,30 @@ void dex_method_access_flag_with_flags(u4 flags, str_list *list)
 void dex_method_access_flags(jd_method *m, str_list *list)
 {
     dex_method_access_flag_with_flags(m->access_flags, list);
+
+    u4 sync_flags = ACC_DEX_SYNCHRONIZED | ACC_DEX_DECLARED_SYNCHRONIZED;
+    if (access_flags_contains(m->access_flags, sync_flags) &&
+        !method_is_sync_block(m))
+        str_concat(list, "synchronized ");
 }
 
 jd_val* dex_method_parameter_val(jd_method *m, int index)
 {
     if (m->enter == NULL)
         return NULL;
-    int max = m->max_locals;
-    int desc_size = m->desc->list->size;
-    int start = max - desc_size;
-    // int i = method_is_member(m) ? (max-1)-index+1 : (max-1)-index;
-    // int i = method_is_member(m) ? start + index : start + index;
-    int i = start + index;
-    // TODO: enum constructor
-    //      i += method_is_enum_constructor(m) ? 2 : 0;
-    return m->enter->local_vars[i];
+
+    jd_descriptor *desc = m->desc;
+    int slot = m->max_locals;
+    for (int i = desc->list->size - 1; i >= index; --i)
+        slot -= descriptor_type_slot_width(lget_string(desc->list, i));
+
+    return m->enter->local_vars[slot];
 }
 
 static void init_dex_ins_unconditional_jump(jd_dex_ins *ins)
 {
     u4 jump_offset = dex_goto_offset(ins);
-    jd_dex_ins *target_ins = ins_of_offset(ins->method, jump_offset);
+    jd_dex_ins *target_ins = (jd_dex_ins *) ins_of_offset(ins->method, jump_offset);
     ladd_obj(ins->targets, target_ins);
     ladd_obj(ins->jumps, target_ins);
 }
@@ -643,7 +647,7 @@ static void init_dex_ins_conditional_jump(jd_dex_ins *ins)
     if (next != NULL)
         ladd_obj_no_dup(ins->targets, next);
 
-    jd_dex_ins *jump_to_ins = ins_of_offset(ins->method, jump_offset);
+    jd_dex_ins *jump_to_ins = (jd_dex_ins *) ins_of_offset(ins->method, jump_offset);
     ladd_obj(ins->targets, jump_to_ins);
     ladd_obj(ins->jumps, jump_to_ins);
 }
@@ -670,7 +674,7 @@ static void init_dex_packed_switch_jump(jd_dex_ins *ins)
     for (int i = 0; i < size; ++i) {
         int offset = (s4)((u4)packed_ins->param[5 + i * 2] << 16 |
                          packed_ins->param[4 + i * 2]);
-        jd_dex_ins *target_ins = ins_of_offset(m, ins->offset+offset);
+        jd_dex_ins *target_ins = (jd_dex_ins *) ins_of_offset(m, ins->offset+offset);
         ladd_obj(ins->targets, target_ins);
         ladd_obj(ins->jumps, target_ins);
         DEBUG_PRINT("key: %d, goto_offset: %d\n",

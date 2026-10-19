@@ -8,6 +8,17 @@
 #include "common/types.h"
 #include "mem_common.h"
 
+#if defined(__BIGGEST_ALIGNMENT__)
+#define MEM_POOL_ALIGN ((size_t)__BIGGEST_ALIGNMENT__)
+#else
+#define MEM_POOL_ALIGN ((size_t)16)
+#endif
+
+static inline size_t mem_align_up(size_t n)
+{
+    return (n + (MEM_POOL_ALIGN - 1)) & ~(MEM_POOL_ALIGN - 1);
+}
+
 typedef struct small_block {
     u1                  *cur_usable_buffer;
     u1                  *buffer_end;
@@ -69,6 +80,10 @@ void* x_realloc_in(mem_pool *pool,
 
 void mem_free_pool();
 
+mem_pool* mem_scratch_enter();
+
+void mem_scratch_leave(mem_pool *outer);
+
 
 #define make_obj(type) (x_alloc(sizeof(type)))
 
@@ -78,4 +93,10 @@ void mem_free_pool();
 
 #define make_obj_arr_in(type, size, pool) \
     (mem_pool_alloc(pool, sizeof(type) * (size)))
+
+#define make_obj_zero(type) \
+    (memset(x_alloc(sizeof(type)), 0, sizeof(type)))
+
+#define make_obj_arr_zero(type, size) \
+    (memset(x_alloc(sizeof(type) * (size)), 0, sizeof(type) * (size)))
 #endif //GARLIC_MEM_POOL_H

@@ -1,8 +1,29 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include "mem_pool.h"
 #include "libs/threadpool/threadpool.h"
 
 mem_pool *global_pool;
+
+static void* pool_malloc(size_t size)
+{
+    void *p = malloc(size);
+    if (p == NULL) {
+        fprintf(stderr, "[garlic] out of memory: %zu bytes refused\n", size);
+        exit(EXIT_FAILURE);
+    }
+    return p;
+}
+
+static int pool_zero_on = -1;
+static void* pool_zero(void *p, size_t size)
+{
+    if (pool_zero_on < 0)
+        pool_zero_on = getenv("GARLIC_ZEROALL") != NULL;
+    if (pool_zero_on && p != NULL)
+        memset(p, 0, size);
+    return p;
+}
 
 void mem_init_pool() {
     global_pool = mem_pool_init(16 * 1024);
@@ -52,10 +73,25 @@ void mem_free_pool() {
     global_pool = NULL;
 }
 
+mem_pool* mem_scratch_enter()
+{
+    mem_pool *outer = global_pool;
+    global_pool = mem_pool_init(16 * 1024);
+    return outer;
+}
+
+void mem_scratch_leave(mem_pool *outer)
+{
+    if (global_pool != NULL)
+        mem_pool_free(global_pool);
+    global_pool = outer;
+}
+
 mem_pool* mem_pool_init(size_t capacity)
 {
-    size_t total_size = sizeof(mem_pool) + sizeof(small_block) + capacity;
-    void *temp = malloc(total_size);
+    size_t total_size = sizeof(mem_pool) + sizeof(small_block) + capacity +
+                      MEM_POOL_ALIGN;
+    void *temp = pool_malloc(total_size);
     memset(temp, 0, total_size);
 
     mem_pool *pool = (mem_pool*)temp;
@@ -66,7 +102,7 @@ mem_pool* mem_pool_init(size_t capacity)
     pool->total_size = total_size;
 
     small_block *sbp = (small_block*)(pool + 1);
-    sbp->cur_usable_buffer = (u1*)(sbp + 1);
+    sbp->cur_usable_buffer = (u1*) mem_align_up((size_t)(sbp + 1));
     sbp->buffer_end = sbp->cur_usable_buffer+capacity;
     sbp->next_block = NULL;
     sbp->no_enough_times = 0;
@@ -75,6 +111,12 @@ mem_pool* mem_pool_init(size_t capacity)
 }
 
 void mem_pool_free(mem_pool *pool){
+    // free(NULL) is a no-op and callers here rely on that: jar_file_analyse
+    // frees the global pool a second time after the per entry loop already
+    // freed it, and that used to dereference NULL
+    if (pool == NULL)
+        return;
+
     big_block *bbp = pool->big_block_start;
     while (bbp)
     {
@@ -96,19 +138,20 @@ void mem_pool_free(mem_pool *pool){
 
 u1* mem_pool_new_small_block(mem_pool *pool, size_t size)
 {
-    size_t malloc_size = sizeof(small_block) + pool->small_buffer_capacity;
+    size_t malloc_size = sizeof(small_block) + pool->small_buffer_capacity +
+                        MEM_POOL_ALIGN;
     pool->total_size += malloc_size;
-    void *temp = malloc(malloc_size);
+    void *temp = pool_malloc(malloc_size);
     memset(temp, 0, malloc_size);
 
     small_block *sbp = (small_block*) temp;
-    sbp->cur_usable_buffer = (u1*)(sbp+1);
+    sbp->cur_usable_buffer = (u1*) mem_align_up((size_t)(sbp+1));
     sbp->buffer_end = (u1*)temp + malloc_size;
     sbp->next_block = NULL;
     sbp->no_enough_times = 0;
 
     u1 *res = sbp->cur_usable_buffer;
-    sbp->cur_usable_buffer = res + size;
+    sbp->cur_usable_buffer = res + mem_align_up(size);
 
 
     small_block *p = pool->cur_usable_small_block;
@@ -133,7 +176,7 @@ static int big_block_count = 0;
 u1* mem_pool_new_big_block(mem_pool *pool, size_t size)
 {
     big_block_count++;
-    void *temp = malloc(size);
+    void *temp = pool_malloc(size);
     memset(temp, 0, size);
     pool->total_size += size;
     big_block *bbp = pool->big_block_start;
@@ -160,10 +203,10 @@ void* mem_pool_alloc(mem_pool *pool, size_t size){
     if(size < pool->small_buffer_capacity) {
         small_block *temp = pool->cur_usable_small_block;
         do {
-            if (temp->buffer_end-temp->cur_usable_buffer > size) {
-                u1 *res = temp->cur_usable_buffer;
-                temp->cur_usable_buffer = temp->cur_usable_buffer + size;
-                return res;
+            u1 *res = (u1*) mem_align_up((size_t) temp->cur_usable_buffer);
+            if ((size_t)(temp->buffer_end - res) >= mem_align_up(size)) {
+                temp->cur_usable_buffer = res + mem_align_up(size);
+                return pool_zero(res, size);
             }
             temp = temp->next_block;
         } while (temp);

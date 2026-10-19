@@ -85,6 +85,8 @@ typedef enum {
 
 typedef struct jd_apk {
     string              path;
+    string              *sources;
+    int                 source_count;
     string              save_dir;
     int                 thread_num;
     struct zip_t        *zip;
@@ -95,6 +97,7 @@ typedef struct jd_apk {
     int                 added;
     int                 done;
     int                 allow_nested_dex;
+    list_object         *dex_pools;
 } jd_apk;
 
 typedef struct {

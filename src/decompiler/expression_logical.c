@@ -2,12 +2,33 @@
 #include "decompiler/expression_logical.h"
 #include "decompiler/control_flow.h"
 #include "decompiler/expression.h"
+#include "decompiler/expression_if.h"
 #include "jvm/jvm_expression_builder.h"
 #include "expression_writter.h"
 #include "dominator_tree.h"
 
+static void negate_logical_operands(jd_exp_operator *op)
+{
+    if (op->list == NULL || op->list->len < 2)
+        return;
+    make_logic_not(&op->list->args[0]);
+    make_logic_not(&op->list->args[1]);
+}
+
 void make_logic_not(jd_exp *expression)
 {
+    if (expression->type == JD_EXPRESSION_SINGLE_LIST) {
+        reverse_single_operand(expression);
+        return;
+    }
+    if (expression->type == JD_EXPRESSION_SINGLE_OPERATOR) {
+        jd_exp_single_operator *single_op = expression->data;
+        if (single_op->operator == JD_OP_LOGICAL_NOT) {
+            reverse_single_operand(expression);
+            return;
+        }
+    }
+
     if (exp_is_operator(expression)) {
         jd_exp_operator *exp_operator = expression->data;
         switch (exp_operator->operator) {
@@ -30,9 +51,11 @@ void make_logic_not(jd_exp *expression)
                 exp_operator->operator = JD_OP_LT;
                 break;
             case JD_OP_LOGICAL_AND:
+                negate_logical_operands(exp_operator);
                 exp_operator->operator = JD_OP_LOGICAL_OR;
                 break;
             case JD_OP_LOGICAL_OR:
+                negate_logical_operands(exp_operator);
                 exp_operator->operator = JD_OP_LOGICAL_AND;
                 break;
             default:
@@ -47,6 +70,37 @@ void make_logic_not(jd_exp *expression)
         expression->type = JD_EXPRESSION_SINGLE_OPERATOR;
         expression->data = op;
     }
+}
+
+static jd_bblock *chain_terminus_block(jd_method *m,
+                                       jd_bblock *block,
+                                       jd_bblock *target)
+{
+    jd_bblock *terminus = NULL;
+    for (int guard = 0; block != NULL && guard < 64; ++guard) {
+        if (block == target)
+            return terminus;
+        if (block->ub == NULL || block->ub->nblock == NULL)
+            return NULL;
+
+        jd_nblock *nb = block->ub->nblock;
+        jd_ins *end = nb->end_ins;
+        if (end == NULL || end->fn == NULL || end->next == NULL ||
+            !end->fn->is_conditional_jump(end))
+            return NULL;
+
+        jd_exp *end_exp = get_exp(m, nb->end_idx);
+        if (end_exp == NULL || !exp_is_if(end_exp))
+            return NULL;
+
+        jd_exp_if *end_if = end_exp->data;
+        if (exp_block(exp_of_offset(m, end_if->offset)) == target)
+            return NULL;
+
+        terminus = block;
+        block = exp_block(end->next->expression);
+    }
+    return NULL;
 }
 
 bool identify_logical_operations(jd_method *m)
@@ -89,6 +143,11 @@ bool identify_logical_operations(jd_method *m)
 
                 if (next == basic_block || next == NULL)
                     continue;
+
+                jd_bblock *terminus = chain_terminus_block(m, next, other);
+                if (terminus != NULL)
+                    next = terminus;
+
                 jd_nblock *nnext = next->ub->nblock;
                 jd_ins *next_end_ins = get_ins(m, nnext->end_idx);
                 jd_exp *next_exp = next_end_ins->expression;

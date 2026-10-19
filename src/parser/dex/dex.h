@@ -1,6 +1,7 @@
 #ifndef GARLIC_DEX_H
 #define GARLIC_DEX_H
 
+#include <pthread.h>
 #include "types.h"
 #include "list.h"
 #include "hashmap.h"
@@ -553,9 +554,23 @@ typedef struct jd_meta_dex {
     jd_bin *bin;
 
     hashmap *class_type_id_map;
+
     hashmap *class_name_map;
+
     hashmap *synthetic_classes_map;
+
+    // for lambda map
     hashmap *lambda_method_map;
+
+    hashmap *rebuilt_lambda_bodies;
+
+    hashmap *rebuilt_lambda_classes;
+
+    hashmap *lambda_in_progress;
+
+    hashmap *lambda_facts;
+
+    pthread_mutex_t lambda_lock;
     mem_pool *pool;
     string source_dir;
 } jd_meta_dex;

@@ -2,13 +2,16 @@
 #include "class_selection.h"
 #include <errno.h>
 
+#include "common/output_error.h"
 #include "jar/jar.h"
 #include "libs/zip/zip.h"
 #include "decompiler/klass.h"
 #include "jvm/jvm_decompile.h"
 #include "decompiler/expression_writter.h"
 #include "common/file_tools.h"
+#include "common/output_path.h"
 #include "libs/threadpool/threadpool.h"
+#include "common/jd_progress.h"
 
 static int jar_progress_len = 0;
 
@@ -16,10 +19,16 @@ void jar_status(jd_jar *jar)
 {
     pthread_mutex_lock(jar->threadpool->lock);
     jar->done++;
-    for (int i = 0; i < jar_progress_len; i++) putchar('\b');
-    jar_progress_len = printf("Progress : %d (%d)", jar->done, jar->added);
-    fflush(stdout);
+    const int done = jar->done;
+    const int total = jar->added;
+    if (!jd_progress_has()) {
+        for (int i = 0; i < jar_progress_len; i++) putchar('\b');
+        jar_progress_len = printf("Progress : %d (%d)", done, total);
+        fflush(stdout);
+    }
     pthread_mutex_unlock(jar->threadpool->lock);
+    if (jd_progress_has())
+        jd_progress_report(done, total, "jar");
 }
 
 void jar_main_thread_status(jd_jar *jar)
@@ -147,6 +156,16 @@ static void jar_inner_and_anoymous_class(jd_jar *jar)
     }
 }
 
+static string jar_dir_of(string path)
+{
+    char *slash = strrchr(path, '/');
+    if (slash == NULL)
+        return str_dup(".");
+    if (slash == path)
+        return str_dup("/");
+    return str_create("%.*s", (int) (slash - path), path);
+}
+
 static void jar_entry_source_file(jclass_file *jc, string dir, string name)
 {
     jcp_info *info = pool_item(jc, jc->this_class);
@@ -156,27 +175,59 @@ static void jar_entry_source_file(jclass_file *jc, string dir, string name)
     if (mapped) {
         FILE *stream = fopen(mapped, "w");
         if (stream == NULL)
-            printf("[error]: path: %s, error: %s\n", mapped, strerror(errno));
+            output_open_failed(mapped);
         free(mapped);
         jc->jfile->source = stream;
         return;
     }
-    string path;
     if (source_safe_paths_enabled()) {
         char *stem = source_storage_name(full);
-        path = str_create("%s/%s.java", dir, stem);
+        string path = str_create("%s/%s.java", dir, stem);
         free(stem);
         char *parent = str_dup(path), *slash = strrchr(parent, '/');
         if (slash) { *slash = 0; mkdir_p(parent); }
-    } else {
-        string full_dir = str_create("%s/%s", dir, dirname(name));
-        mkdir_p(full_dir);
-        path = str_create("%s/%s.java", full_dir, class_name);
+        FILE *stream = fopen(path, "w");
+        if (stream == NULL)
+            output_open_failed(path);
+        jc->jfile->source = stream;
+        return;
     }
+    struct stat sb;
+    string full_dir = str_create("%s/%s", dir, jar_dir_of(name));
+    if (stat(full_dir, &sb) == -1)
+        make_dir(full_dir);
+
+    string path = str_create("%s/%s", full_dir,
+                             output_path_resolve(
+                                     full_dir,
+                                     str_create("%s.java", class_name)));
     FILE *stream = fopen(path, "w");
     if (stream == NULL)
-        printf("[error]: path: %s, error: %s\n", path, strerror(errno));
+        output_open_failed(path);
     jc->jfile->source = stream;
+}
+
+static void jar_reserve_output_paths(jd_jar *jar)
+{
+    int collided = 0;
+    for (int i = 0; i < jar->class_entries->size; ++i) {
+        jd_jar_entry *entry = lget_obj(jar->class_entries, i);
+        if (entry->is_inner || entry->is_anoymous)
+            continue;
+
+        string full_dir = str_create("%s/%s", jar->save,
+                                     jar_dir_of(entry->path));
+        if (output_path_reserve(
+                    full_dir, str_create("%s.java", entry->cname)))
+            collided++;
+    }
+
+    if (collided > 0) {
+        fprintf(stderr, "[garlic] warning: %d classes in %s share a file "
+                        "name with a class differing only in case; the later "
+                        "ones are written with a _N suffix\n",
+                collided, jar->path);
+    }
 }
 
 static jd_jar* jar_obj_create(string path, string save_path, int thread_cnt)
@@ -190,10 +241,10 @@ static jd_jar* jar_obj_create(string path, string save_path, int thread_cnt)
     jar->path = path;
     jar->save = save_path;
     jar->pool = pool;
-    jar->inner_class_map = hashmap_init_in(jar->pool, s2o_cmp, 0);
-    jar->anoymous_class_map = hashmap_init_in(jar->pool, s2o_cmp, 0);
-    jar->name_to_index_map = hashmap_init_in(jar->pool, s2o_cmp, 0);
-    jar->index_to_name_map = hashmap_init_in(jar->pool, i2obj_cmp, 0);
+    jar->inner_class_map = hashmap_init_in(jar->pool, (hcmp_fn) s2o_cmp, 0);
+    jar->anoymous_class_map = hashmap_init_in(jar->pool, (hcmp_fn) s2o_cmp, 0);
+    jar->name_to_index_map = hashmap_init_in(jar->pool, (hcmp_fn) s2o_cmp, 0);
+    jar->index_to_name_map = hashmap_init_in(jar->pool, (hcmp_fn) i2obj_cmp, 0);
 
     mkdir_p(jar->save);
 
@@ -204,6 +255,8 @@ static jd_jar* jar_obj_create(string path, string save_path, int thread_cnt)
     }
 
     jar_inner_and_anoymous_class(jar);
+
+    jar_reserve_output_paths(jar);
 
     return jar;
 }
@@ -224,7 +277,7 @@ void jar_entry_thread_task(jd_jar_entry *entry)
     jsource_file *jf = jar_entry_analyse(entry->jar, entry, NULL);
     if (jf->parent == NULL) {
         writter_for_class(jf, NULL);
-        fclose(jf->source);
+        output_close(jf->source, jf->fname);
     }
     mem_pool_free(tls->pool);
     tls->pool = NULL;
@@ -240,7 +293,7 @@ static void jar_threadpool_start(jd_jar *jar)
             continue;
         if (!class_selection_accept(entry->path))
             continue;
-        threadpool_add(jar->threadpool, &jar_entry_thread_task, entry, 0);
+        threadpool_add(jar->threadpool, (void (*)(void *)) &jar_entry_thread_task, entry, 0);
         jar->added++;
     }
 }
@@ -298,10 +351,8 @@ jsource_file* jar_entry_analyse(jd_jar *jar,
         inner_jclass->jfile->jar = jar;
 
         tire_merge(jf->imports, inner_jfile->imports);
-        jd_node *inner_block = class_body_block(inner_jfile);
-        jd_node *parent_body = class_body_block(jf);
-        inner_block->parent = parent_body;
-        ladd_obj(parent_body->children, inner_block);
+        // the recursive call already put the inner body into its parent:
+        // attaching it here as well emitted every inner class twice
     }
     return jc->jfile;
 }
@@ -327,7 +378,7 @@ static void jar_main_thread(jd_jar *jar)
         jsource_file *jf = jar_entry_analyse(jar, entry, NULL);
         if (jf->parent == NULL) {
             writter_for_class(jf, NULL);
-            fclose(jf->source);
+            output_close(jf->source, jf->fname);
         }
         jar->added ++;
         jar->done ++;
@@ -337,6 +388,8 @@ static void jar_main_thread(jd_jar *jar)
 }
 
 void jar_file_analyse(string path, string save_path, int thread_cnt) {
+    mem_init_pool();
+
     jd_jar *jar = jar_obj_create(path, save_path, thread_cnt);
 
     if (class_selection_indexing()) {
@@ -356,4 +409,6 @@ void jar_file_analyse(string path, string save_path, int thread_cnt) {
     }
 
     jar_obj_release(jar);
+
+    mem_free_pool();
 }

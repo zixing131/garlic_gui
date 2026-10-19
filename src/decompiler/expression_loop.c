@@ -3,8 +3,6 @@
 #include "decompiler/expression.h"
 #include "decompiler/expression_node.h"
 #include "decompiler/dominator_tree.h"
-#include "str_tools.h"
-#include "debug_pointer.h"
 
 static bool loop_already_exist(jd_method *m, jd_loop *loop)
 {
@@ -12,6 +10,18 @@ static bool loop_already_exist(jd_method *m, jd_loop *loop)
         jd_loop *l = lget_obj(m->loops, j);
         if (loop->start_idx == l->start_idx &&
             loop->end_idx == l->end_idx)
+            return true;
+    }
+    return false;
+}
+
+static bool basic_block_has_back_edge(jd_bblock *header)
+{
+    for (int i = 0; i < header->in->size; ++i) {
+        jd_edge *edge = lget_obj(header->in, i);
+        jd_bblock *source = edge->source_block;
+        if (basic_block_is_normal_live(source) &&
+            lcontains_obj(header->dominates, source))
             return true;
     }
     return false;
@@ -270,7 +280,7 @@ static jd_node* parent_of_loop(jd_node *parent, jd_loop *loop)
 
 jd_node* loop_to_node(jd_method *m, jd_node *parent, jd_loop *loop)
 {
-    jd_node *node = make_obj(jd_node);
+    jd_node *node = make_obj_zero(jd_node);
     loop->node = node;
 
     node->start_idx = loop->start_idx;
@@ -476,6 +486,8 @@ static void identify_loops_recursive(jd_method *m,
             continue;
 
         compute_dominates_block(m, block);
+        if (!basic_block_has_back_edge(block))
+            continue;
 
         jd_loop *loop = make_obj(jd_loop);
         loop->header = block;

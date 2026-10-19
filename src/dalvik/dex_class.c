@@ -124,6 +124,8 @@ void dex_class_import(jsource_file *jf)
 
 bool dex_class_is_inner_class(jd_meta_dex *meta, dex_class_def *cf) {
     string cname = dex_str_of_type_id(meta, cf->class_idx);
+    if (cname == NULL)
+        return false;
     string class_name = class_simple_name(cname);
 
     bool result = is_inner_class(class_name);
@@ -138,7 +140,7 @@ bool dex_class_is_inner_class(jd_meta_dex *meta, dex_class_def *cf) {
         return result;
 
     for (int i = 0; i < set_item->size; ++i) {
-        annotation_item *item = &set_item->entries[i];
+        annotation_item *item = set_item->entries[i].annotation_item;
         u4 type_idx = item->encoded_annotation->type_idx;
         string type_name = dex_str_of_type_id(meta, type_idx);
         if (STR_EQL(type_name, "Ldalvik/annotation/InnerClass;")) {
@@ -149,10 +151,28 @@ bool dex_class_is_inner_class(jd_meta_dex *meta, dex_class_def *cf) {
     return result;
 }
 
+bool dex_class_is_lambda_shape(jd_meta_dex *meta, dex_class_def *cf) {
+    if (cf == NULL || cf->interfaces == NULL || cf->interfaces->size != 1)
+        return false;
+
+    string super = dex_str_of_superclass(meta, cf);
+    return super != NULL && STR_EQL(super, "Ljava/lang/Object;");
+}
+
+bool dex_class_is_rebuilt_lambda_class(jd_meta_dex *meta, dex_class_def *cf)
+{
+    if (meta->rebuilt_lambda_classes == NULL || cf == NULL)
+        return false;
+    return hget_u4obj(meta->rebuilt_lambda_classes, cf->class_idx) != NULL;
+}
+
 int dex_class_is_anonymous_class(jd_meta_dex *meta, dex_class_def *cf) {
     string cname = dex_str_of_type_id(meta, cf->class_idx);
+    if (cname == NULL)
+        return false;
     string class_name = class_simple_name(cname);
-    bool result = is_anonymous_class(class_name);
+    bool result = is_anonymous_class(class_name) ||
+                  is_synthetic_lambda_class(class_name);
     if (!result) return result;
 
     dex_annotations_directory_item *annotations = cf->annotations;
@@ -163,7 +183,7 @@ int dex_class_is_anonymous_class(jd_meta_dex *meta, dex_class_def *cf) {
         return result;
 
     for (int i = 0; i < set_item->size; ++i) {
-        annotation_item *item = &set_item->entries[i];
+        annotation_item *item = set_item->entries[i].annotation_item;
         u4 type_idx = item->encoded_annotation->type_idx;
         string type_name = dex_str_of_type_id(meta, type_idx);
         if (STR_EQL(type_name, "Ldalvik/annotation/EnclosingClass;")) {
@@ -184,9 +204,14 @@ static void dex_encoded_field_to_field(jd_dex *dex,
     field->access_flags = efield->access_flags;
     field->meta = efield;
     field->name = dex_field_name(meta, efield);
+    /* A name, not a descriptor - `I` is `int` here, and `LD;` is `D`.
+     * descriptor_to_s leaves a primitive as the bare descriptor letter,
+     * which then reads as a one-letter class name. The jvm side stores a
+     * name too (its tokenizer expands the same way), so both backends
+     * answer the renderers with the same thing. */
     field->signature = dex_field_desc(meta, efield);
-    field->type = descriptor_to_s(field->signature);
-    field->access_flags_fn = dex_filed_access_flag;
+    field->type = descriptor_type_name(field->signature);
+    field->access_flags_fn = (jd_access_flag_fn) dex_filed_access_flag;
     if (instance)
         field->defination = str_create("%s %s",
                                        field->type,
@@ -204,7 +229,7 @@ void dex_fields(jsource_file *jf)
     dex_class_data_item *data = cf->class_data;
     uint32_t size = data->static_fields_size + data->instance_fields_size;
     jf->fields_count = size;
-    jf->fields = make_obj_arr(jd_field, size);
+    jf->fields = make_obj_arr_zero(jd_field, size);
 
     encoded_field *efield;
     jd_field *field;

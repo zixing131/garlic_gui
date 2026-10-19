@@ -175,6 +175,7 @@ void dex_class_annotation(jsource_file *jf)
     dex_class_def *cf = jf->jclass;
     jd_meta_dex *meta = ((jd_dex*)jf->meta)->meta;
     jf->annotations = linit_object();
+    jf->signature = NULL;
     dex_ano_dict_item *dict = cf->annotations;
     if (dict == NULL) {
         return;
@@ -218,6 +219,7 @@ void dex_field_annotation(jd_meta_dex *meta,
     dex_ano_dict_item *dict = cf->annotations;
 
     field->annotations = linit_object();
+    field->signature = NULL;
     if (dict == NULL) {
         return;
     }
@@ -266,6 +268,7 @@ void dex_method_annotation(jd_method *m)
     jd_meta_dex *meta = dex_method_meta(m);
     dex_class_def *cf = m->jfile->jclass;
     m->annotations = linit_object();
+    m->signature = NULL;
     encoded_method *em = m->meta_method;
     dex_ano_dict_item *dict = cf->annotations;
     if (dict == NULL) {
