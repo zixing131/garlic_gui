@@ -68,6 +68,35 @@ include_directories(src/decompiler)
 include_directories(src/decompiler/transformer)
 include_directories(src)
 
+# Local edits live in fork/overlay and shadow the matching upstream path.
+set(GARLIC_OVERLAY_ROOT "${CMAKE_SOURCE_DIR}/fork/overlay")
+set(_garlic_overlay_includes "")
+foreach(inc
+        src/common src/libs/memory src/libs/hashmap src/libs/list
+        src/libs/bitset src/libs/queue src/libs/str src/libs/zip
+        src/libs/threadpool src/libs/cjson src/libs/md4c
+        src/ai src/jar src/dalvik src/decompiler src/decompiler/transformer
+        src)
+    if(EXISTS "${GARLIC_OVERLAY_ROOT}/${inc}")
+        list(APPEND _garlic_overlay_includes "${GARLIC_OVERLAY_ROOT}/${inc}")
+    endif()
+endforeach()
+if(_garlic_overlay_includes)
+    include_directories(BEFORE ${_garlic_overlay_includes})
+endif()
+
+function(garlic_use_overlay out_var)
+    set(picked "")
+    foreach(src ${ARGN})
+        if(EXISTS "${GARLIC_OVERLAY_ROOT}/${src}")
+            list(APPEND picked "${GARLIC_OVERLAY_ROOT}/${src}")
+        else()
+            list(APPEND picked "${src}")
+        endif()
+    endforeach()
+    set(${out_var} "${picked}" PARENT_SCOPE)
+endfunction()
+
 aux_source_directory(src/common COMMON)
 aux_source_directory(src/libs/list LIST)
 aux_source_directory(src/libs/hashmap HASHMAP)
@@ -103,6 +132,32 @@ set(REPORT
 set(HTTP_SERVER
     src/ai/http_server.c
 )
+
+garlic_use_overlay(COMMON ${COMMON})
+garlic_use_overlay(LIST ${LIST})
+garlic_use_overlay(HASHMAP ${HASHMAP})
+garlic_use_overlay(CLASS_PARSER ${CLASS_PARSER})
+garlic_use_overlay(DEX_PARSER ${DEX_PARSER})
+garlic_use_overlay(PE_PARSER ${PE_PARSER})
+garlic_use_overlay(DQUEUE ${DQUEUE})
+garlic_use_overlay(STR ${STR})
+garlic_use_overlay(MEMORY_POOL ${MEMORY_POOL})
+garlic_use_overlay(ZIP ${ZIP})
+garlic_use_overlay(THREADPOOL ${THREADPOOL})
+garlic_use_overlay(BITSET ${BITSET})
+garlic_use_overlay(CJSON ${CJSON})
+garlic_use_overlay(DECOMPILER ${DECOMPILER})
+garlic_use_overlay(TRANSFORMER ${TRANSFORMER})
+garlic_use_overlay(JAR ${JAR})
+garlic_use_overlay(JVM ${JVM})
+garlic_use_overlay(APK ${APK})
+garlic_use_overlay(DEX ${DEX})
+garlic_use_overlay(TRIE ${TRIE})
+garlic_use_overlay(ANALYZER ${ANALYZER})
+garlic_use_overlay(AI ${AI})
+garlic_use_overlay(MD4C ${MD4C})
+garlic_use_overlay(REPORT ${REPORT})
+garlic_use_overlay(HTTP_SERVER ${HTTP_SERVER})
 
 set(JAVA_DEC
         ${COMMON}
@@ -166,9 +221,8 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
         message(FATAL_ERROR "Unsupported macOS architecture: ${CMAKE_SYSTEM_PROCESSOR}")
     endif()
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
-        set(ROSEMARYLIB_FILE "${CMAKE_SOURCE_DIR}/libs/win-arm64/librosemarylib.dll")
-    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+    # Windows on ARM runs the x64 package. There is no separate ARM64 build.
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|aarch64|arm64|ARM64")
         set(ROSEMARYLIB_FILE "${CMAKE_SOURCE_DIR}/libs/win64/librosemarylib.dll")
     else()
         set(ROSEMARYLIB_FILE "${CMAKE_SOURCE_DIR}/libs/win32/librosemarylib.dll")
@@ -207,10 +261,10 @@ if(WIN32)
     configure_file(cmake/windows-utf8.rc.in ${CMAKE_BINARY_DIR}/windows-utf8.rc @ONLY)
 endif()
 
+garlic_use_overlay(GARLIC_ENTRY src/garlic.c src/rosemary/rosemary_embed.c)
 add_executable(garlic
         ${JAVA_DEC}
-        src/garlic.c
-        src/rosemary/rosemary_embed.c
+        ${GARLIC_ENTRY}
 )
 
 if(WIN32)
@@ -237,8 +291,7 @@ if (RELEASE)
     if (DEFINED PLATFORM_NAME)
     add_executable(garlic-${PLATFORM_NAME}
             ${JAVA_DEC}
-            src/garlic.c
-            src/rosemary/rosemary_embed.c
+            ${GARLIC_ENTRY}
     )
 
     if(WIN32)

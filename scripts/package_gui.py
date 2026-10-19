@@ -82,7 +82,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--build', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
-    parser.add_argument('--platform', choices=['macos-arm64', 'macos-x64', 'windows-arm64', 'windows-x64', 'linux-arm64', 'linux-x64'], required=True)
+    parser.add_argument('--platform', choices=['macos-arm64', 'macos-x64', 'windows-x64', 'linux-arm64', 'linux-x64'], required=True)
     parser.add_argument('--qt', type=Path, required=True)
     args = parser.parse_args()
     build, qt, output = args.build.resolve(), args.qt.resolve(), args.output.resolve()

@@ -97,7 +97,6 @@ jobs:
       matrix:
         include:
           - {os: windows-2022, platform: windows-x64, msystem: CLANG64, prefix: mingw-w64-clang-x86_64}
-          - {os: windows-11-arm, platform: windows-arm64, msystem: CLANGARM64, prefix: mingw-w64-clang-aarch64}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 50
     defaults:
@@ -132,7 +131,7 @@ jobs:
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
             -DGARLIC_BUILD_GUI=ON -DGARLIC_GUI_TESTS=ON \
-            -DPLATFORM_NAME="$([[ "$TARGET_PLATFORM" == windows-arm64 ]] && echo win-arm64 || echo win64)"
+            -DPLATFORM_NAME=win64
           cmake --build build --parallel 3
       - name: Integration tests
         run: |
@@ -190,7 +189,7 @@ jobs:
           pattern: garlic-*
           path: release-assets
           merge-multiple: true
-      - name: Publish all six builds together
+      - name: Publish all five builds together
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -198,7 +197,7 @@ jobs:
         run: |
           set -euo pipefail
           cd release-assets
-          test "$(find . -maxdepth 1 -name '*.zip' | wc -l)" -eq 6
+          test "$(find . -maxdepth 1 -name '*.zip' | wc -l)" -eq 5
           sha256sum ./*.zip > SHA256SUMS.txt
           if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" ./*.zip SHA256SUMS.txt --clobber

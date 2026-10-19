@@ -550,20 +550,20 @@ macOS 用同一 Qt SDK 的 `macdeployqt` 打包 app，包含 Qt 运行库和平�
 
 ## GitHub Actions 发布
 
-工作流位于 `.github/workflows/gui-release.yml`，包含六个原生构建：
+工作流位于 `.github/workflows/gui-release.yml`，包含五个原生构建：
 
 | 平台 | 架构 | 构建环境 |
 | --- | --- | --- |
 | macOS | ARM64、x64 | macos-15 / macos-15-intel，Qt 6.8.3 |
-| Windows | ARM64、x64 | windows-11-arm / windows-2022，MSYS2 CLANGARM64 / CLANG64 |
+| Windows | x64 | windows-2022，MSYS2 CLANG64。ARM64 设备运行这份 x64 包 |
 | Linux | ARM64、x64 | ubuntu-24.04-arm / ubuntu-24.04，Qt 6.8.3 |
 
-普通提交、PR 和手动运行只生成 Actions artifacts；推送 `gui-v*` 标签后，六个
-构建及测试均成功才发布同名 GitHub Release，并附上六个 ZIP 和 `SHA256SUMS.txt`。
+普通提交、PR 和手动运行只生成 Actions artifacts；推送 `gui-v*` 标签后，五个
+构建及测试均成功才发布同名 GitHub Release，并附上五个 ZIP 和 `SHA256SUMS.txt`。
 工作流仅在发布任务授予 `contents: write`，不需要另存个人访问令牌。
 
 ```sh
-# 在已验证的提交上发布，推送时会运行六个平台的构建：
+# 在已验证的提交上发布，推送时会运行五个平台的构建：
 git tag gui-v0.5.0
 git push origin main gui-v0.5.0
 ```
@@ -574,13 +574,12 @@ git push origin main gui-v0.5.0
 SDK 的 PATH 下启动验证；Linux 解压后运行 `Garlic` 启动脚本，要求 Ubuntu 24.04
 或兼容 glibc 版本，系统仍需提供图形会话与显卡驱动。
 
-Windows ARM64 没有可嵌入的 rosemary ELF 分析库时禁用该可选功能；Java / DEX
-反编译和 GUI 不依赖该库。Windows / macOS 发布包未包含商业代码签名或公证。
-本地已验证 macOS ARM64；其他平台实际构建结果以 Actions 为准。
+Windows 发布包是 x64，可在 ARM64 设备上运行。Java / DEX 反编译和 GUI 不依赖
+rosemary；该库只用于可选的 ELF 分析，并嵌入 x64 的 `garlic.exe`。Windows / macOS
+发布包未包含商业代码签名或公证。本地已验证 macOS ARM64；其他平台实际构建结果以 Actions 为准。
 
 工作流环境参考 [GitHub 托管 runner 文档](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)、
-[Qt 安装 Action](https://github.com/jurplel/install-qt-action) 和
-[MSYS2 ARM64 文档](https://www.msys2.org/docs/arm64/)。
+[Qt 安装 Action](https://github.com/jurplel/install-qt-action)。
 
 可以额外运行本机大项目响应测试（输入文件不会提交到仓库）：
 
@@ -590,9 +589,9 @@ GARLIC_TEST_REAL_APK=/path/to/app.apk ctest --test-dir build -R interaction --ou
 
 0.4 增加多输入合并、资源预览、引用窗口、标签关闭菜单、HTTP MCP 鉴权与通知测试。
 本地可设置 `GARLIC_TEST_REAL_APK=/path/to/app.apk` 运行真实 Manifest / ARSC / 签名解析、
-合成 Lambda Java 反编译及事件循环响应测试。发布矩阵包含 macOS、Windows、Linux 各自的 arm64 / x64。
-Windows 显式链接 winpthread；Windows ARM64 使用 Temurin 21；Qt 6.8 Linux x64 使用 linux_gcc_64；
-Linux 打包仅对 ELF 文件运行 ldd。`gui-v*` 标签在六个平台都成功后发布 ZIP 和 SHA256SUMS。
+合成 Lambda Java 反编译及事件循环响应测试。发布矩阵包含 macOS 与 Linux 的 arm64 / x64，以及 Windows x64。
+Windows 显式链接 winpthread，使用 Temurin 21；Qt 6.8 Linux x64 使用 linux_gcc_64；
+Linux 打包仅对 ELF 文件运行 ldd。`gui-v*` 标签在五个平台都成功后发布 ZIP 和 SHA256SUMS。
 
 独立 CLASS / DEX / PE 以 `rb` 读取并检查短读，避免 Windows 文本模式的 CRLF / Ctrl-Z 转换破坏输入。
 
