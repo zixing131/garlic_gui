@@ -8,7 +8,6 @@
 #include "metadata.h"
 #include "dex_meta_helper.h"
 #include "decompiler/klass.h"
-#include "class_selection.h"
 #include "dalvik/dex_class.h"
 
 /*
@@ -685,10 +684,6 @@ static void parse_dex_code_item(jd_meta_dex *dex, encoded_method *em)
     code->insns = (u2 *) (dex->bin->buffer + dex->bin->cur_off);
     setup_current_offset(dex, dex->bin->cur_off + sizeof(u2)*code->insns_size);
 
-    /* Browsing only needs the instruction stream, never debug locals or catches. */
-    if (class_selection_indexing())
-        return;
-
     parse_dex_code_try_item(dex, code);
 
     DEBUG_PRINT("[code_item]: %s registers_size: %d "
@@ -822,25 +817,6 @@ static void parse_dex_class_data_items(jd_meta_dex *dex, dex_class_def *cdef)
     }
 }
 
-/* Static field initializers are useful to the deobfuscator (opaque boolean
- * flags and short[] string tables are frequently stored here).  Keep the
- * decoded representation in the class definition so consumers can inspect it
- * without re-reading the DEX buffer. */
-static void parse_dex_static_values(jd_meta_dex *dex, dex_class_def *cdef)
-{
-    if (cdef->static_values_off == 0)
-        return;
-    setup_current_offset(dex, cdef->static_values_off);
-    encoded_array *array = make_obj_in(encoded_array, dex->pool);
-    array->size = read_unsigned_leb128(dex);
-    if (array->size > 65536)
-        return;
-    array->values = make_obj_arr_in(encoded_value, array->size, dex->pool);
-    for (u4 i = 0; i < array->size; ++i)
-        parse_dex_encoded_value(dex, &array->values[i]);
-    cdef->static_values = array;
-}
-
 static void parse_dex_class_defs(jd_meta_dex *dex)
 {
     dex_header *header = dex->header;
@@ -882,11 +858,7 @@ static void parse_dex_class_defs(jd_meta_dex *dex)
         dex_class_def *class_def = &dex->class_defs[i];
         parse_dex_class_interfaces(dex, class_def);
         parse_dex_class_defs_anos(dex, class_def);
-        const char *directory_mode = getenv("GARLIC_DIRECTORY_INDEX");
-        if (!class_selection_indexing() || !directory_mode || strcmp(directory_mode, "names"))
-            parse_dex_class_data_items(dex, class_def);
-        if (!class_selection_indexing())
-            parse_dex_static_values(dex, class_def);
+        parse_dex_class_data_items(dex, class_def);
 
         if (dex_class_is_anonymous_class(dex, class_def))
             class_def->is_anonymous = true;
@@ -900,7 +872,6 @@ static void parse_dex_class_defs(jd_meta_dex *dex)
 static jd_meta_dex* init_dex_content(mem_pool *pool, string path)
 {
     FILE *file = fopen(path, "rb");
-    if (!file) { perror(path); exit(EXIT_FAILURE); }
     fseek(file, 0, SEEK_END);
     size_t file_size = ftell(file);
     fseek(file, 0, SEEK_SET);
@@ -910,11 +881,7 @@ static jd_meta_dex* init_dex_content(mem_pool *pool, string path)
     dex->bin->buffer_size = file_size;
     dex->bin->buffer = x_alloc_in(pool, file_size);
     dex->bin->cur_off = 0;
-    if (fread(dex->bin->buffer, 1, file_size, file) != file_size) {
-        fprintf(stderr, "[garlic] Failed to read binary input: %s\n", path);
-        fclose(file);
-        exit(EXIT_FAILURE);
-    }
+    fread(dex->bin->buffer, 1, file_size, file);
 //    dalvik->buffer_size = file_size;
 //    dalvik->buffer = x_alloc_in(pool, file_size);
 //    fread(dalvik->buffer, 1, file_size, file);

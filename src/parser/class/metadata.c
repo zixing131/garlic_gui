@@ -26,7 +26,6 @@ jsource_file* init_java_source_file(jclass_file *jc)
 void init_java_class_content(jclass_file *jc, const char *path)
 {
     FILE *file = fopen(path, "rb");
-    if (!file) { perror(path); exit(EXIT_FAILURE); }
     fseek(file, 0, SEEK_END);
     size_t file_size = ftell(file);
     fseek(file, 0, SEEK_SET);
@@ -34,11 +33,7 @@ void init_java_class_content(jclass_file *jc, const char *path)
     bin->buffer_size = file_size;
     bin->buffer = x_alloc(file_size);
     bin->cur_off = 0;
-    if (fread(bin->buffer, 1, file_size, file) != file_size) {
-        fprintf(stderr, "[garlic] Failed to read binary input: %s\n", path);
-        fclose(file);
-        exit(EXIT_FAILURE);
-    }
+    fread(bin->buffer, 1, file_size, file);
     jc->bin = bin;
     fclose(file);
 }
@@ -146,8 +141,8 @@ static void setup_string_of_const_pool(jclass_file *jc)
             }
             case CONST_LONG_TAG: {
                 jconst_long *l = info->long_info;
-                int64_t long_value = (int64_t)(((uint64_t)ntohl(l->high_bytes) << 32) |
-                                               (uint32_t)ntohl(l->low_bytes));
+                int64_t long_value = ((int64_t)(ntohl(l->high_bytes)) << 32) |
+                                     (uint32_t)ntohl(l->low_bytes);
                 item->readable = l2a(long_value);
                 i++;
                 break;
@@ -580,33 +575,19 @@ static struct attribute_parser_mapper parser_mapper[] = {
 
 jattr* parse_attributes_section(jclass_file *jc , uint16_t size) {
     // https://docs.oracle.com/javase/specs/jvms/se15/html/jvms-4.html#jvms-4.7
-    const size_t jvm_attribute_type_size = sizeof(parser_mapper) / sizeof(parser_mapper[0]);
+    int jvm_attribute_type_size = 28;
 
     jattr *attributes = make_obj_arr(jattr, size);
     for (int i = 0; i < size; ++i) {
         jattr *attribute = &attributes[i];
-        if (jc->bin->cur_off > jc->bin->buffer_size || jc->bin->buffer_size - jc->bin->cur_off < 6) {
-            fprintf(stderr, "[garlic] Truncated class attribute in %s\n", jc->path);
-            exit(EXIT_FAILURE);
-        }
         jclass_read2(jc, &attribute->name_index);
         jclass_read4(jc, &attribute->length);
         uint32_t attribute_length_in_bytes = be32toh(attribute->length);
-        if (!be16toh(attribute->name_index) || be16toh(attribute->name_index) >= be16toh(jc->constant_pool_count)) {
-            fprintf(stderr, "[garlic] Invalid attribute name index in %s\n", jc->path);
-            exit(EXIT_FAILURE);
-        }
         if (attribute->name_index > 0)
             attribute->name = pool_str(jc, attribute->name_index);
         else
             attribute->name = str_dup(g_str_unknown);
 
-        const size_t start = jc->bin->cur_off;
-        if (start > jc->bin->buffer_size || attribute_length_in_bytes > jc->bin->buffer_size - start || !attribute->name) {
-            fprintf(stderr, "[garlic] Invalid class attribute in %s at %zu\n", jc->path, start);
-            exit(EXIT_FAILURE);
-        }
-        const size_t end = start + attribute_length_in_bytes;
         int parseable = 0;
         for (int j = 0; j < jvm_attribute_type_size; ++j) {
             attribute_parser_mapper fn_map = parser_mapper[j];
@@ -614,11 +595,10 @@ jattr* parse_attributes_section(jclass_file *jc , uint16_t size) {
                 continue;
             fn_map.parser_fn(jc, attribute);
             parseable = 1;
-            break;
         }
 
         if (parseable == 0) {
-            jc->bin->cur_off = end;
+            lseek(jc->fd, attribute_length_in_bytes, SEEK_CUR);
             DEBUG_PRINT("unsupportable!!! : %s\n", jc->path);
         }
     }

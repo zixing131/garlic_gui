@@ -1,59 +1,75 @@
 #include "decompiler/transformer/transformer.h"
 #include "str.h"
 
-/* Allocation dimensions and initializer elements are distinct. In particular,
- * a one-dimensional short[] allocation must never become new short[][]{}. */
+static bool new_array_is_initializer(jd_exp_new_array *new_array)
+{
+    return new_array->list->len > 1;
+}
+
+static string new_array_type_name(jd_exp_new_array *new_array)
+{
+    return new_array->class_name == NULL ? (string) g_str_unknown
+                                         : new_array->class_name;
+}
+
+static string new_array_length_to_s(string type, string count)
+{
+    char *brackets = strchr(type, '[');
+    if (brackets == NULL)
+        return str_create("new %s[%s]", type, count);
+
+    return str_create("new %.*s[%s]%s", (int) (brackets - type), type, count,
+                      brackets);
+}
+
 string exp_new_array_to_s(jd_exp *expression)
 {
-    jd_exp_new_array *a = expression->data;
-    str_list *out = str_list_init();
-    bool initialized = a->values_only || a->fill_existing || a->list->len > 1;
-    const char *suffix = strchr(a->class_name, '[');
-    if (a->fill_existing) str_concat(out, "System.arraycopy(");
-    str_concat(out, "new ");
-    str_concat(out, initialized || !suffix ? a->class_name : strndup(a->class_name, suffix - a->class_name));
-    str_concat(out, "[");
-    if (!initialized && a->list->len) str_concat(out, exp_to_s(&a->list->args[0]));
-    str_concat(out, "]");
-    if (!initialized && suffix) str_concat(out, (char *)suffix);
-    if (initialized) {
-        str_concat(out, "{");
-        int first = a->values_only ? 0 : 1;
-        for (int i = first; i < a->list->len; ++i) {
-            if (i > first) str_concat(out, ", ");
-            str_concat(out, exp_to_s(&a->list->args[i]));
-        }
-        str_concat(out, "}");
+    jd_exp_new_array *new_array = expression->data;
+
+    if (!new_array_is_initializer(new_array)) {
+        string count = new_array->list->len == 0
+                       ? str_dup("0")
+                       : exp_to_s(&new_array->list->args[0]);
+        return new_array_length_to_s(new_array_type_name(new_array), count);
     }
-    if (a->fill_existing) {
-        str_concat(out, ", 0, "); str_concat(out, exp_to_s(&a->list->args[0]));
-        char count[32]; snprintf(count, sizeof(count), ", 0, %d)", a->list->len - 1);
-        str_concat(out, strdup(count));
+
+    str_list *list = str_list_init();
+    strs_concat(list, 3, "new ", new_array_type_name(new_array), "[]{");
+    for (int i = 1; i < new_array->list->len; ++i) {
+        str_concat(list, exp_to_s(&new_array->list->args[i]));
+        if (i != new_array->list->len - 1)
+            str_concat(list, ", ");
     }
-    return str_join(out);
+    str_concat(list, "}");
+    return str_join(list);
 }
 
 void exp_new_array_to_stream(FILE *stream, jd_node *node, jd_exp *expression)
 {
-    jd_exp_new_array *a = expression->data;
-    bool initialized = a->values_only || a->fill_existing || a->list->len > 1;
-    const char *suffix = strchr(a->class_name, '[');
-    if (a->fill_existing) fprintf(stream, "System.arraycopy(");
-    if (!initialized && suffix) fprintf(stream, "new %.*s[", (int)(suffix - a->class_name), a->class_name);
-    else fprintf(stream, "new %s[", a->class_name);
-    if (!initialized && a->list->len) expression_to_stream(stream, node, &a->list->args[0]);
-    fprintf(stream, "]%s", !initialized && suffix ? suffix : "");
-    if (initialized) {
-        fprintf(stream, "{");
-        int first = a->values_only ? 0 : 1;
-        for (int i = first; i < a->list->len; ++i) {
-            if (i > first) fprintf(stream, ", ");
-            expression_to_stream(stream, node, &a->list->args[i]);
-        }
-        fprintf(stream, "}");
+    jd_exp_new_array *new_array = expression->data;
+
+    if (!new_array_is_initializer(new_array)) {
+        string type = new_array_type_name(new_array);
+        char *brackets = strchr(type, '[');
+        if (brackets == NULL)
+            fprintf(stream, "new %s[", type);
+        else
+            fprintf(stream, "new %.*s[", (int) (brackets - type), type);
+
+        if (new_array->list->len == 0)
+            fprintf(stream, "0");
+        else
+            expression_to_stream(stream, node, &new_array->list->args[0]);
+
+        fprintf(stream, "]%s", brackets == NULL ? "" : brackets);
+        return;
     }
-    if (a->fill_existing) {
-        fprintf(stream, ", 0, "); expression_to_stream(stream, node, &a->list->args[0]);
-        fprintf(stream, ", 0, %d)", a->list->len - 1);
+
+    fprintf(stream, "new %s[]{", new_array_type_name(new_array));
+    for (int i = 1; i < new_array->list->len; ++i) {
+        expression_to_stream(stream, node, &new_array->list->args[i]);
+        if (i != new_array->list->len - 1)
+            fprintf(stream, ", ");
     }
+    fprintf(stream, "}");
 }

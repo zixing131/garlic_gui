@@ -209,8 +209,7 @@ static void dex_encoded_field_to_field(jd_dex *dex,
      * which then reads as a one-letter class name. The jvm side stores a
      * name too (its tokenizer expands the same way), so both backends
      * answer the renderers with the same thing. */
-    field->signature = dex_field_desc(meta, efield);
-    field->type = descriptor_type_name(field->signature);
+    field->type = descriptor_type_name(dex_field_desc(meta, efield));
     field->access_flags_fn = (jd_access_flag_fn) dex_filed_access_flag;
     if (instance)
         field->defination = str_create("%s %s",

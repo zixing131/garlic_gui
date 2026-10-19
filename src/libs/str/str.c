@@ -44,26 +44,20 @@ void str_concat(str_list *list, string buf)
 string str_join_with(str_list *list, string delimiter)
 {
     size_t len;
-    if (delimiter != NULL && list->count > 0)
+    if (delimiter != NULL)
         len = list->len + strlen(delimiter)*(list->count - 1);
     else
         len = list->len;
     string result = x_alloc(len+1);
-    char *cursor = result;
-    const size_t separator = delimiter ? strlen(delimiter) : 0;
     str_entry *entry = list->first;
 
     while(entry != NULL) {
-        const size_t bytes = strlen(entry->buf);
-        memcpy(cursor, entry->buf, bytes);
-        cursor += bytes;
-        if (entry->next != NULL && separator) {
-            memcpy(cursor, delimiter, separator);
-            cursor += separator;
-        }
+        strcat(result, entry->buf);
+        if (entry->next != NULL && delimiter != NULL)
+            strcat(result, delimiter);
         entry = entry->next;
     }
-    *cursor = '\0';
+    result[len] = '\0';
     return result;
 }
 

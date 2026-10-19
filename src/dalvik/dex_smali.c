@@ -877,7 +877,6 @@ static void smali_method_defination(jd_meta_dex *dex,
     // <init> and <clinit> are marked as constructors, which is how smali
     // tells them apart from a method that merely happens to be called that -
     // and how it knows to set the constructor bit back on the dex.
-    // Native and abstract methods keep code == NULL and receive no .registers.
     if (strcmp(method_name, "<init>") == 0 ||
         strcmp(method_name, "<clinit>") == 0)
         fprintf(_smali_stream(stream), " constructor");

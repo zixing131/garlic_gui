@@ -1,4 +1,3 @@
-#include "source_map.h"
 #include "common/str_tools.h"
 #include "decompiler/klass.h"
 #include "decompiler/expression.h"
@@ -11,10 +10,8 @@
 #include "ssa.h"
 #include "control_flow.h"
 
-static __thread FILE *class_output;
 static inline FILE* file_output(jsource_file *jf)
 {
-    if (class_output) return class_output;
     return jf->source == NULL ? DEFAULT_WRITE_OUT : jf->source;
 }
 
@@ -124,7 +121,6 @@ static void write_expression(jsource_file *jf,
                              bool terminated)
 {
     FILE *stream = file_output(jf);
-    long map_start = getenv("GARLIC_SOURCE_MAP_DIR") ? ftell(stream) : -1;
     if (DEBUG_INS_AND_NODE_INFO) {
         if (DEBUG_WRITE_COLOR) {
             fprintf(stream, "\033[0;31m");
@@ -140,7 +136,6 @@ static void write_expression(jsource_file *jf,
     else {
         expression_to_stream(stream, node, exp);
     }
-    source_map_location(stream, map_start, ins);
     if (terminated)
         fprintf(stream, ";\n");
 }
@@ -500,7 +495,16 @@ static void write_class_annotation(jsource_file *jf)
     FILE *stream = file_output(jf);
     for (int i = 0; i < jf->annotations->size; ++i) {
         jd_annotation *ano = lget_obj(jf->annotations, i);
-        fprintf(stream, "%s\n", ano->str);
+        for (int j = 0; j < strlen(ano->str); ++j) {
+            unsigned char c = ano->str[j];
+            if (iscntrl(c)) {
+                fprintf(stream, "\\%02X", c);
+            }
+            else {
+                fprintf(stream, "%c", c);
+            }
+        }
+        fprintf(stream, "\n");
     }
 }
 
@@ -546,9 +550,7 @@ static void write_field(jsource_file *jf, jd_node *node)
             string annotation = ano->str;
             fprintf(stream, "%s%s\n", ident, annotation);
         }
-        long field_start=ftell(stream);
         fprintf(stream, "%s%s;\n", ident, field->defination);
-        source_map_definition(stream,field_start,jf->fname,field->name,field->signature,field->name,0);
         wrote_field = true;
     }
     if (jf->enum_constants == NULL || wrote_field)
@@ -587,9 +589,7 @@ static void write_class(FILE *stream, jd_node *n)
     jsource_file *_source_file = n->data;
     fprintf(stream, "%s// class: %s\n", ident, _source_file->fname);
     write_class_annotation(_source_file);
-    long class_start=ftell(stream);
     fprintf(stream, "%s%s {\n", ident, _source_file->defination);
-    source_map_definition(stream,class_start,_source_file->fname,NULL,NULL,_source_file->sname,0);
     writter_for_class(_source_file, n);
     fprintf(stream, "%s}\n", ident);
 }
@@ -599,9 +599,7 @@ static void write_anonymous_class(FILE *stream, jsource_file *jf, jd_node *n)
     string ident = get_node_ident(n);
     jsource_file *_source_file = n->data;
     write_class_annotation(_source_file);
-    long class_start=ftell(stream);
     fprintf(stream, "%s%s {\n", ident, _source_file->defination);
-    source_map_definition(stream,class_start,_source_file->fname,NULL,NULL,_source_file->sname,0);
     writter_for_anonymous_class(_source_file, n);
     fprintf(stream, "%s}\n", ident);
 }
@@ -614,17 +612,14 @@ static void write_method(FILE *stream, jsource_file *jf, jd_node *node)
         return;
 
     write_method_annotation(jf, node);
-    long method_start=ftell(stream);
     if (method_is_empty(m)) {
         fprintf(stream, "%s%s;\n\n", ident,
                 create_method_defination(m));
-        source_map_method(stream,method_start,jf,m);
         return;
     }
     else
         fprintf(stream, "%s%s {\n", ident,
                 create_method_defination(m));
-    source_map_method(stream,method_start,jf,m);
     writter_for_class(jf, node);
     fprintf(stream, "%s}\n\n", ident);
 }
@@ -762,7 +757,7 @@ static void write_case(FILE *stream, jsource_file *jf, jd_node *n)
         fprintf(stream, "%sdefault: {", ident);
     else {
         fprintf(stream, "%s%s ", ident, node_name(n));
-        fprintf(stream, "%s", const_integer_to_s(_case->key, false));
+        fprintf(stream, "%d", _case->key);
         fprintf(stream, ": {");
     }
     write_node_debug_info(jf, n);
@@ -792,35 +787,8 @@ static void write_default(FILE *stream, jsource_file *jf, jd_node *n)
     fprintf(stream, "%s}\n", ident);
 }
 
-#ifdef _WIN32
-static __thread FILE *class_scratch;
-#endif
 void writter_for_class(jsource_file *jf, jd_node *node)
 {
-    int root=node==NULL;
-    FILE *destination = NULL, *memory = NULL;
-    char *buffer = NULL;
-    size_t length = 0;
-#ifndef _WIN32
-    /* On a file stream ftell may issue lseek for every mapped expression.
-     * Buffer one class so offsets stay exact without millions of syscalls. */
-    if (root && !class_output) {
-        destination = file_output(jf);
-        memory = open_memstream(&buffer, &length);
-        if (memory) class_output = memory;
-    }
-#endif
-#ifdef _WIN32
-    if (root && source_java_packed()) {
-        if (!class_scratch) class_scratch = tmpfile();
-        memory = class_scratch;
-        if (memory) { rewind(memory); class_output = memory; }
-    }
-#endif
-    if (root && source_java_packed() && !memory) {
-        fprintf(stderr, "Cannot buffer generated Java\n"); exit(EXIT_FAILURE);
-    }
-    if (root) source_map_begin();
     if (node == NULL)
         node = lget_obj_first(jf->blocks);
     FILE *stream = file_output(jf);
@@ -883,28 +851,6 @@ void writter_for_class(jsource_file *jf, jd_node *node)
                 write_default(stream, jf, child);
                 break;
         }
-    }
-    if (root) {
-        fflush(stream);
-        if (memory) {
-#ifdef _WIN32
-            length = (size_t)ftell(memory);
-            buffer = malloc(length ? length : 1);
-            rewind(memory);
-            if (!buffer || fread(buffer, 1, length, memory) != length) {
-                fprintf(stderr, "Cannot read generated Java buffer\n"); exit(EXIT_FAILURE);
-            }
-#else
-            fclose(memory);
-#endif
-            class_output = NULL;
-            if (!source_java_pack(jf, buffer, length) && fwrite(buffer, 1, length, destination) != length) {
-                fprintf(stderr, "Failed to write generated Java\n"); exit(EXIT_FAILURE);
-            }
-            free(buffer);
-            if (destination) fflush(destination);
-        }
-        source_map_end(jf);
     }
 }
 

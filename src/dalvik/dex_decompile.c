@@ -1,6 +1,3 @@
-#include "common/source_map.h"
-#include "browse_index.h"
-#include "class_selection.h"
 #include <errno.h>
 #include "common/output_error.h"
 #include "dalvik/dex_decompile.h"
@@ -17,7 +14,6 @@
 #include "decompiler/method.h"
 #include "decompiler/expression_enum.h"
 #include "decompiler/expression_synchronized.h"
-#include "decompiler/exception.h"
 #include "decompiler/expression_writter.h"
 #include "common/output_path.h"
 #include "parser/dex/metadata.h"
@@ -206,33 +202,9 @@ void dex_reserve_output_paths(jd_meta_dex *meta, bool decompile)
 static void dex_class_source_save_dir(jd_dex *dex, jsource_file *jf)
 {
     jd_meta_dex *meta = dex->meta;
-    if (source_java_packed()) return;
-    if (meta->source_dir == NULL || ((jf->is_anonymous || jf->is_inner) &&
-        (!class_selection_explicit() || jf->parent != NULL)))
+    if (meta->source_dir == NULL || jf->is_anonymous || jf->is_inner)
         return;
-    char *mapped = source_layout_mapped_path(meta->source_dir, jf->fname, ".java");
-    if (mapped) {
-        jf->source = fopen(mapped, "wb");
-        if (jf->source == NULL)
-            output_open_failed(mapped);
-        free(mapped);
-        return;
-    }
-    if (source_safe_paths_enabled()) {
-        char *stem = source_storage_name(jf->fname);
-        string path = str_create("%s/%s.java", meta->source_dir, stem);
-        free(stem);
-        char *parent = str_dup(path), *slash = strrchr(parent, '/');
-        if (slash) { *slash = 0; mkdir_p(parent); }
-        FILE *safe = fopen(path, "wb");
-        if (safe == NULL) {
-            output_open_failed(path);
-            return;
-        }
-        jf->source = safe;
-        return;
-    }
-    string full_dir = str_create("%s/%s", meta->source_dir, jf->pname ? jf->pname : "");
+    string full_dir = str_create("%s/%s", meta->source_dir, jf->pname);
     mkdir_p(full_dir);
 
     string path = str_create("%s/%s", full_dir,
@@ -257,30 +229,12 @@ FILE* dex_class_smali_save_dir(jd_dex *dex, dex_class_def *cf)
     if (pname == NULL)
         pname = (string) g_str_default;
 
-    char *mapped = source_layout_mapped_path(meta->source_dir, desc, ".smali");
-    if (mapped) {
-        FILE *stream = fopen(mapped, "wb");
-        if (stream == NULL)
-            output_open_failed(mapped);
-        free(mapped);
-        return stream;
-    }
-
-    string full_dir = str_create("%s/%s", meta->source_dir, pname ? pname : "");
+    string full_dir = str_create("%s/%s", meta->source_dir, pname);
     mkdir_p(full_dir);
 
-    string path;
-    if (source_safe_paths_enabled()) {
-        char *stem = source_storage_name(desc);
-        path = str_create("%s/%s.smali", meta->source_dir, stem);
-        free(stem);
-        char *parent = str_dup(path), *slash = strrchr(parent, '/');
-        if (slash) { *slash = 0; mkdir_p(parent); }
-    } else {
-        path = str_create("%s/%s", full_dir,
-                          output_path_resolve(
-                                  full_dir, str_create("%s.smali", sname)));
-    }
+    string path = str_create("%s/%s", full_dir,
+                             output_path_resolve(
+                                     full_dir, str_create("%s.smali", sname)));
     FILE *stream = fopen(path, "wb");
     if (stream == NULL) {
         output_open_failed(path);
@@ -309,6 +263,8 @@ jsource_file* dex_class_inside(jd_dex *dex,
     jf->fname = class_full_name(desc);
     jf->sname = class_simple_name_without_primitive(jf->fname);
     jf->pname = class_package_name(jf);
+    if (jf->pname == NULL)
+        jf->pname = (string) g_str_default;
     jf->imports = trie_create_node("");
     jf->meta = dex;
     jf->jclass = cf;
@@ -536,13 +492,9 @@ void dex_decompile_threadpool_start(jd_dex *dex)
     jd_meta_dex *meta = dex->meta;
     for (int i = 0; i < meta->header->class_defs_size; ++i) {
         dex_class_def *cf = &meta->class_defs[i];
-        if (dex_class_is_rebuilt_lambda_class(dex->meta, cf))
-            continue;
-        if (!class_selection_explicit() && (dex_class_is_inner_class(dex->meta, cf) ||
-            dex_class_is_anonymous_class(dex->meta, cf)))
-            continue;
-
-        if (!class_selection_accept(dex_str_of_type_id(meta, cf->class_idx)))
+        if (dex_class_is_inner_class(dex->meta, cf) ||
+            dex_class_is_anonymous_class(dex->meta, cf) ||
+            dex_class_is_rebuilt_lambda_class(dex->meta, cf))
             continue;
 
         if (dex->threadpool) {
@@ -571,11 +523,8 @@ void dex_decompile_main_thread_start(jd_dex *dex)
         dex_class_def *cf = &meta->class_defs[i];
         /* Skipped classes still close the pool they opened; only the
          * counted ones advance the progress. */
-        if (!dex_class_is_rebuilt_lambda_class(dex->meta, cf) &&
-            (class_selection_explicit() ||
-             (!dex_class_is_inner_class(dex->meta, cf) &&
-              !dex_class_is_anonymous_class(dex->meta, cf))) &&
-            class_selection_accept(dex_str_of_type_id(meta, cf->class_idx))) {
+        if (!dex_class_is_inner_class(dex->meta, cf) &&
+            !dex_class_is_anonymous_class(dex->meta, cf)) {
             jsource_file *jf = dex_class_inside(dex, cf, NULL);
             if (jf->parent == NULL) {
                 writter_for_class(jf, NULL);
@@ -593,8 +542,6 @@ void dex_smali_threadpool_start(jd_dex *dex)
     jd_meta_dex *meta = dex->meta;
     for (int i = 0; i < meta->header->class_defs_size; ++i) {
         dex_class_def *cf = &meta->class_defs[i];
-        if (!class_selection_accept(dex_str_of_type_id(meta, cf->class_idx)))
-            continue;
         jd_dex_task *t = make_obj(jd_dex_task);
         t->dex = dex;
         t->cf = cf;
@@ -608,16 +555,13 @@ void dex_smali_main_thread_start(jd_dex *dex)
 {
     jd_meta_dex *meta = dex->meta;
     for (int i = 0; i < meta->header->class_defs_size; ++i) {
-        dex_class_def *cf = &meta->class_defs[i];
-        if (!class_selection_accept(dex_str_of_type_id(meta, cf->class_idx)))
-            continue;
-
         mem_pool *outer = mem_scratch_enter();
+        dex_class_def *cf = &meta->class_defs[i];
+
         FILE *stream = dex_class_smali_save_dir(dex, cf);
-        if (stream != NULL) {
-            dex_class_def_to_smali(dex->meta, cf, stream);
-            output_close(stream, dex_str_of_type_id(dex->meta, cf->class_idx));
-        }
+
+        dex_class_def_to_smali(dex->meta, cf, stream);
+
         mem_scratch_leave(outer);
         dex->done ++;
         dex_main_thread_status(dex);
@@ -645,10 +589,7 @@ void dex_file_analyse(string path, string save_dir, int thread_num, jd_dex_task_
     dex_reserve_output_paths(meta, type == JD_DEX_TASK_DECOMPILE);
     jd_dex *dex = dex_init(meta, thread_num);
 
-    if (class_selection_indexing()) {
-        for (u4 i=0;i<meta->header->class_defs_size;i++) browse_index_dex(meta,&meta->class_defs[i]);
-    }
-    else if (type == JD_DEX_TASK_DECOMPILE) {
+    if (type == JD_DEX_TASK_DECOMPILE) {
         if (thread_num > 1) {
             dex_decompile_threadpool_start(dex);
         } else {
@@ -663,12 +604,12 @@ void dex_file_analyse(string path, string save_dir, int thread_num, jd_dex_task_
         }
     }
 
+    dex_release(dex);
+
     dex_lambda_report(meta);
+
     expand_stat_report();
     sync_stat_report();
-    dex_release(dex);
-    if (thread_num <= 1)
-        mem_free_pool();
 }
 
 void dex_file_dump(string path)
@@ -716,10 +657,8 @@ void dex_analyse_in_apk_task(jd_meta_dex *meta)
 
     for (int i = 0; i < meta->header->class_defs_size; ++i) {
         dex_class_def *cf = &meta->class_defs[i];
-        if (dex_class_is_rebuilt_lambda_class(dex->meta, cf))
-            continue;
-        if (!class_selection_explicit() && (dex_class_is_inner_class(dex->meta, cf) ||
-            dex_class_is_anonymous_class(dex->meta, cf)))
+        if (dex_class_is_inner_class(dex->meta, cf) ||
+            dex_class_is_anonymous_class(dex->meta, cf))
             continue;
 
         jsource_file *jf = dex_class_inside(dex, cf, NULL);

@@ -11,3 +11,4 @@ cmake-build-release/
 /*.java
 .DS_Store
 *.pyc
+/dist

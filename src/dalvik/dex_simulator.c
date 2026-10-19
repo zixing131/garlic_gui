@@ -133,23 +133,6 @@ static bool block_can_execute(jd_method *m, jd_dex_ins *ins, jd_dex_ins *start)
     return true;
 }
 
-static bool merge_missing_local_variables(jd_dex_ins *ins,
-                                                     jd_dex_ins *suc_ins)
-{
-    bool changed = false;
-    for (int j = 0; j < ins->stack_out->local_vars_count; ++j) {
-        jd_val *local_var = ins->stack_out->local_vars[j];
-        if (local_var == NULL)
-            continue;
-        jd_val *suc_var = suc_ins->stack_in->local_vars[j];
-        if (suc_var == NULL) {
-            suc_ins->stack_in->local_vars[j] = local_var;
-            changed = true;
-        }
-    }
-    return changed;
-}
-
 static void merge_local_variables_for_exception_block(jd_dex_ins *ins,
                                                      jd_dex_ins *suc_ins)
 {
@@ -158,8 +141,9 @@ static void merge_local_variables_for_exception_block(jd_dex_ins *ins,
         if (local_var == NULL)
             continue;
         jd_val *suc_var = suc_ins->stack_in->local_vars[j];
-        if (suc_var == NULL)
+        if (suc_var == NULL) {
             suc_ins->stack_in->local_vars[j] = local_var;
+        }
     }
 }
 
@@ -271,11 +255,6 @@ static void dex_fill_visit_queue(jd_method *m, jd_dex_ins *ins)
             suc_ins->stack_in = stack_clone(ins->stack_out);
             queue_push_object(m->ins_visit_queue, suc_ins);
         }
-        else if (!is_handler_start && merge_missing_local_variables(ins, suc_ins)) {
-            // Backedges can define registers missing during the first traversal.
-            // Only NULL slots change, so this reaches a finite fixed point.
-            queue_push_object(m->ins_visit_queue, suc_ins);
-        }
     }
 }
 
@@ -283,15 +262,7 @@ static void dex_ins_cb(jd_method *m, jd_dex_ins *ins)
 {
     dex_fill_watch_successors(m, ins);
 
-    if (ins->stack_out == NULL) {
-        dex_run_instruction_action(ins);
-    } else {
-        // Preserve the original definition objects and SSA identities on revisits.
-        // Only newly discovered pass-through registers need propagation.
-        for (int slot = 0; slot < ins->stack_in->local_vars_count; ++slot)
-            if (!bitset_get(ins->defs, slot) && ins->stack_out->local_vars[slot] == NULL)
-                ins->stack_out->local_vars[slot] = ins->stack_in->local_vars[slot];
-    }
+    dex_run_instruction_action(ins);
 
     dex_fill_visit_queue(m, ins);
 }

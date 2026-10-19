@@ -1,0 +1,495 @@
+#include "browse_index.h"
+#include "common/output_error.h"
+#include "parser/class/metadata.h"
+#include "jvm/jvm_decompile.h"
+#include "common/str_tools.h"
+#include "common/file_tools.h"
+#include "jar/jar.h"
+#include "apk/apk.h"
+#include "libs/zip/zip.h"
+#include "dalvik/dex_decompile.h"
+#include "dex_smali.h"
+#include "analyzer/jd_analyzer.h"
+#include "ai/jd_mcp.h"
+#include <unistd.h>
+#include "class_selection.h"
+/* Embedded librosemarylib — extracted to temp dir and dlopen'd at runtime */
+#include "rosemary/rosemary_embed.h"
+/* License verification */
+#include "ai/http_server.h"
+
+typedef enum {
+    JD_FILE_TYPE_UNKNOWN = 0,
+    JD_FILE_TYPE_JAVA_CLASS,
+    JD_FILE_TYPE_JAR,
+    JD_FILE_TYPE_DEX,
+    JD_FILE_TYPE_APK,
+    JD_FILE_TYPE_ARCHIVE,
+    JD_FILE_TYPE_ELF,
+} jd_file_type_t;
+
+typedef enum {
+    JD_FILE_OPTION_NONE = 0,
+    JD_FILE_OPTION_DUMP, // like javap or dexdump
+    JD_FILE_OPTION_SEARCH, // search for a string in the file
+    JD_FILE_OPTION_SMALI, // dex/apk to smali
+    JD_FILE_OPTION_CALL_GRAPH, // generate call graph
+    JD_FILE_OPTION_ELF_ANALYSIS, // analyze ELF binary
+} jd_file_option_t;
+
+typedef struct jd_opt {
+    char *path;
+    char *index_path;
+    char *class_name;
+    char *out;
+    jd_file_type_t ft;
+    int option;
+    int thread_num;
+} jd_opt;
+
+static jd_file_type_t magic_of_file(char *filepath) {
+    FILE *fp = fopen(filepath, "rb");
+    if (fp == NULL) {
+        fprintf(stderr, "[garlic] Open file: %s failed\n", filepath);
+        return JD_FILE_TYPE_UNKNOWN;
+    }
+    uint32_t magic = 0;
+    size_t bytes_read = fread(&magic, 1, sizeof(magic), fp);
+    if (bytes_read != sizeof(magic)) {
+        fprintf(stderr, "[garlic] File %s read error.\n", filepath);
+        return JD_FILE_TYPE_UNKNOWN;
+    }
+    fclose(fp);
+
+    uint32_t be_magic = ((magic & 0xFF) << 24) |
+                        (((magic >> 8) & 0xFF) << 16) |
+                        (((magic >> 16) & 0xFF) << 8) |
+                        ((magic >> 24) & 0xFF);
+
+    switch (be_magic) {
+        case JAVA_CLASS_MAGIC:
+            return JD_FILE_TYPE_JAVA_CLASS;
+        case JAR_FILE_MAGIC: {
+            if (str_is_apk_path(filepath)) {
+                return JD_FILE_TYPE_APK;
+            } else if (str_is_zip_path(filepath)) {
+                return JD_FILE_TYPE_ARCHIVE;
+            } else {
+                return JD_FILE_TYPE_JAR;
+            }
+        }
+        case DEX_FILE_MAGIC:
+            return JD_FILE_TYPE_DEX;
+        case ELF_FILE_MAGIC:
+            return JD_FILE_TYPE_ELF;
+        default:
+            fprintf(stderr, "[garlic] file: %s is not a "
+                            "valid Java class/JAR/DEX file\n", filepath);
+            return JD_FILE_TYPE_UNKNOWN;
+    }
+}
+
+static inline bool is_jvm_class(jd_opt *opt)
+{
+    return opt->ft == JD_FILE_TYPE_JAVA_CLASS;
+}
+
+static inline bool is_jar_file(jd_opt *opt)
+{
+    return opt->ft == JD_FILE_TYPE_JAR;
+}
+
+static inline bool is_dex_file(jd_opt *opt)
+{
+    return opt->ft == JD_FILE_TYPE_DEX;
+}
+
+static inline bool is_apk_file(jd_opt *opt)
+{
+    return opt->ft == JD_FILE_TYPE_APK;
+}
+
+static inline bool is_archive_file(jd_opt *opt)
+{
+    return opt->ft == JD_FILE_TYPE_ARCHIVE;
+}
+
+static void prepare_opt_output(jd_opt *opt) {
+    char *out = opt->out;
+    if (out == NULL) {
+        char *copy_path = strdup(opt->path);
+        char *jar_name = strdup(basename(opt->path));
+        char *jar_dir = dirname(copy_path);
+        str_replace_char(jar_name, '.', '_');
+
+        out = malloc(strlen(jar_dir) + strlen(jar_name) + 2);
+        sprintf(out, "%s/%s", jar_dir, jar_name);
+        free(jar_name);
+        free(copy_path);
+        opt->out = out;
+    }
+    mkdir_p(out);
+}
+
+static void prepare_opt_threads(jd_opt *opt) {
+    if (opt->thread_num == 0) {
+        opt->thread_num = 4;
+    }
+    else if (opt->thread_num < 2) {
+        opt->thread_num = 1;
+    }
+    else if (opt->thread_num > 16) {
+        opt->thread_num = 16; // Limit to a maximum of 16 threads
+    }
+}
+
+static void opt_usage(const char *progname) {
+    fprintf(stderr, "Usage: %s file [-p] [-o outpath] [-t num] [-g] [-s]\n", progname);
+    fprintf(stderr, "    -I <file>: write top-level class index as JSONL (no decompilation)\n");
+    fprintf(stderr, "    -c <name>: decompile one class, e.g. com/example/Main\n");
+    fprintf(stderr, "    -p: like javap or dexdump, print class info\n");
+    fprintf(stderr, "    -o: output path for jar/dex/war files\n");
+    fprintf(stderr, "    -t: number of threads to use (default is 4)\n");
+    fprintf(stderr, "    -g: generate call graph for dex/apk\n");
+    fprintf(stderr, "    -s: apk/dex to smali\n");
+    fprintf(stderr, "    -n: analyze native libs\n");
+    fprintf(stderr, "    -m: start MCP server (stdio protocol)\n");
+    fprintf(stderr, "    --serve [dir] [port]: start HTTP server (default: . 8080)\n");
+    fprintf(stderr, "    -l <email> <key>: install a purchased license\n");
+}
+
+static jd_opt* parse_opt(int argc, char **argv) {
+    int oc;
+    optind = 2;
+    opterr = 0; // Disable getopt error messages
+
+    char *path = argv[1];
+    if (path == NULL || ((STR_EQL(path, "-h") || STR_EQL(path, "--help")))) {
+        opt_usage(argv[0]);
+        exit(EXIT_SUCCESS);
+    }
+    jd_file_type_t ft = magic_of_file(path);
+    if (ft == JD_FILE_TYPE_UNKNOWN)
+        exit(EXIT_FAILURE);
+
+    jd_opt *opt = malloc(sizeof(jd_opt));
+    memset(opt, 0, sizeof(jd_opt));
+    opt->path = path;
+    opt->ft = ft;
+
+    while ((oc = getopt(argc, argv, "spo:t:ghmnI:c:")) != -1) {
+        switch (oc) {
+            case 'I': opt->index_path = optarg; break;
+            case 'c': opt->class_name = optarg; break;
+            case 'p': { // like javap
+                opt->option = JD_FILE_OPTION_DUMP;
+                break;
+            }
+            case 'o': {
+                opt->out = optarg;
+                opt->out = malloc(strlen(optarg) + 1);
+                strcpy(opt->out, optarg);
+                opt->out[strlen(opt->out)] = '\0';
+                break;
+            }
+            case 's': {
+                opt->option = JD_FILE_OPTION_SMALI;
+                break;
+            }
+            case 'g': {
+                opt->option = JD_FILE_OPTION_CALL_GRAPH;
+                break;
+            }
+            case 'n': {
+                opt->option = JD_FILE_OPTION_ELF_ANALYSIS;
+                break;
+            }
+            case 'm': {
+                /* handled in main */
+                break;
+            }
+            case 't': {
+                opt->thread_num = atoi(optarg);
+                break;
+            }
+            case '?': {
+                if (optopt == 'o') {
+                    fprintf(stderr, "[garlic] Option -%c requires a output path.\n", optopt);
+                    fprintf(stderr, "    example: %s %s -o [output path]\n", argv[0], path);
+                    fprintf(stderr, "    if there is no -o option, "
+                                    "the default output directory for "
+                                    "jar/dex/war is the same "
+                                    "level directory as the file\n"
+                                    "    class's will be output to stdout\n");
+                }
+                else if (optopt == 't' && !is_jvm_class(opt)) {
+                    fprintf(stderr, "[garlic] Option -%c requires a number of threads count.\n", optopt);
+                    fprintf(stderr, "    example: %s %s -t [thread count]\n", argv[0], path);
+                    fprintf(stderr, "    if there is no -t option, "
+                                    "the default number of threads depends "
+                                    "on the number of CPUs.\n    if the "
+                                    "number of threads is set to less than 2, "
+                                    "multithreading mode will be turned off\n");
+                }
+                fprintf(stderr, "[garlic] Invalid or incomplete option: -%c\n", optopt);
+                exit(EXIT_FAILURE);
+            }
+            default:
+                opt_usage(argv[0]);
+                exit(EXIT_FAILURE);
+        }
+    }
+    return opt;
+}
+
+static void free_opt(jd_opt *opt) {
+    if (opt->out != NULL) {
+        free(opt->out);
+    }
+    free(opt);
+}
+
+static void run_for_jvm_class(jd_opt *opt) {
+    mem_init_pool();
+    jclass_file *jc = parse_class_file(opt->path);
+    if (class_selection_indexing()) { browse_index_jvm(jc, 0); mem_free_pool(); return; }
+    if (!class_selection_accept(get_class_name(jc, pool_item(jc, jc->this_class)))) {
+        mem_free_pool();
+        return;
+    }
+    if (opt->option == JD_FILE_OPTION_DUMP) {
+        print_java_class_file_info(jc);
+    }
+    else {
+        jvm_analyse_class_file(jc->jfile);
+    }
+    mem_free_pool();
+}
+
+static void run_for_jvm_jar(jd_opt *opt) {
+    prepare_opt_output(opt);
+    prepare_opt_threads(opt);
+    printf("[Garlic] JAR file analysis\n");
+    printf("File     : %s\n", opt->path);
+    printf("Save to  : %s\n", opt->out);
+    printf("Thread   : %d\n", opt->thread_num);
+    jar_file_analyse(opt->path, opt->out, opt->thread_num);
+    printf("\n[Done]\n");
+}
+
+static void run_for_dex(jd_opt *opt)
+{
+    if (opt->option == JD_FILE_OPTION_DUMP) {
+        printf("[Garlic] DEX file info\n");
+        dex_file_dump(opt->path);
+    }
+    else if (opt->option == JD_FILE_OPTION_SMALI) {
+        prepare_opt_output(opt);
+        prepare_opt_threads(opt);
+        printf("[Garlic] DEX file analysis\n");
+        printf("File     : %s\n", opt->path);
+        printf("Save to  : %s\n", opt->out);
+        printf("Thread   : %d\n", opt->thread_num);
+        dex_file_analyse(opt->path,
+                         opt->out,
+                         opt->thread_num,
+                         JD_DEX_TASK_SMALI);
+        printf("\n[Done]\n");
+
+    }
+    else {
+        prepare_opt_output(opt);
+        prepare_opt_threads(opt);
+        printf("[Garlic] DEX file analysis\n");
+        printf("File     : %s\n", opt->path);
+        printf("Save to  : %s\n", opt->out);
+        printf("Thread   : %d\n", opt->thread_num);
+        dex_file_analyse(opt->path,
+                         opt->out,
+                         opt->thread_num,
+                         JD_DEX_TASK_DECOMPILE);
+        printf("\n[Done]\n");
+    }
+}
+
+static void run_for_apk(jd_opt *opt)
+{
+    prepare_opt_output(opt);
+    prepare_opt_threads(opt);
+    printf("[Garlic] APK file analysis\n");
+    printf("File     : %s\n", opt->path);
+    printf("Save to  : %s\n", opt->out);
+    printf("Thread   : %d\n", opt->thread_num);
+    if (opt->option == JD_FILE_OPTION_SMALI) {
+        apk_decompile_analyse(opt->path,
+                              opt->out,
+                              opt->thread_num,
+                              JD_DEX_TASK_SMALI);
+    } else {
+        apk_decompile_analyse(opt->path,
+                              opt->out,
+                              opt->thread_num,
+                              JD_DEX_TASK_DECOMPILE);
+    }
+
+    printf("\n[Done]\n");
+}
+
+static void run_for_archive(jd_opt *opt)
+{
+    struct zip_t *zip = zip_open(opt->path, 0, 'r');
+    int has_class = 0, has_dex = 0;
+    if (zip) {
+        const int total = zip_entries_total(zip);
+        for (int i = 0; i < total; ++i) {
+            if (zip_entry_openbyindex(zip, i) < 0)
+                continue;
+            const char *entry = zip_entry_name(zip);
+            if (entry && str_end_with_lower(entry, ".class"))
+                has_class = 1;
+            if (entry && (str_end_with_lower(entry, ".dex") || str_end_with_lower(entry, ".apk")))
+                has_dex = 1;
+            zip_entry_close(zip);
+            if (has_class && has_dex)
+                break;
+        }
+        zip_close(zip);
+    }
+    prepare_opt_output(opt);
+    prepare_opt_threads(opt);
+    printf("[Garlic] ZIP archive analysis\n");
+    printf("File     : %s\n", opt->path);
+    printf("Save to  : %s\n", opt->out);
+    printf("Thread   : %d\n", opt->thread_num);
+    if (has_class)
+        jar_file_analyse(opt->path, opt->out, opt->thread_num);
+    if (has_dex)
+        archive_decompile_analyse(opt->path, opt->out, opt->thread_num,
+                                  opt->option == JD_FILE_OPTION_SMALI ? JD_DEX_TASK_SMALI
+                                                                        : JD_DEX_TASK_DECOMPILE);
+    if (!has_class && !has_dex)
+        fprintf(stderr, "[garlic] No classes loaded; nothing can be decompiled.\n");
+    printf("\n[Done]\n");
+}
+
+/* MCP server entry (declared in mcp_tools.c) */
+extern const jd_mcp_tool MCP_TOOLS[];
+extern const int         MCP_TOOL_COUNT;
+
+int main(int argc, char **argv)
+{
+    /* -l <email> <key>: install license file for librosemarylib */
+    if (argc >= 2 && strcmp(argv[1], "-l") == 0) {
+        if (argc < 4) {
+            fprintf(stderr, "Usage: garlic -l <email> <license_key>\n");
+            return 1;
+        }
+        const char *home = getenv("HOME");
+        if (!home) home = ".";
+        char lic_path[1024];
+        snprintf(lic_path, sizeof(lic_path), "%s/.garlic", home);
+#ifdef _WIN32
+        mkdir(lic_path);
+#else
+        mkdir(lic_path, 0700);
+#endif
+        snprintf(lic_path, sizeof(lic_path), "%s/.garlic/license", home);
+        FILE *fp = fopen(lic_path, "w");
+        if (!fp) { fprintf(stderr, "[garlic] Cannot write to %s\n", lic_path); return 1; }
+        fwrite(argv[3], 1, strlen(argv[3]), fp);
+        fclose(fp);
+        fprintf(stderr, "[garlic] License saved to %s for %s\n", lic_path, argv[2]);
+        return 0;
+    }
+
+    /* --- Modes that don't need license --- */
+    if (argc >= 2 && strcmp(argv[1], "--serve") == 0) {
+        const char *dir = (argc >= 3) ? argv[2] : ".";
+        int port = (argc >= 4) ? atoi(argv[3]) : 8080;
+        return http_serve(dir, port);
+    }
+
+    if (argc >= 2 && strcmp(argv[1], "-m") == 0) {
+        jd_mcp_set_self_path(argv[0]);
+        jd_mcp_server *server = jd_init_mcp_server();
+        if (server == NULL) {
+            fprintf(stderr, "failed to start the MCP server\n");
+            return 1;
+        }
+        server->tools = MCP_TOOLS;
+        server->tool_count = MCP_TOOL_COUNT;
+        jd_mcp_server_run(server);
+        jd_mcp_server_cleanup(server);
+        return 0;
+    }
+
+    jd_opt *opt = parse_opt(argc, argv);
+    if ((opt->index_path || opt->class_name) &&
+        (opt->option != JD_FILE_OPTION_NONE && opt->option != JD_FILE_OPTION_SMALI)) {
+        fprintf(stderr, "[garlic] -I/-c only support Java or Smali browsing\n");
+        free_opt(opt);
+        return 1;
+    }
+    if (!class_selection_open(opt->index_path, opt->class_name)) {
+        free_opt(opt);
+        return 1;
+    }
+
+    if (opt->option == JD_FILE_OPTION_ELF_ANALYSIS) {
+        printf("[Garlic] ELF binary analysis\n");
+        printf("File     : %s\n", opt->path);
+        jd_elf *elf = jd_analysis_elf_from_path(opt->path);
+        if (elf == NULL) {
+            fprintf(stderr, "[Garlic] ELF analysis failed for: %s\n", opt->path);
+            free_opt(opt);
+            return 1;
+        }
+        jd_dump_all_csv(elf);
+        printf("\n[Done]\n");
+        free_opt(opt);
+        return 0;
+    }
+
+    if (opt->option == JD_FILE_OPTION_CALL_GRAPH) {
+        prepare_opt_output(opt);
+        mem_init_pool();
+        if (is_apk_file(opt))
+            apk_analyzer(opt->path, opt->out);
+        else
+            jd_dex_analyzer_from_file(opt->path, opt->out);
+        mem_free_pool();
+        free_opt(opt);
+        return 0;
+    }
+
+    if (is_jvm_class(opt)) {
+        run_for_jvm_class(opt);
+        free_opt(opt);
+    }
+    else if (is_jar_file(opt)) {
+        run_for_jvm_jar(opt);
+        free_opt(opt);
+    }
+    else if (is_dex_file(opt)) {
+        run_for_dex(opt);
+        free_opt(opt);
+    }
+    else if (is_apk_file(opt)) {
+        run_for_apk(opt);
+        free_opt(opt);
+    }
+    else if (is_archive_file(opt)) {
+        run_for_archive(opt);
+        free_opt(opt);
+    }
+    else {
+        fprintf(stderr, "[garlic] Unsupported file type: %s\n", opt->path);
+        free_opt(opt);
+        exit(EXIT_FAILURE);
+    }
+
+    if (output_report())
+        return EXIT_FAILURE;
+
+    return class_selection_close();
+}

@@ -1,0 +1,1 @@
+../../../../../src/decompiler/transformer/put_static.c

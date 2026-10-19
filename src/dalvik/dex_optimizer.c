@@ -1,5 +1,4 @@
 #include "dalvik/dex_optimizer.h"
-#include "decompiler/constant_fold.h"
 #include "dalvik/dex_ins.h"
 #include "dalvik/dex_expression_builder.h"
 
@@ -22,7 +21,6 @@
 #include "decompiler/expression_goto.h"
 #include "decompiler/expression_synchronized.h"
 #include "decompiler/expression_copy_propgation.h"
-#include "decompiler/expression_analyse.h"
 #include "decompiler/expression_node_param.h"
 #include "decompiler/expression_return.h"
 #include "decompiler/expression_exception.h"
@@ -157,10 +155,7 @@ void optimize_dex_method(jd_method *m)
 
     } while (changed);
 
-    method_type_analyse(m);
-
     identify_assignment(m);
-    fold_method_constants(m);
 
     identify_loop(m);
 

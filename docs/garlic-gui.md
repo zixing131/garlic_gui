@@ -1,8 +1,13 @@
-# Garlic GUI 0.5.44（C++ / Qt 6）
+# Garlic GUI 0.5.45（C++ / Qt 6）
 
 原生桌面浏览器，使用本项目的 garlic C 引擎。Qt 界面通过 `QProcess` 调用引擎，
 先建立类型、成员和引用索引，点击类时生成 Java / Smali。索引读取 CLASS / DEX
 元数据与引用，不执行方法反编译。JAR 索引会读取其中的 CLASS 内容。
+
+## 0.5.45 本地引擎改动与上游源码分开
+
+- 对上游反编译引擎的本地修改放到 `fork/overlay`，仓库里的 `src` 与上游保持一致。上游更新后运行 `scripts/sync-upstream.sh`，由脚本把新代码并进这些本地文件。
+- 控制流还原（环境变量 `GARLIC_UNFLATTEN=1`）抽到独立的 `dex_flatten`，界面里的对应开关行为不变。
 
 ## 0.5.44 源码导出按包目录落盘
 

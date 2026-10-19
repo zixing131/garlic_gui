@@ -10,23 +10,13 @@
   #include <windows.h>
   #include <io.h>
   #include <fcntl.h>
-  static wchar_t *native_wide_path(const char *path) {
-      int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, NULL, 0);
-      if (!n) return NULL;
-      wchar_t *wide = calloc((size_t)n, sizeof(wchar_t));
-      if (wide) MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide, n);
-      return wide;
-  }
   /* mkstemp / unlink equivalents */
   static int mkstemp_win(char *template)
   {
       if (_mktemp_s(template, strlen(template) + 1) != 0)
           return -1;
-      wchar_t *wide = native_wide_path(template);
-      if (!wide) return -1;
-      HANDLE h = CreateFileW(wide, GENERIC_WRITE, 0, NULL,
+      HANDLE h = CreateFileA(template, GENERIC_WRITE, 0, NULL,
                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-      free(wide);
       if (h == INVALID_HANDLE_VALUE)
           return -1;
       int fd = _open_osfhandle((intptr_t)h, _O_BINARY | _O_APPEND);
@@ -119,9 +109,7 @@ static int ensure_library_loaded(void)
 
     /* ---- load the library ----------------------------------------- */
 #ifdef _WIN32
-    wchar_t *wide_path = native_wide_path(tmp_path);
-    g_lib_handle = wide_path ? LoadLibraryW(wide_path) : NULL;
-    free(wide_path);
+    g_lib_handle = LoadLibraryA(tmp_path);
     if (!g_lib_handle) {
         fprintf(stderr, "[garlic] Failed to load embedded library "
                         "(error %lu)\n", GetLastError());

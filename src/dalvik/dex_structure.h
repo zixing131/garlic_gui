@@ -96,7 +96,6 @@ typedef struct jd_apk {
     jd_dex_task_type    type;
     int                 added;
     int                 done;
-    int                 allow_nested_dex;
     list_object         *dex_pools;
 } jd_apk;
 

@@ -106,7 +106,7 @@ typedef struct jd_class_opcode {
 
 typedef union {
     int     int_val;
-    int64_t long_val; /* Java long is 64 bits, including Windows LLP64. */
+    long    long_val;
     float   float_val;
     double  double_val;
 } jd_primitive_union;
@@ -424,7 +424,6 @@ typedef enum {
 } jd_expression_state;
 
 struct jd_exp {
-    string              folded_string; // Proven static content; keep original object identity.
     u4                  idx;
     jd_ins              *ins;
     jd_expression_type  type;
@@ -555,9 +554,7 @@ typedef struct {
 
 typedef struct {
     jd_exp_list *list;
-    string          class_name; // Component type, with any remaining dimensions.
-    bool values_only;           // List contains elements rather than length + elements.
-    bool fill_existing;         // List[0] is the existing destination array.
+    string          class_name;
 } jd_exp_new_array;
 
 typedef struct {
@@ -594,7 +591,6 @@ typedef struct {
     string          class_name;
     string          name;
     string          owner_class_name;
-    jd_exp_new_array *constant_array; // Analysis metadata; never replaces the field read.
 } jd_exp_get_static;
 
 typedef struct {
@@ -653,7 +649,6 @@ typedef struct {
     jd_exp_list *list;
 
     string          class_name;
-    jd_ins          *constructor;
 } jd_exp_initialize;
 
 typedef struct {

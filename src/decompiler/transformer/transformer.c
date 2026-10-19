@@ -1,4 +1,3 @@
-#include "source_map.h"
 #include "decompiler/transformer/transformer.h"
 #include "jvm/jvm_ins_helper.h"
 
@@ -145,7 +144,7 @@ string exp_to_s(jd_exp *expression)
     }
 }
 
-static void expression_to_stream_impl(FILE *stream, jd_node *node, jd_exp *expression)
+void expression_to_stream(FILE *stream, jd_node *node, jd_exp *expression)
 {
     switch(expression->type) {
         case JD_EXPRESSION_INVOKE: {
@@ -308,23 +307,4 @@ static void expression_to_stream_impl(FILE *stream, jd_node *node, jd_exp *expre
             return;
         }
     }
-}
-void expression_to_stream(FILE *stream, jd_node *node, jd_exp *expression)
-{
-    if (expression->folded_string) {
-        fputs("/* decoded: \"", stream);
-        for (const unsigned char *s = (const unsigned char *)expression->folded_string; *s; ++s) {
-            /* folded_string is generated as UTF-8. Keep non-ASCII bytes
-             * readable in the source instead of exposing the old \xNN byte
-             * soup; escape only characters that would break the comment or
-             * the quoted preview. */
-            if (*s < 32 || *s == '*' || *s == '\\' || *s == '"')
-                fprintf(stream, "\\x%02x", *s);
-            else fputc(*s, stream);
-        }
-        fputs("\" */ ", stream);
-    }
-    long start = source_map_tracks_expression(expression) ? ftell(stream) : -1;
-    expression_to_stream_impl(stream,node,expression);
-    if (start >= 0) source_map_expression(stream,start,expression);
 }

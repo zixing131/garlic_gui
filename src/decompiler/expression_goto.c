@@ -294,14 +294,6 @@ static bool optimize_goto_core(jd_method *m, jd_node *node)
         return false;
     }
 
-    // Edge specialization often places the destination immediately after the
-    // source in the same structured arm. That jump is now a fallthrough.
-    jd_node *next = parent_next_node(node);
-    if (next == target) {
-        exp_mark_nopped(exp);
-        return true;
-    }
-
     if (has_loop_parent(node)) {
         optimize_goto_in_loop(m, node, target_idx);
     }

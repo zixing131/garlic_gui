@@ -1,6 +1,3 @@
-#include "java_string.h"
-#include <math.h>
-#include <stdint.h>
 #include "common/str_tools.h"
 #include "decompiler/transformer/transformer.h"
 #include "decompiler/klass.h"
@@ -24,20 +21,6 @@ static inline bool const_exp_is_boolean(jd_exp_const *e)
         return false;
 
     return stack_val_is_boolean(e->val);
-}
-
-string const_integer_to_s(int64_t value, bool wide)
-{
-    const char *format = getenv("GARLIC_NUMBER_FORMAT");
-    bool hex = format && !strcmp(format, "hex");
-    if (!format || !strcmp(format, "auto")) {
-        uint64_t n = (uint64_t)value;
-        /* Large powers of two and bit masks benefit from hexadecimal notation. */
-        hex = value >= 256 && (!(n & (n - 1)) || !(n & (n + 1)));
-    }
-    if (hex) return wide ? str_create("0x%llxL", (unsigned long long)(uint64_t)value)
-                         : str_create("0x%x", (unsigned int)(uint32_t)value);
-    return wide ? str_create("%lldL", (long long)value) : str_create("%d", (int)value);
 }
 
 static string char_literal(int value)
@@ -75,25 +58,19 @@ static string get_const_value(jd_exp *expression)
             else if (stack_val_is_char(const_exp->val))
                 return char_literal(primitive->int_val);
             else
-                return const_integer_to_s(primitive->int_val, false);
+                return str_create("%d", primitive->int_val);
         }
         case JD_VAR_LONG_T:
-            return const_integer_to_s(primitive->long_val, true);
-        case JD_VAR_FLOAT_T: {
-            if (isfinite(primitive->float_val)) return str_create("%.9gF", primitive->float_val);
-            uint32_t bits; memcpy(&bits, &primitive->float_val, sizeof(bits));
-            return str_create("Float.intBitsToFloat(0x%08x)", bits);
-        }
-        case JD_VAR_DOUBLE_T: {
-            if (isfinite(primitive->double_val)) return str_create("%.17gD", primitive->double_val);
-            uint64_t bits; memcpy(&bits, &primitive->double_val, sizeof(bits));
-            return str_create("Double.longBitsToDouble(0x%016llxL)", (unsigned long long)bits);
-        }
+            return str_create("%ldL", primitive->long_val);
+        case JD_VAR_FLOAT_T:
+            return str_create("%f", primitive->float_val);
+        case JD_VAR_DOUBLE_T:
+            return str_create("%lf", primitive->double_val);
         case JD_VAR_NULL_T:
             return str_dup("null");
         case JD_VAR_REFERENCE_T: {
             if (const_exp_is_string(const_exp)) {
-                string new_str = java_escape_string(const_exp->val->data->val);
+                string new_str = str_replace_nl(const_exp->val->data->val);
                 return str_create("\"%s\"", new_str);
             }
             else if (const_exp_is_class(const_exp))

@@ -5,8 +5,6 @@
 #include "decompiler/control_flow.h"
 #include "decompiler/exception.h"
 #include "jvm/jvm_ins.h"
-#include <stdlib.h>
-#include <string.h>
 
 #include <pthread.h>
 
@@ -301,8 +299,4 @@ void pre_optimize_dex_method(jd_method *m)
     optimize_goto_to_return(m);
 
     optimize_share_suffix_v2(m);
-    // Shared-suffix folding can expose new goto-to-return chains, but running
-    // the legacy rewrite a second time leaves stale predecessor/stack data in
-    // large flattened methods. The first pass above is safe; the dispatcher
-    // specializer in dex_method_init handles the opt-in control-flow work.
 }

@@ -1,0 +1,1 @@
+../../../../src/rosemary/rosemary_embed.h

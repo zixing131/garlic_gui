@@ -1,4 +1,3 @@
-#include "browse_index.h"
 #include "common/output_error.h"
 #include "parser/class/metadata.h"
 #include "jvm/jvm_decompile.h"
@@ -6,13 +5,11 @@
 #include "common/file_tools.h"
 #include "jar/jar.h"
 #include "apk/apk.h"
-#include "libs/zip/zip.h"
 #include "dalvik/dex_decompile.h"
 #include "dex_smali.h"
 #include "analyzer/jd_analyzer.h"
 #include "ai/jd_mcp.h"
 #include <unistd.h>
-#include "class_selection.h"
 /* Embedded librosemarylib — extracted to temp dir and dlopen'd at runtime */
 #include "rosemary/rosemary_embed.h"
 /* License verification */
@@ -24,7 +21,6 @@ typedef enum {
     JD_FILE_TYPE_JAR,
     JD_FILE_TYPE_DEX,
     JD_FILE_TYPE_APK,
-    JD_FILE_TYPE_ARCHIVE,
     JD_FILE_TYPE_ELF,
 } jd_file_type_t;
 
@@ -39,8 +35,6 @@ typedef enum {
 
 typedef struct jd_opt {
     char *path;
-    char *index_path;
-    char *class_name;
     char *out;
     jd_file_type_t ft;
     int option;
@@ -72,8 +66,6 @@ static jd_file_type_t magic_of_file(char *filepath) {
         case JAR_FILE_MAGIC: {
             if (str_is_apk_path(filepath)) {
                 return JD_FILE_TYPE_APK;
-            } else if (str_is_zip_path(filepath)) {
-                return JD_FILE_TYPE_ARCHIVE;
             } else {
                 return JD_FILE_TYPE_JAR;
             }
@@ -109,11 +101,6 @@ static inline bool is_apk_file(jd_opt *opt)
     return opt->ft == JD_FILE_TYPE_APK;
 }
 
-static inline bool is_archive_file(jd_opt *opt)
-{
-    return opt->ft == JD_FILE_TYPE_ARCHIVE;
-}
-
 static void prepare_opt_output(jd_opt *opt) {
     char *out = opt->out;
     if (out == NULL) {
@@ -145,8 +132,6 @@ static void prepare_opt_threads(jd_opt *opt) {
 
 static void opt_usage(const char *progname) {
     fprintf(stderr, "Usage: %s file [-p] [-o outpath] [-t num] [-g] [-s]\n", progname);
-    fprintf(stderr, "    -I <file>: write top-level class index as JSONL (no decompilation)\n");
-    fprintf(stderr, "    -c <name>: decompile one class, e.g. com/example/Main\n");
     fprintf(stderr, "    -p: like javap or dexdump, print class info\n");
     fprintf(stderr, "    -o: output path for jar/dex/war files\n");
     fprintf(stderr, "    -t: number of threads to use (default is 4)\n");
@@ -177,10 +162,8 @@ static jd_opt* parse_opt(int argc, char **argv) {
     opt->path = path;
     opt->ft = ft;
 
-    while ((oc = getopt(argc, argv, "spo:t:ghmnI:c:")) != -1) {
+    while ((oc = getopt(argc, argv, "spo:t:ghmn")) != -1) {
         switch (oc) {
-            case 'I': opt->index_path = optarg; break;
-            case 'c': opt->class_name = optarg; break;
             case 'p': { // like javap
                 opt->option = JD_FILE_OPTION_DUMP;
                 break;
@@ -231,8 +214,7 @@ static jd_opt* parse_opt(int argc, char **argv) {
                                     "number of threads is set to less than 2, "
                                     "multithreading mode will be turned off\n");
                 }
-                fprintf(stderr, "[garlic] Invalid or incomplete option: -%c\n", optopt);
-                exit(EXIT_FAILURE);
+                break;
             }
             default:
                 opt_usage(argv[0]);
@@ -252,11 +234,6 @@ static void free_opt(jd_opt *opt) {
 static void run_for_jvm_class(jd_opt *opt) {
     mem_init_pool();
     jclass_file *jc = parse_class_file(opt->path);
-    if (class_selection_indexing()) { browse_index_jvm(jc, 0); mem_free_pool(); return; }
-    if (!class_selection_accept(get_class_name(jc, pool_item(jc, jc->this_class)))) {
-        mem_free_pool();
-        return;
-    }
     if (opt->option == JD_FILE_OPTION_DUMP) {
         print_java_class_file_info(jc);
     }
@@ -335,43 +312,6 @@ static void run_for_apk(jd_opt *opt)
     printf("\n[Done]\n");
 }
 
-static void run_for_archive(jd_opt *opt)
-{
-    struct zip_t *zip = zip_open(opt->path, 0, 'r');
-    int has_class = 0, has_dex = 0;
-    if (zip) {
-        const int total = zip_entries_total(zip);
-        for (int i = 0; i < total; ++i) {
-            if (zip_entry_openbyindex(zip, i) < 0)
-                continue;
-            const char *entry = zip_entry_name(zip);
-            if (entry && str_end_with_lower(entry, ".class"))
-                has_class = 1;
-            if (entry && (str_end_with_lower(entry, ".dex") || str_end_with_lower(entry, ".apk")))
-                has_dex = 1;
-            zip_entry_close(zip);
-            if (has_class && has_dex)
-                break;
-        }
-        zip_close(zip);
-    }
-    prepare_opt_output(opt);
-    prepare_opt_threads(opt);
-    printf("[Garlic] ZIP archive analysis\n");
-    printf("File     : %s\n", opt->path);
-    printf("Save to  : %s\n", opt->out);
-    printf("Thread   : %d\n", opt->thread_num);
-    if (has_class)
-        jar_file_analyse(opt->path, opt->out, opt->thread_num);
-    if (has_dex)
-        archive_decompile_analyse(opt->path, opt->out, opt->thread_num,
-                                  opt->option == JD_FILE_OPTION_SMALI ? JD_DEX_TASK_SMALI
-                                                                        : JD_DEX_TASK_DECOMPILE);
-    if (!has_class && !has_dex)
-        fprintf(stderr, "[garlic] No classes loaded; nothing can be decompiled.\n");
-    printf("\n[Done]\n");
-}
-
 /* MCP server entry (declared in mcp_tools.c) */
 extern const jd_mcp_tool MCP_TOOLS[];
 extern const int         MCP_TOOL_COUNT;
@@ -424,16 +364,6 @@ int main(int argc, char **argv)
     }
 
     jd_opt *opt = parse_opt(argc, argv);
-    if ((opt->index_path || opt->class_name) &&
-        (opt->option != JD_FILE_OPTION_NONE && opt->option != JD_FILE_OPTION_SMALI)) {
-        fprintf(stderr, "[garlic] -I/-c only support Java or Smali browsing\n");
-        free_opt(opt);
-        return 1;
-    }
-    if (!class_selection_open(opt->index_path, opt->class_name)) {
-        free_opt(opt);
-        return 1;
-    }
 
     if (opt->option == JD_FILE_OPTION_ELF_ANALYSIS) {
         printf("[Garlic] ELF binary analysis\n");
@@ -444,7 +374,6 @@ int main(int argc, char **argv)
             free_opt(opt);
             return 1;
         }
-        jd_dump_all_csv(elf);
         printf("\n[Done]\n");
         free_opt(opt);
         return 0;
@@ -478,10 +407,6 @@ int main(int argc, char **argv)
         run_for_apk(opt);
         free_opt(opt);
     }
-    else if (is_archive_file(opt)) {
-        run_for_archive(opt);
-        free_opt(opt);
-    }
     else {
         fprintf(stderr, "[garlic] Unsupported file type: %s\n", opt->path);
         free_opt(opt);
@@ -491,5 +416,5 @@ int main(int argc, char **argv)
     if (output_report())
         return EXIT_FAILURE;
 
-    return class_selection_close();
+    return 0;
 }

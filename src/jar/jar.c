@@ -1,5 +1,3 @@
-#include "browse_index.h"
-#include "class_selection.h"
 #include <errno.h>
 
 #include "common/output_error.h"
@@ -168,35 +166,14 @@ static string jar_dir_of(string path)
 
 static void jar_entry_source_file(jclass_file *jc, string dir, string name)
 {
-    jcp_info *info = pool_item(jc, jc->this_class);
-    string full = get_class_name(jc, info);
-    string class_name = class_simple_name(full);
-    char *mapped = source_layout_mapped_path(dir, full, ".java");
-    if (mapped) {
-        FILE *stream = fopen(mapped, "w");
-        if (stream == NULL)
-            output_open_failed(mapped);
-        free(mapped);
-        jc->jfile->source = stream;
-        return;
-    }
-    if (source_safe_paths_enabled()) {
-        char *stem = source_storage_name(full);
-        string path = str_create("%s/%s.java", dir, stem);
-        free(stem);
-        char *parent = str_dup(path), *slash = strrchr(parent, '/');
-        if (slash) { *slash = 0; mkdir_p(parent); }
-        FILE *stream = fopen(path, "w");
-        if (stream == NULL)
-            output_open_failed(path);
-        jc->jfile->source = stream;
-        return;
-    }
     struct stat sb;
     string full_dir = str_create("%s/%s", dir, jar_dir_of(name));
     if (stat(full_dir, &sb) == -1)
         make_dir(full_dir);
 
+    jcp_info *info = pool_item(jc, jc->this_class);
+    string full = get_class_name(jc, info);
+    string class_name = class_simple_name(full);
     string path = str_create("%s/%s", full_dir,
                              output_path_resolve(
                                      full_dir,
@@ -280,7 +257,6 @@ void jar_entry_thread_task(jd_jar_entry *entry)
         output_close(jf->source, jf->fname);
     }
     mem_pool_free(tls->pool);
-    tls->pool = NULL;
 
     jar_status(entry->jar);
 }
@@ -290,8 +266,6 @@ static void jar_threadpool_start(jd_jar *jar)
     for (int i = 0; i < jar->class_entries->size; ++i) {
         jd_jar_entry *entry = lget_obj(jar->class_entries, i);
         if (entry->is_inner || entry->is_anoymous)
-            continue;
-        if (!class_selection_accept(entry->path))
             continue;
         threadpool_add(jar->threadpool, (void (*)(void *)) &jar_entry_thread_task, entry, 0);
         jar->added++;
@@ -370,8 +344,6 @@ static void jar_main_thread(jd_jar *jar)
 
         if (entry->is_inner || entry->is_anoymous)
             continue;
-        if (!class_selection_accept(entry->path))
-            continue;
 
         mem_init_pool();
 
@@ -392,16 +364,7 @@ void jar_file_analyse(string path, string save_path, int thread_cnt) {
 
     jd_jar *jar = jar_obj_create(path, save_path, thread_cnt);
 
-    if (class_selection_indexing()) {
-        for (int i=0;i<jar->class_entries->size;i++) {
-            jd_jar_entry *entry=lget_obj(jar->class_entries,i);
-            mem_init_pool();
-            class_selection_origin(entry->path);
-            browse_index_jvm(parse_class_content(entry->path,entry->buf,entry->buf_size), entry->is_inner||entry->is_anoymous);
-            mem_free_pool();
-        }
-    }
-    else if (thread_cnt > 1) {
+    if (thread_cnt > 1) {
         jar_threadpool_start(jar);
     }
     else {

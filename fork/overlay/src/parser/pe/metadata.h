@@ -1,0 +1,1 @@
+../../../../../src/parser/pe/metadata.h

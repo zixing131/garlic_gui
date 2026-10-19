@@ -1,0 +1,308 @@
+#include "dalvik/dex_ins.h"
+#include "dalvik/dex_pre_optimizer.h"
+
+#include "decompiler/dominator_tree.h"
+#include "decompiler/control_flow.h"
+#include "decompiler/exception.h"
+#include "jvm/jvm_ins.h"
+#include <stdlib.h>
+#include <string.h>
+
+#include <pthread.h>
+
+static int share_suffix_copies;
+static pthread_mutex_t share_suffix_lock = PTHREAD_MUTEX_INITIALIZER;
+
+void share_suffix_count_one(void)
+{
+    pthread_mutex_lock(&share_suffix_lock);
+    share_suffix_copies++;
+    pthread_mutex_unlock(&share_suffix_lock);
+}
+
+int share_suffix_copy_count(void)
+{
+    pthread_mutex_lock(&share_suffix_lock);
+    int count = share_suffix_copies;
+    pthread_mutex_unlock(&share_suffix_lock);
+    return count;
+}
+
+static inline bool is_goto_edge(jd_edge *edge)
+{
+    jd_bblock *source = edge->source_block;
+    if (source->type != JD_BB_NORMAL)
+        return false;
+    jd_nblock *source_nb = source->ub->nblock;
+    jd_dex_ins *ins = (jd_dex_ins *) ins_of_offset(source->method, source_nb->end_offset);
+    return dex_ins_is_goto_jump(ins);
+}
+
+static bool basic_block_all_in_edges_are_goto(jd_bblock *block)
+{
+    if (block->in == NULL || block->in->size == 0)
+        return false;
+
+    for (int i = 0; i < block->in->size; ++i) {
+        jd_edge *edge = lget_obj(block->in, i);
+        if (!is_goto_edge(edge))
+            return false;
+    }
+    return true;
+}
+
+static bool basic_block_has_live_jump_in_goto(jd_bblock *block)
+{
+    for (int i = 0; i < block->in->size; ++i) {
+        jd_edge *edge = lget_obj(block->in, i);
+        jd_bblock *source = edge->source_block;
+        if (source->type != JD_BB_NORMAL) continue;
+        jd_nblock *nsb = source->ub->nblock;
+        jd_dex_ins *end_ins = (jd_dex_ins *) ins_of_offset(source->method, nsb->end_offset);
+        if (dex_ins_is_goto_jump(end_ins) && !ins_is_nopped((jd_ins *) end_ins))
+            return true;
+    }
+    return false;
+}
+
+static bool basic_block_is_finally_start(jd_method *m, jd_bblock *block)
+{
+    if (block->type != JD_BB_NORMAL)
+        return false;
+
+    jd_nblock *nblock = block->ub->nblock;
+    for (int i = 0; i < m->basic_blocks->size; ++i) {
+        jd_bblock *b = lget_obj(m->basic_blocks, i);
+        if (b->type != JD_BB_EXCEPTION)
+            continue;
+        jd_eblock *eblock = b->ub->eblock;
+        if (eblock->handler_start_offset == nblock->start_offset &&
+            eblock->type == JD_EXCEPTION_FINALLY) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void modify_handler_start_to_goto_target(jd_method *m,
+                                                jd_bblock *b,
+                                                bool is_finally)
+{
+    jd_nblock *nblock = b->ub->nblock;
+    jd_dex_ins *start_ins = nblock->start_ins;
+    jd_dex_ins *end_ins = nblock->end_ins;
+    u4 offset = dex_goto_offset(end_ins);
+    jd_dex_ins *target_ins = dex_ins_of_offset(m, offset);
+
+    // move-exception v0
+    // goto 12
+    // move-exception v0
+    // move v1, v2
+    // [12] bla bla
+    jd_dex_ins *target_prev_ins = target_ins->prev;
+    if (target_prev_ins == NULL)
+        return;
+    jd_bblock *prev_block = target_prev_ins->block;
+    jd_nblock *prev_nblock = prev_block->ub->nblock;
+    jd_dex_ins *prev_start_ins = prev_nblock->start_ins;
+    if (!dex_ins_is_move_exception(prev_start_ins))
+        return;
+    for (int i = 0; i < m->cfg_exceptions->size; ++i) {
+        jd_exc *e = lget_obj(m->cfg_exceptions, i);
+        if (e->handler_start == start_ins->offset
+            /* && e->catch_type_index != 0*/) {
+            e->handler_start = prev_start_ins->offset;
+            e->handler_start_idx = prev_start_ins->idx;
+        }
+    }
+
+    ins_mark_nopped((jd_ins *) start_ins);
+    ins_mark_nopped((jd_ins *) end_ins);
+}
+
+static void optimize_goto_to_return(jd_method *m)
+{
+    // goto goto_offset
+    // goto_offset is return
+    // replace current goto to return
+
+    for (int i = 0; i < m->basic_blocks->size; ++i) {
+        jd_bblock *b = lget_obj(m->basic_blocks, i);
+        if (b->type != JD_BB_NORMAL)
+            continue;
+        jd_nblock *nblock = b->ub->nblock;
+        jd_dex_ins *end_ins = nblock->end_ins;
+
+        if (!dex_ins_is_goto_jump(end_ins))
+            continue;
+
+        s4 offset = (s4)dex_goto_offset(end_ins);
+        jd_dex_ins *target_ins = dex_ins_of_offset(m, offset);
+        if (target_ins == NULL) continue;
+        int goto_chain_limit = 1000;
+        while (dex_ins_is_goto_jump(target_ins) && --goto_chain_limit > 0) {
+            offset = dex_goto_offset(target_ins);
+            target_ins = dex_ins_of_offset(m, offset);
+            if (target_ins == NULL) break;
+        }
+        if (target_ins == NULL) continue;
+        if (!dex_ins_is_return_op(target_ins))
+            continue;
+
+        end_ins->param = target_ins->param;
+        end_ins->code = target_ins->code;
+        end_ins->name = target_ins->name;
+        end_ins->format = target_ins->format;
+        end_ins->param_length = target_ins->param_length;
+
+        lclear_object(end_ins->targets);
+        lclear_object(end_ins->jumps);
+        ldel_object(target_ins->comings, end_ins);
+        DEBUG_PRINT("[replace goto to return]: %s %d\n",
+                    end_ins->name,
+                    end_ins->offset);
+    }
+}
+
+void optimize_move_exception_goto(jd_method *m)
+{
+    for (int i = 0; i < m->basic_blocks->size; ++i) {
+        jd_bblock *b = lget_obj(m->basic_blocks, i);
+        if (b->type != JD_BB_NORMAL)
+            continue;
+
+        jd_nblock *nblock = b->ub->nblock;
+        jd_dex_ins *start_ins = nblock->start_ins;
+        jd_dex_ins *end_ins = nblock->end_ins;
+        if (!dex_ins_is_move_exception(start_ins) ||
+            !dex_ins_is_goto_jump(end_ins) ||
+            start_ins->next != end_ins)
+            continue;
+
+        bool is_finally = basic_block_is_finally_start(m, b);
+
+        DEBUG_PRINT("[found move-exception goto] %zu\n", b->block_id);
+
+        modify_handler_start_to_goto_target(m, b, is_finally);
+    }
+}
+
+static void optimize_share_suffix_v2(jd_method *m)
+{
+    bool changed = false;
+    int max_iter = 1000;
+    do {
+        if (--max_iter <= 0) break;
+        changed = false;
+        DEBUG_PRINT("start optimize share suffix\n");
+        for (int i = 0; i < m->basic_blocks->size; ++i) {
+            jd_bblock *b = lget_obj(m->basic_blocks, i);
+            if (!basic_block_is_normal_live(b)) continue;
+            if (!is_list_empty(b->dom_children)) continue;
+            if (b->out->size != 1) continue;
+            if (lcontains_obj(b->frontier, b)) continue;
+
+            if (!basic_block_has_live_jump_in_goto(b)) continue;
+            if (!basic_block_all_in_edges_are_goto(b)) continue;
+
+            jd_edge *out_edge = lget_obj_first(b->out);
+            jd_bblock *out_block = out_edge->target_block;
+            if (out_block->type != JD_BB_NORMAL) continue;
+
+            // self loop guard
+            if (out_block == b) continue;
+
+            jd_nblock *nb = b->ub->nblock;
+            jd_dex_ins *start_ins = nb->start_ins;
+            jd_dex_ins *end_ins = nb->end_ins;
+            if (dex_ins_is_switch(end_ins)) continue;
+
+            jd_nblock *out_nb = out_block->ub->nblock;
+            jd_dex_ins *out_start_ins = out_nb->start_ins;
+
+            for (int j = 0; j < b->in->size; ++j) {
+                jd_edge *edge = lget_obj(b->in, j);
+                jd_bblock *sb = edge->source_block;
+                if (!is_goto_edge(edge)) continue;
+                jd_nblock *snb = sb->ub->nblock;
+
+                jd_dex_ins *goto_ins = dex_ins_of_offset(m, snb->end_offset);
+                if (goto_ins->extra == NULL)
+                    goto_ins->extra = linit_object();
+                ins_mark_copy_block((jd_ins *) goto_ins);
+
+                cfg_unlink_blocks(sb, b);
+                create_link_edge(sb, out_block);
+
+                jd_dex_ins *copy_prev = NULL;
+                for (int k = nb->start_idx; k <= nb->end_idx ; ++k) {
+                    jd_dex_ins *ins = get_dex_ins(m, k);
+                    if (dex_ins_is_goto_jump(ins) && ins == nb->end_ins)
+                        continue;
+
+                    jd_dex_ins *copy = dup_dex_ins(ins);
+                    copy->state_flag = ins->state_flag & INS_STATE_UNREACHED;
+                    ins_mark_duplicate((jd_ins *) copy);
+                    copy->extra = NULL;
+                    copy->prev = copy_prev;
+                    copy->next = NULL;
+                    if (copy_prev != NULL)
+                        copy_prev->next = copy;
+                    copy_prev = copy;
+
+                    ladd_obj(goto_ins->extra, copy);
+                }
+                dex_setup_goto_offset(goto_ins, out_start_ins->offset);
+
+                lclear_object(goto_ins->jumps);
+                lclear_object(goto_ins->targets);
+                ladd_obj_no_dup(goto_ins->jumps, out_start_ins);
+                ladd_obj_no_dup(goto_ins->targets, out_start_ins);
+                ldel_object(start_ins->comings, goto_ins);
+                ladd_obj_no_dup(out_start_ins->comings, goto_ins);
+
+                jd_dex_ins *goto_copy = dup_dex_ins(goto_ins);
+                goto_copy->state_flag = 0;
+                ins_mark_duplicate((jd_ins *) goto_copy);
+                goto_copy->extra = NULL;
+                goto_copy->block = sb;
+                goto_copy->prev = copy_prev;
+                goto_copy->next = NULL;
+                if (copy_prev != NULL)
+                    copy_prev->next = goto_copy;
+                ladd_obj(goto_ins->extra, goto_copy);
+
+                share_suffix_count_one();
+
+                --j;
+                changed = true;
+            }
+
+            if (b->in->size == 0) {
+                jd_dex_ins *nopped = start_ins;
+                while (nopped != NULL && nopped->offset <= end_ins->offset) {
+                    ins_mark_nopped((jd_ins *) nopped);
+                    nopped = nopped->next;
+                }
+            }
+        }
+
+        if (changed) {
+            clear_dominator_data(m);
+            create_dominator_tree(m);
+        }
+    } while (changed);
+}
+
+void pre_optimize_dex_method(jd_method *m)
+{
+    cfg_create(m);
+
+    optimize_goto_to_return(m);
+
+    optimize_share_suffix_v2(m);
+    // Shared-suffix folding can expose new goto-to-return chains, but running
+    // the legacy rewrite a second time leaves stale predecessor/stack data in
+    // large flattened methods. The first pass above is safe; the dispatcher
+    // specializer in dex_method_init handles the opt-in control-flow work.
+}

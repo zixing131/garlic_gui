@@ -12,7 +12,6 @@
 #include "parser/dex/dex.h"
 #include "dex_decompile.h"
 #include "dex_class.h"
-#include <stdint.h>
 
 static void dex_copy_block(jd_dex_ins *copy);
 
@@ -43,145 +42,6 @@ static void dex_build_assignment(jd_exp *exp, jd_dex_ins *ins)
     val->stack_var->def_count ++;
 }
 
-static bool dex_encoded_integer(const encoded_value *value, int32_t *out)
-{
-    if (!value || (value->value_type != kDexAnnotationByte &&
-                   value->value_type != kDexAnnotationShort &&
-                   value->value_type != kDexAnnotationChar &&
-                   value->value_type != kDexAnnotationInt))
-        return false;
-    unsigned width = value->value_length > 4 ? 4 : (unsigned)value->value_length;
-    uint32_t bits = 0;
-    for (unsigned i = 0; i < width; ++i)
-        bits |= (uint32_t)value->value[i] << (i * 8);
-    if (value->value_type != kDexAnnotationChar && width < 4 &&
-        (bits & (1u << (width * 8 - 1))))
-        bits |= UINT32_MAX << (width * 8);
-    *out = (int32_t)bits;
-    return true;
-}
-
-static encoded_array *dex_static_short_array(jd_meta_dex *meta, unsigned field_index)
-{
-    if (field_index >= meta->header->field_ids_size)
-        return NULL;
-    unsigned class_index = meta->field_ids[field_index].class_idx;
-    for (u4 i = 0; i < meta->header->class_defs_size; ++i) {
-        dex_class_def *klass = &meta->class_defs[i];
-        if (klass->class_idx != class_index || !klass->class_data || !klass->static_values)
-            continue;
-        dex_class_data_item *data = klass->class_data;
-        for (u4 j = 0; j < data->static_fields_size && j < klass->static_values->size; ++j) {
-            if (data->static_fields[j].field_id != field_index)
-                continue;
-            encoded_value *value = &klass->static_values->values[j];
-            if (value->value_type != kDexAnnotationArray || !value->value)
-                return NULL;
-            encoded_array *array = (encoded_array *)value->value;
-            if (array->size > 65536)
-                return NULL;
-            return array;
-        }
-    }
-    return NULL;
-}
-
-static encoded_array *dex_clinit_short_array(jd_meta_dex *meta, unsigned field_index)
-{
-    if (field_index >= meta->header->field_ids_size)
-        return NULL;
-    unsigned class_index = meta->field_ids[field_index].class_idx;
-    encoded_method *clinit = NULL;
-    for (u4 i = 0; i < meta->header->class_defs_size && !clinit; ++i) {
-        dex_class_def *klass = &meta->class_defs[i];
-        if (klass->class_idx != class_index || !klass->class_data)
-            continue;
-        dex_class_data_item *data = klass->class_data;
-        for (u4 j = 0; j < data->direct_methods_size; ++j) {
-            dex_method_id *method = &meta->method_ids[data->direct_methods[j].method_id];
-            if (!strcmp(dex_str_of_idx(meta, method->name_idx), "<clinit>")) {
-                clinit = &data->direct_methods[j];
-                break;
-            }
-        }
-    }
-    if (!clinit || !clinit->code)
-        return NULL;
-    const u2 *words = clinit->code->insns;
-    unsigned size = clinit->code->insns_size;
-    for (unsigned i = 0, offset = 0; i < size;) {
-        u1 opcode = words[i] & 0xff;
-        u4 length = dex_opcode_len(opcode);
-        if (!length || i + length > size)
-            break;
-        if (opcode == DEX_INS_NEW_ARRAY && i + 1 < size) {
-            unsigned array_reg = words[i] >> 8;
-            unsigned type_index = words[i + 1];
-            if (type_index >= meta->header->type_ids_size ||
-                strcmp(dex_str_of_type_id(meta, type_index), "[S") != 0) {
-                i += length; offset += length; continue;
-            }
-            unsigned j = i + length;
-            unsigned next_offset = offset + length;
-            if (j >= size || (words[j] & 0xff) != DEX_INS_FILL_ARRAY_DATA)
-                { i += length; offset += length; continue; }
-            int32_t payload_rel = (int32_t)((uint32_t)words[j + 1] |
-                                            ((uint32_t)words[j + 2] << 16));
-            int64_t payload_index_signed = (int64_t)j + payload_rel;
-            if (payload_index_signed < 0 || payload_index_signed > size)
-                { i += length; offset += length; continue; }
-            unsigned payload_index = (unsigned)payload_index_signed;
-            if (payload_index + 4 > size || words[payload_index] != 0x0300)
-                { i += length; offset += length; continue; }
-            unsigned count = words[payload_index + 2];
-            if (words[payload_index + 1] != 2 || count > 65536 || payload_index + 4 + count > size)
-                { i += length; offset += length; continue; }
-            bool stores_field = false;
-            for (unsigned k = j + 3; k < payload_index;) {
-                u1 next_opcode = words[k] & 0xff;
-                u4 next_length = dex_opcode_len(next_opcode);
-                if (!next_length || k + next_length > payload_index)
-                    break;
-                if (next_opcode == DEX_INS_SPUT_OBJECT && (words[k] >> 8) == array_reg &&
-                    words[k + 1] == field_index) {
-                    stores_field = true;
-                    break;
-                }
-                k += next_length;
-            }
-            if (!stores_field)
-                { i += length; offset += length; continue; }
-            encoded_array *array = make_obj(encoded_array);
-            array->size = count;
-            array->values = make_obj_arr(encoded_value, count);
-            for (unsigned n = 0; n < count; ++n) {
-                encoded_value *value = &array->values[n];
-                value->value_type = kDexAnnotationShort;
-                value->value_length = 2;
-                value->value = x_alloc(2);
-                value->value[0] = (u1)(words[payload_index + 4 + n] & 0xff);
-                value->value[1] = (u1)(words[payload_index + 4 + n] >> 8);
-            }
-            return array;
-        }
-        i += length;
-        offset += length;
-    }
-    return NULL;
-}
-
-static void dex_literal_int(jd_exp *exp, int32_t value)
-{
-    exp->type = JD_EXPRESSION_CONST;
-    jd_exp_const *constant = make_obj(jd_exp_const);
-    constant->val = stack_create_empty_val();
-    constant->val->type = JD_VAR_INT_T;
-    constant->val->data->cname = "int";
-    constant->val->data->primitive = make_obj(jd_primitive_union);
-    constant->val->data->primitive->int_val = value;
-    exp->data = constant;
-}
-
 jd_exp* get_store_right(jd_exp *store)
 {
     jd_exp_store *exp_store = store->data;
@@ -193,79 +53,6 @@ static void dex_local_variable_exp(jd_exp *exp, jd_val *val)
     exp->type = JD_EXPRESSION_LOCAL_VARIABLE;
     exp->data = val;
     val->stack_var->use_count ++;
-}
-
-static bool dex_ins_has_method_id(jd_dex_ins *ins)
-{
-    return (ins->code >= DEX_INS_INVOKE_VIRTUAL &&
-            ins->code <= DEX_INS_INVOKE_INTERFACE) ||
-           (ins->code >= DEX_INS_INVOKE_VIRTUAL_RANGE &&
-            ins->code <= DEX_INS_INVOKE_INTERFACE_RANGE);
-}
-
-static bool descriptor_is_object_ref(string type)
-{
-    return type != NULL && (type[0] == 'L' || type[0] == '[');
-}
-
-static bool dex_val_is_zero_int(jd_val *val)
-{
-    return val != NULL && val->type == JD_VAR_INT_T &&
-           val->data != NULL && val->data->primitive != NULL &&
-           val->data->primitive->int_val == 0;
-}
-
-static void dex_fill_null_const(jd_exp *exp)
-{
-    jd_exp_const *const_exp = make_obj(jd_exp_const);
-    jd_val *val = stack_make_primitive_val(JD_VAR_NULL_T);
-    val->data->cname = (string)g_str_null;
-    const_exp->val = val;
-    exp->type = JD_EXPRESSION_CONST;
-    exp->data = const_exp;
-}
-
-static void dex_invoke_argument_exp(jd_exp *arg, jd_val *val, string expected)
-{
-    /* Dalvik uses const/4 0 for both int 0 and null. Honour the callee type. */
-    if (descriptor_is_object_ref(expected) &&
-        (val == NULL || dex_val_is_zero_int(val)))
-        dex_fill_null_const(arg);
-    else
-        dex_local_variable_exp(arg, val);
-}
-
-static jd_descriptor *dex_invoke_proto(jd_dex_ins *ins)
-{
-    if (!dex_ins_has_method_id(ins))
-        return NULL;
-    jd_meta_dex *meta = dex_ins_meta(ins);
-    u2 method_index = dex_ins_parameter(ins, 1);
-    if (method_index >= meta->header->method_ids_size)
-        return NULL;
-    dex_method_id *method_id = &meta->method_ids[method_index];
-    if (method_id->proto_idx >= meta->header->proto_ids_size)
-        return NULL;
-    dex_proto_id *proto_id = &meta->proto_ids[method_id->proto_idx];
-    jd_descriptor *desc = make_obj(jd_descriptor);
-    desc->str_return = dex_str_of_type_id(meta, proto_id->return_type_idx);
-    desc->list = linit_string();
-    if (proto_id->parameters_off != 0 && proto_id->type_list != NULL) {
-        for (u4 i = 0; i < proto_id->type_list->size; ++i) {
-            string type = dex_str_of_type_id(meta,
-                                             proto_id->type_list->list[i].type_idx);
-            ladd_string(desc->list, type);
-        }
-    }
-    return desc;
-}
-
-static string dex_invoke_arg_type(jd_descriptor *desc, int proto_index)
-{
-    if (desc == NULL || desc->list == NULL || proto_index < 0 ||
-        proto_index >= (int)desc->list->size)
-        return NULL;
-    return lget_string(desc->list, proto_index);
 }
 
 static void dex_move_expression(jd_exp *exp, jd_dex_ins *ins)
@@ -429,13 +216,15 @@ static void dex_filled_new_array_expression(jd_exp *exp, jd_dex_ins *ins)
     new_array->class_name = class_name;
 
     u1 size = dex_ins_parameter(ins, 0);
-    new_array->values_only = true;
+    if (size == 0)
+        return;
+
     new_array->list = make_exp_list(size);
     for (int i = 0; i < size; ++i) {
         jd_exp *count_exp = &new_array->list->args[i];
         count_exp->type = JD_EXPRESSION_STACK_VAR;
         u8 slot = dex_ins_parameter(ins, i + 2);
-        jd_val *val = ins->stack_in->local_vars[slot];
+        jd_val *val = ins->stack_out->local_vars[slot];
         dex_local_variable_exp(count_exp, val);
     }
 
@@ -466,8 +255,6 @@ static void dex_filled_new_array_range_expression(jd_exp *exp, jd_dex_ins *ins)
     string class_name = array_component_name(descriptor_to_s(desc));
     new_array->class_name = class_name;
 
-    new_array->values_only = true;
-    new_array->list = make_exp_list(0);
     u1 u_a = dex_ins_parameter(ins, 0);
     u2 start_index = dex_ins_parameter(ins, 2);
     u2 count = start_index + u_a - 1;
@@ -477,7 +264,7 @@ static void dex_filled_new_array_range_expression(jd_exp *exp, jd_dex_ins *ins)
         for (int i = start_index; i <= count; ++i) {
             jd_exp *count_exp = &new_array->list->args[i - start_index];
             count_exp->type = JD_EXPRESSION_STACK_VAR;
-            jd_val *val = ins->stack_in->local_vars[i];
+            jd_val *val = ins->stack_out->local_vars[i];
             dex_local_variable_exp(count_exp, val);
         }
     }
@@ -501,69 +288,108 @@ static void dex_filled_new_array_range_expression(jd_exp *exp, jd_dex_ins *ins)
 
 static void dex_fill_array_data_expression(jd_exp *exp, jd_dex_ins *ins)
 {
-    uint32_t offset = (ins_is_duplicate(ins) ? ins->old_offset : ins->offset) +
-                      (uint32_t)dex_ins_parameter(ins, 1);
-    jd_dex_ins *payload = dex_ins_of_offset(ins->method, offset);
-    unsigned slot = dex_ins_parameter(ins, 0);
-    if (!ins->stack_in || slot >= ins->method->max_locals) {
-        exp_mark_nopped(exp); return;
+    exp->type = JD_EXPRESSION_NEW_ARRAY;
+    exp->data = make_obj_zero(jd_exp_new_array);
+
+    jd_exp_new_array *new_array = exp->data;
+    s4 offset = (s4)dex_ins_parameter(ins, 1);
+    // TODO: check instruction is copy
+    if (ins_is_duplicate((jd_ins *) ins)) {
+        offset = offset + ins->old_offset;
     }
-    jd_val *array = ins->stack_in->local_vars[slot];
-    const char *type = array && array->data ? array->data->cname : NULL;
-    size_t n = type ? strlen(type) : 0;
-    if (!payload || payload->param_length < 4 || payload->param[0] != 0x0300 ||
-        n < 3 || strcmp(type + n - 2, "[]")) {
-        exp_mark_nopped(exp); return;
+    else {
+        offset = offset + ins->offset;
     }
-    unsigned width = payload->param[1];
-    uint32_t count = (uint32_t)payload->param[2] | ((uint32_t)payload->param[3] << 16);
-    if ((width != 1 && width != 2 && width != 4 && width != 8) ||
-        count > 1048576 || (uint64_t)count * width > (uint64_t)(payload->param_length - 4) * 2) {
-        exp_mark_nopped(exp); return;
+    //    offset = offset + ins->old_offset;
+
+    u1 slot = dex_ins_parameter(ins, 0);
+    jd_val *val = ins->stack_out->local_vars[slot];
+    jd_dex_ins *payload_ins = dex_ins_of_offset(ins->method, offset);
+
+    if (payload_ins == NULL || val == NULL || val->data == NULL) {
+        new_array->class_name = (string) g_str_unknown;
+        new_array->list = make_exp_list(1);
+        build_empty_expression(&new_array->list->args[0], (jd_ins *) ins);
+        return;
     }
-    jd_exp_new_array *fill = make_obj(jd_exp_new_array);
-    fill->class_name = strndup(type, n - 2);
-    fill->fill_existing = true;
-    fill->list = make_exp_list(count + 1);
-    dex_local_variable_exp(&fill->list->args[0], array);
-    const unsigned char *bytes = (const unsigned char *)&payload->param[4];
-    for (uint32_t i = 0; i < count; ++i) {
-        uint64_t bits = 0;
-        for (unsigned j = 0; j < width; ++j) bits |= (uint64_t)bytes[i * width + j] << (8 * j);
-        jd_exp *element = &fill->list->args[i + 1];
-        dex_literal_int(element, (int32_t)bits);
+
+    u2 element_size = payload_ins->param[1];
+    u4 size = payload_ins->param[3] << 16 | payload_ins->param[2];
+
+    DEBUG_PRINT("[payload size]: %d\n", size);
+
+    string component = array_component_name(val->data->cname);
+    if (component == NULL)
+        component = (string) g_str_unknown;
+    new_array->class_name = component;
+    new_array->list = make_exp_list(size + 1);
+
+    jd_exp *count_exp = &new_array->list->args[0];
+    count_exp->type = JD_EXPRESSION_CONST;
+    count_exp->ins = (jd_ins *) ins;
+    jd_exp_const *count_const = make_obj(jd_exp_const);
+    count_exp->data = count_const;
+    count_const->val = stack_create_empty_val();
+    count_const->val->type = JD_VAR_INT_T;
+    count_const->val->data->primitive = make_obj(jd_primitive_union);
+    count_const->val->data->primitive->int_val = size;
+    count_const->val->data->cname = (string) g_str_int;
+
+    u1 *params = (u1 *) &payload_ins->param[4];
+
+    for (int i = 0; i < size; ++i) {
+        jd_exp *element = &new_array->list->args[i + 1];
+        element->type = JD_EXPRESSION_CONST;
         element->ins = (jd_ins *) ins;
-        jd_val *v = ((jd_exp_const *)element->data)->val;
-        v->data->cname = fill->class_name;
-        if (!strcmp(fill->class_name, "byte")) v->data->primitive->int_val = (int8_t)bits;
-        else if (!strcmp(fill->class_name, "short")) v->data->primitive->int_val = (int16_t)bits;
-        else if (!strcmp(fill->class_name, "char")) v->data->primitive->int_val = (uint16_t)bits;
-        else if (!strcmp(fill->class_name, "long")) {
-            v->type = JD_VAR_LONG_T; v->data->primitive->long_val = (int64_t)bits;
-        } else if (!strcmp(fill->class_name, "float")) {
-            uint32_t word = bits; v->type = JD_VAR_FLOAT_T;
-            memcpy(&v->data->primitive->float_val, &word, sizeof(word));
-        } else if (!strcmp(fill->class_name, "double")) {
-            v->type = JD_VAR_DOUBLE_T;
-            memcpy(&v->data->primitive->double_val, &bits, sizeof(bits));
+        jd_exp_const *const_exp = make_obj(jd_exp_const);
+        element->data = const_exp;
+        const_exp->val = stack_create_empty_val();
+        jd_val *const_val = const_exp->val;
+        const_val->data->primitive = make_obj(jd_primitive_union);
+        jd_primitive_union *primitive = const_val->data->primitive;
+
+        if (STR_EQL(component, g_str_double)) {
+            double dval = 0;
+            memcpy(&dval, params, element_size < sizeof(dval) ? element_size
+                                                              : sizeof(dval));
+            const_val->type = JD_VAR_DOUBLE_T;
+            primitive->double_val = dval;
+            const_val->data->cname = (string) g_str_double;
         }
-    }
-    jd_dex_ins *allocation = ins->prev;
-    if (allocation && allocation->code == DEX_INS_NEW_ARRAY && ins->comings->size == 0 &&
-        dex_ins_parameter(allocation, 0) == slot && allocation->expression &&
-        allocation->expression->type == JD_EXPRESSION_STORE) {
-        jd_val *length = allocation->stack_in->local_vars[dex_ins_parameter(allocation, 1)];
-        if (length && length->type == JD_VAR_INT_T && length->data->primitive &&
-            length->data->primitive->int_val == count) {
-            jd_exp *right = get_store_right(allocation->expression);
-            jd_exp_new_array *created = right->data;
-            fill->list->args[0] = created->list->args[0];
-            created->list = fill->list;
-            exp_mark_nopped(exp);
-            return;
+        else if (STR_EQL(component, g_str_long)) {
+            long long_value = 0;
+            memcpy(&long_value, params, element_size < sizeof(long_value)
+                                           ? element_size : sizeof(long_value));
+            const_val->type = JD_VAR_LONG_T;
+            primitive->long_val = long_value;
+            const_val->data->cname = (string) g_str_long;
         }
+        else if (STR_EQL(component, g_str_float)) {
+            float fvalue = 0;
+            memcpy(&fvalue, params, element_size < sizeof(fvalue)
+                                         ? element_size : sizeof(fvalue));
+            const_val->type = JD_VAR_FLOAT_T;
+            primitive->float_val = fvalue;
+            const_val->data->cname = (string) g_str_float;
+        }
+        else if (STR_EQL(component, g_str_int) ||
+                 STR_EQL(component, g_str_char) ||
+                 STR_EQL(component, g_str_byte) ||
+                 STR_EQL(component, g_str_short) ||
+                 STR_EQL(component, g_str_boolean)) {
+            int int_value = 0;
+            memcpy(&int_value, params, element_size < sizeof(int_value)
+                                            ? element_size : sizeof(int_value));
+            const_val->type = JD_VAR_INT_T;
+            primitive->int_val = int_value;
+            const_val->data->cname = component;
+        }
+        else {
+            const_val->type = JD_VAR_NULL_T;
+            const_val->data->cname = (string) g_str_Object;
+        }
+        params += element_size;
     }
-    exp->type = JD_EXPRESSION_NEW_ARRAY; exp->data = fill;
 }
 
 static void dex_throw_expression(jd_exp *exp, jd_dex_ins *ins)
@@ -901,34 +727,6 @@ static void dex_static_get_expression(jd_exp *exp, jd_dex_ins *ins)
     get_static->owner_class_name = descriptor_to_s(owner_class_name);
     get_static->name = field_name;
     get_static->list = make_exp_list(1);
-    /* Materialize encoded short[] tables.  This gives the safe constant
-     * folder enough information to decode the common [SIII String obfuscator
-     * without executing arbitrary application code. */
-    encoded_array *array = NULL;
-    if (ins->code == DEX_INS_SGET_OBJECT &&
-        dex_str_of_field_type(meta, field_slot) &&
-        strcmp(dex_str_of_field_type(meta, field_slot), "[S") == 0) {
-        array = dex_static_short_array(meta, field_slot);
-        if (!array)
-            array = dex_clinit_short_array(meta, field_slot);
-    }
-    if (array) {
-        jd_exp_new_array *literal = make_obj(jd_exp_new_array);
-        literal->class_name = "short";
-        literal->values_only = true;
-        literal->list = make_exp_list(array->size);
-        for (u4 i = 0; i < array->size; ++i) {
-            int32_t number;
-            if (!dex_encoded_integer(&array->values[i], &number)) {
-                literal = NULL;
-                break;
-            }
-            dex_literal_int(&literal->list->args[i], number);
-        }
-        if (literal) {
-            get_static->constant_array = literal;
-        }
-    }
     right->type = JD_EXPRESSION_GET_STATIC;
     right->data = get_static;
 }
@@ -987,7 +785,6 @@ static void dex_invoke_expression(jd_exp *exp, jd_dex_ins *ins)
     invoke->class_name = descriptor_to_s(class_name);
     invoke->owner_class = class_full_name(class_name);
     invoke->method_name = name;
-    invoke->descriptor = dex_invoke_proto(ins);
 
     u1 real_param_size = param_size;
     for (int i = 0; i < param_size; ++i) {
@@ -1006,19 +803,14 @@ static void dex_invoke_expression(jd_exp *exp, jd_dex_ins *ins)
     for (int i = 0; i < param_size; ++i) {
         u2 slot = dex_ins_parameter(ins, i + increase);
         jd_val *val = ins->stack_in->local_vars[slot];
-        string expected = dex_ins_is_invoke_static(ins)
-                              ? dex_invoke_arg_type(invoke->descriptor, i)
-                              : (i == 0 ? NULL
-                                        : dex_invoke_arg_type(invoke->descriptor,
-                                                              i - 1));
         if (dex_ins_is_invoke_static(ins)) {
             jd_exp *arg = &invoke->list->args[i];
-            dex_invoke_argument_exp(arg, val, expected);
+            dex_local_variable_exp(arg, val);
         }
         else {
             jd_exp *list_args = invoke->list->args;
             jd_exp *arg = i == 0 ? &list_args[param_size-1] : &list_args[i-1];
-            dex_invoke_argument_exp(arg, val, expected);
+            dex_local_variable_exp(arg, val);
         }
 
         if (stack_val_is_wide(val))
@@ -1127,7 +919,6 @@ static void dex_invoke_range_expression(jd_exp *exp, jd_dex_ins *ins)
     invoke->class_name = descriptor_to_s(class_name);
     invoke->owner_class = class_full_name(class_name);
     invoke->method_name = name;
-    invoke->descriptor = dex_invoke_proto(ins);
 
     u2 start_index = dex_ins_parameter(ins, 2);
     u2 count = start_index + start - 1;
@@ -1150,14 +941,9 @@ static void dex_invoke_range_expression(jd_exp *exp, jd_dex_ins *ins)
     int increase = 0;
     for (int i = 0; i < param_size; ++i) {
         jd_val *val = ins->stack_in->local_vars[i + start_index + increase];
-        string expected = dex_ins_is_invoke_static_range(ins)
-                              ? dex_invoke_arg_type(invoke->descriptor, i)
-                              : (i == 0 ? NULL
-                                        : dex_invoke_arg_type(invoke->descriptor,
-                                                              i - 1));
         if (dex_ins_is_invoke_static_range(ins)) {
             jd_exp *arg = &invoke->list->args[i];
-            dex_invoke_argument_exp(arg, val, expected);
+            dex_local_variable_exp(arg, val);
         }
         else {
             jd_exp *arg;
@@ -1169,7 +955,7 @@ static void dex_invoke_range_expression(jd_exp *exp, jd_dex_ins *ins)
             else {
                 arg = &list_args[i-1];
             }
-            dex_invoke_argument_exp(arg, val, expected);
+            dex_local_variable_exp(arg, val);
         }
 
         if (stack_val_is_wide(val)) {

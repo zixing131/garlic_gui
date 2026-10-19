@@ -105,10 +105,7 @@ int threadpool_add(threadpool_t *pool,
 
     do {
         if (pool->tail >= pool->queue_size) {
-            /* Compact only after consuming half the capacity. Compacting for
-             * every newly freed slot copies a nearly full queue under the lock
-             * once per submitted class on large APKs. Grow otherwise. */
-            if (pool->head >= pool->queue_size / 2) {
+            if (pool->head > 0) {
 
                 memmove(pool->queue, &pool->queue[pool->head],
                         sizeof(threadpool_task_t) * pool->count);
@@ -223,13 +220,14 @@ int threadpool_free(threadpool_t *pool)
 void thread_local_data_init(threadpool_t *pool, pthread_t tid) {
     (void) pool; (void) tid;
     pthread_once(&tls_init_once, create_tls_key);
+
     mem_pool *storage = mem_create_pool();
     thread_local_data *tls = x_alloc_in(storage, sizeof(thread_local_data));
     if (!tls) {
         perror("Failed to allocate thread local storage");
         exit(EXIT_FAILURE);
     }
-    tls->pool = NULL; /* Each task owns and releases its own arena. */
+    tls->pool = mem_create_pool();
     pthread_setspecific(tls_key, tls);
 }
 
