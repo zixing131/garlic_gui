@@ -217,7 +217,12 @@ static inline void build_dex_ins_move_result_act(jd_dex_ins *ins)
     }
     else {
         dex_method_id *method_id = &meta->method_ids[meth_idx];
-        dex_proto_id *proto_id = &meta->proto_ids[method_id->proto_idx];
+        u2 proto_index = method_id->proto_idx;
+        if (prev->code == DEX_INS_INVOKE_POLYMORPHIC)
+            proto_index = dex_ins_parameter(prev, 7);
+        else if (prev->code == DEX_INS_INVOKE_POLYMORPHIC_RANGE)
+            proto_index = dex_ins_parameter(prev, 3);
+        dex_proto_id *proto_id = &meta->proto_ids[proto_index];
         string desc = dex_str_of_type_id(meta, proto_id->return_type_idx);
 
         u1 u_a = dex_ins_parameter(ins, 0);

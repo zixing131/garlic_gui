@@ -97,6 +97,7 @@ class Project : public QObject {
     void removeDocument(const QString &key) { documents_.remove(key); }
     void clearDocuments() { documents_.clear(); }
     QByteArray sourceBytes(const QString &path, const QString &name) const;
+    bool packedSourceMapAvailable(const QString &path, const QString &name) const;
     qint64 documentBytes(const QString &key) const;
     QStringList applicationCandidates() const;
     QString input() const { return input_; }
@@ -122,7 +123,7 @@ class Project : public QObject {
     };
     std::shared_ptr<MapArchiveIndex> mapArchive_ = std::make_shared<MapArchiveIndex>();
     std::shared_ptr<MapArchiveIndex> javaArchive_ = std::make_shared<MapArchiveIndex>();
-    QByteArray packedBytes(const QString &source, const QString &name, bool java) const;
+    QByteArray packedBytes(const QString &source, const QString &name, bool java, bool checkOnly = false) const;
     struct ReferencePosition { int group, index; };
     struct ReferenceGroup { QString owner, from; };
     struct ReferenceIndex {

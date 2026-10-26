@@ -8,6 +8,48 @@ class BackendTest : public QObject {
     QString fixtures_ = qEnvironmentVariable("GARLIC_TEST_FIXTURES");
     QString engine_ = qEnvironmentVariable("GARLIC_TEST_ENGINE");
   private slots:
+    void realArchiveSearch() {
+        const auto input = qEnvironmentVariable("GARLIC_TEST_ARCHIVE");
+        const auto query = qEnvironmentVariable("GARLIC_TEST_ARCHIVE_QUERY");
+        if (input.isEmpty() || query.isEmpty()) QSKIP("Set GARLIC_TEST_ARCHIVE and GARLIC_TEST_ARCHIVE_QUERY");
+        Backend backend; backend.setEngine(engine_);
+        AppSettings settings; settings.background = false; settings.threads = 4;
+        backend.configure(settings);
+        QSignalSpy errors(&backend, &Backend::failed), completed(&backend, &Backend::searchCompleted);
+        backend.open(input);
+        QTRY_VERIFY_WITH_TIMEOUT(backend.metadataReady() || !errors.isEmpty(), 180000);
+        QVERIFY2(errors.isEmpty(), qPrintable(errors.isEmpty() ? QString() : errors.first()[0].toString()));
+        QElapsedTimer timer; timer.start();
+        bool firstBatch = false;
+        connect(&backend, &Backend::searchBatch, &backend, [&](int, const QJsonArray &hits) {
+            if (!firstBatch && !hits.isEmpty()) {
+                firstBatch = true;
+                qInfo() << "First archive hits ms/generating" << timer.elapsed() << backend.preparing();
+                qInfo() << "First archive hit" << hits.first().toObject();
+            }
+        });
+        SearchOptions options; options.query = query; options.limit = 10000;
+        backend.search(options);
+        QTRY_VERIFY_WITH_TIMEOUT(!completed.isEmpty() || !errors.isEmpty(), 600000);
+        QVERIFY2(errors.isEmpty(), qPrintable(errors.isEmpty() ? QString() : errors.first()[0].toString()));
+        const auto result = qvariant_cast<SearchResult>(completed.last()[1]);
+        qInfo() << "Archive search ms/hits/scanned/missing/skipped" << timer.elapsed()
+                << result.hits.size() << result.scanned << result.missing << result.skipped;
+        QVERIFY(result.error.isEmpty()); QVERIFY(!result.canceled);
+        QTRY_VERIFY_WITH_TIMEOUT(backend.projectReady(), 600000);
+        QSignalSpy preparation(&backend, &Backend::preparationChanged);
+        timer.restart(); backend.search(options);
+        QTRY_COMPARE_WITH_TIMEOUT(completed.count(), 2, 60000);
+        QCOMPARE(qvariant_cast<SearchResult>(completed.last()[1]).hits.size(), result.hits.size());
+        QCOMPARE(preparation.count(), 0);
+        qInfo() << "Repeated archive search ms" << timer.elapsed();
+        if (result.hits.isEmpty()) {
+            options.query = "NullPointerException"; options.limit = 10;
+            backend.search(options);
+            QTRY_COMPARE_WITH_TIMEOUT(completed.count(), 3, 60000);
+            qInfo() << "Related exception matches" << qvariant_cast<SearchResult>(completed.last()[1]).hits;
+        }
+    }
     void realNestedArchive() {
         const auto input = qEnvironmentVariable("GARLIC_TEST_ARCHIVE");
         if (input.isEmpty()) QSKIP("Set GARLIC_TEST_ARCHIVE for nested archive profiling");

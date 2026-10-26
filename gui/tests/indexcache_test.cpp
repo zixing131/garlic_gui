@@ -125,6 +125,7 @@ class IndexCacheTest : public QObject {
         QTest::addColumn<bool>("full"); QTest::addColumn<QString>("fixture");
         QTest::newRow("per-class-dex") << false << QString("cases.dex");
         QTest::newRow("full-packed-dex") << true << QString("cases.dex");
+        QTest::newRow("full-dex-zip") << true << QString("cases.zip");
         QTest::newRow("full-directory-jar") << true << QString("demo.jar");
         QTest::newRow("per-class-class") << false << QString("Main.class");
         QTest::newRow("full-class") << true << QString("Main.class");

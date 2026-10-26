@@ -15,6 +15,9 @@ out = args.output.resolve()
 out.mkdir(parents=True, exist_ok=True)
 shutil.copyfile(Path(__file__).parent / 'fixtures/flattened.dex', out / 'flattened.dex')
 shutil.copyfile(Path(__file__).parent / 'fixtures/cases.dex', out / 'cases.dex')
+shutil.copyfile(Path(__file__).parent / 'fixtures/polymorphic.dex', out / 'polymorphic.dex')
+with zipfile.ZipFile(out / 'cases.zip', 'w') as archive:
+    archive.write(out / 'cases.dex', 'dex_0.dex')
 classes = out / "classes"
 classes.mkdir(exist_ok=True)
 sources = sorted((Path(__file__).parent / "fixtures").rglob("*.java"))

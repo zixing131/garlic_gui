@@ -6,6 +6,7 @@ import hashlib
 import struct
 import zlib
 import os
+import re
 import shutil
 from pathlib import Path
 import subprocess
@@ -49,6 +50,19 @@ def test_workspace():
 
 
 with test_workspace() as root:
+    # API 26 invoke-polymorphic uses the call-site prototype, not the
+    # MethodHandle Object[] -> Object declaration. The owned DEX is assembled
+    # from fixtures/Polymorphic.smali and exercises both 45cc and 4rcc.
+    for threads in ('1', '4'):
+        target = root / ('polymorphic-' + threads)
+        run([str(engine), str(fixtures / 'polymorphic.dex'), '-o', str(target), '-t', threads],
+            check=True, capture_output=True, timeout=20)
+        code = (target / 'demo/Polymorphic.java').read_text(encoding='utf-8')
+        for call in ('handle.invokeExact()', 'handle.invokeExact(11, 22, 33, 44)',
+                     'handle.invokeExact(1, 2, 3, 4, 5, 6)', 'handle.invokeExact(null)'):
+            assert call in code, code
+        assert re.search(r'long \w+ = handle\.invokeExact\(\);', code), code
+
     # Archives preserve Java bytes and exact map offsets, including append across inputs.
     import struct
     def archive_records(path):

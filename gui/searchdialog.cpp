@@ -265,7 +265,9 @@ SearchDialog::SearchDialog(MainWindow *window) : QDialog(window), window_(window
     connect(window_->backend(), &Backend::searchProgress, this,
             [this](int id, int scanned, int total) {
                 if (id == request_)
-                    status_->setText(tr("已找到 %1 条 · 已搜索 %2 / %3 个源码文件")
+                    status_->setText((window_->backend()->preparing()
+                                         ? tr("源码仍在生成，结果会继续补充 · 已找到 %1 条 · 已搜索 %2 / %3 个源码文件")
+                                         : tr("已找到 %1 条 · 已搜索 %2 / %3 个源码文件"))
                                          .arg(model_->rowCount())
                                          .arg(scanned)
                                          .arg(total));
@@ -318,7 +320,10 @@ void SearchDialog::startSearch(int limit) {
     static_cast<MatchDelegate *>(table_->itemDelegate())->expression = searchExpression(o);
     request_ = window_->backend()->search(o);
     setWindowTitle(tr("项目搜索：%1").arg(o.query));
-    status_->setText(o.query.isEmpty() ? tr("请输入搜索文本。") : tr("搜索中…"));
+    status_->setText(o.query.isEmpty() ? tr("请输入搜索文本。")
+        : (o.code || o.comments) && window_->backend()->preparing()
+            ? tr("正在生成源码并搜索，结果会逐批出现；当前空白不代表没有匹配。")
+            : tr("搜索中…"));
 }
 void SearchDialog::navigate() {
     auto index = table_->currentIndex();

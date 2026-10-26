@@ -335,10 +335,6 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
         const int total = pending.size();
         while (!pending.empty() && !stopped()) {
             const bool inFlight = generating->load();
-            if (inFlight && QFileInfo::exists(directory + "/source-maps.bin")) {
-                QThread::msleep(25);
-                continue;
-            }
             const int checks = inFlight ? qMin<int>(512, pending.size()) : int(pending.size());
             for (int i = 0; i < checks && !stopped(); ++i) {
                 auto name = std::move(pending.front());
@@ -347,9 +343,15 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
                               path = base + (o.sourceSmali ? ".smali" : ".java");
                 const QString map =
                     singleClass ? directory + '/' + (safePaths ? Project::sourceStem(name) : name) + ".map.json" : base + ".map.json";
+                auto readSource = [&] {
+                    if (!o.sourceSmali) return project->sourceBytes(path, name);
+                    QFile file(path);
+                    return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+                };
                 // The engine publishes a map after flushing a complete class, so in-flight files
                 // are not searched.
-                if (inFlight && !QFileInfo::exists(map)) {
+                if (inFlight && !QFileInfo::exists(map) &&
+                    (o.sourceSmali || !project->packedSourceMapAvailable(path, name))) {
                     pending.push_back(std::move(name));
                     continue;
                 }
@@ -368,7 +370,7 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
                     filterKey += ":" + QString::number(info.size()) + ":" +
                            QString::number(info.lastModified().toMSecsSinceEpoch());
                 }
-                if (!info.exists()) {
+                if (!immutableSources && !info.exists()) {
                     const QFileInfo archive(directory + "/java-sources.bin");
                     filterKey += ":pack:" + QString::number(archive.size()) + ":" + QString::number(archive.lastModified().toMSecsSinceEpoch());
                 }
@@ -403,8 +405,15 @@ SearchResult searchProject(const std::shared_ptr<Project> &project, const Search
                             continue;
                         }
                     }
-                    const auto source = o.sourceSmali ? [&] { QFile file(path); return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray(); }() : project->sourceBytes(path, name);
+                    const auto source = readSource();
                     if (source.isEmpty()) {
+                        // Java and map archives are buffered independently. Retry
+                        // unpublished Java entries instead of caching a missing result.
+                        if (inFlight) {
+                            --result.scanned;
+                            pending.push_back(std::move(name));
+                            continue;
+                        }
                         ++result.missing;
                         continue;
                     }

@@ -237,16 +237,21 @@ static void dex_invoke_argument_exp(jd_exp *arg, jd_val *val, string expected)
 
 static jd_descriptor *dex_invoke_proto(jd_dex_ins *ins)
 {
-    if (!dex_ins_has_method_id(ins))
-        return NULL;
     jd_meta_dex *meta = dex_ins_meta(ins);
-    u2 method_index = dex_ins_parameter(ins, 1);
-    if (method_index >= meta->header->method_ids_size)
+    u2 proto_index;
+    if (ins->code == DEX_INS_INVOKE_POLYMORPHIC)
+        proto_index = dex_ins_parameter(ins, 7);
+    else if (ins->code == DEX_INS_INVOKE_POLYMORPHIC_RANGE)
+        proto_index = dex_ins_parameter(ins, 3);
+    else {
+        if (!dex_ins_has_method_id(ins)) return NULL;
+        u2 method_index = dex_ins_parameter(ins, 1);
+        if (method_index >= meta->header->method_ids_size) return NULL;
+        proto_index = meta->method_ids[method_index].proto_idx;
+    }
+    if (proto_index >= meta->header->proto_ids_size)
         return NULL;
-    dex_method_id *method_id = &meta->method_ids[method_index];
-    if (method_id->proto_idx >= meta->header->proto_ids_size)
-        return NULL;
-    dex_proto_id *proto_id = &meta->proto_ids[method_id->proto_idx];
+    dex_proto_id *proto_id = &meta->proto_ids[proto_index];
     jd_descriptor *desc = make_obj(jd_descriptor);
     desc->str_return = dex_str_of_type_id(meta, proto_id->return_type_idx);
     desc->list = linit_string();

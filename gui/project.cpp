@@ -713,7 +713,7 @@ static QString codeMask(QString text, bool smali) {
     }
     return text;
 }
-QByteArray Project::packedBytes(const QString &source, const QString &name, bool java) const {
+QByteArray Project::packedBytes(const QString &source, const QString &name, bool java, bool checkOnly) const {
     const int directory = source.lastIndexOf("/_classes/");
     QString root = directory < 0 ? QFileInfo(source).absolutePath() : source.left(directory);
     const auto relative = normalize(name) + ".java";
@@ -752,8 +752,12 @@ QByteArray Project::packedBytes(const QString &source, const QString &name, bool
     if (found == archive->entries.cend()) return {};
     const auto entry = *found;
     guard.unlock(); // Each reader owns its QFile; source I/O must not block other classes.
+    if (checkOnly) return QByteArray("1");
     if (!file.seek(entry.first)) return {};
     return file.read(entry.second);
+}
+bool Project::packedSourceMapAvailable(const QString &path, const QString &name) const {
+    return !packedBytes(path, owner(name), false, true).isEmpty();
 }
 QByteArray Project::sourceBytes(const QString &path, const QString &name) const {
     QFile file(path);

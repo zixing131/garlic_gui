@@ -1,11 +1,79 @@
 #include "backend.h"
 #include <QFile>
 #include <QJsonDocument>
+#include <QDataStream>
+#include <QScopeGuard>
+#include <QtConcurrent>
 #include <QtTest>
 #include <algorithm>
 class ProjectTest : public QObject {
     Q_OBJECT
   private slots:
+    void searchGrowingSourceArchives_data() {
+        QTest::addColumn<bool>("packedJava");
+        QTest::newRow("packed-java") << true;
+        QTest::newRow("directory-java-zip") << false;
+    }
+    void searchGrowingSourceArchives() {
+        QFETCH(bool, packedJava);
+        QTemporaryDir dir;
+        auto write = [&](const QString &name, const QByteArray &bytes) {
+            QFile file(dir.filePath(name));
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            QCOMPARE(file.write(bytes), bytes.size());
+        };
+        auto entry = [](const QByteArray &name, const QByteArray &data) {
+            QByteArray index("GSMIDX01");
+            QDataStream stream(&index, QIODevice::Append);
+            stream.setByteOrder(QDataStream::LittleEndian);
+            stream << quint32(name.size()) << quint64(8) << quint32(data.size());
+            index.append(name);
+            return index;
+        };
+        const QByteArray code("class Ready { void run() { throw nullPointerException; } }\n");
+        const QByteArray map("[]");
+        const auto mapIndex = entry("Ready", map);
+        write("source-maps.bin", "GSMAP001" + map);
+        write("source-maps.bin.index", mapIndex.left(mapIndex.size() - 1));
+        if (packedJava) {
+            write("java-sources.bin", "GSMAP001" + code.left(10));
+            write("java-sources.bin.index", entry("Ready", code));
+        } else write("Ready.java", code);
+        auto project = std::make_shared<Project>();
+        project->addClass({{"name", "Ready"}});
+        project->addClass({{"name", "Later"}});
+        auto generating = std::make_shared<std::atomic_bool>(true);
+        auto control = std::make_shared<SearchControl>();
+        auto events = std::make_shared<SearchEvents>();
+        auto index = std::make_shared<SearchIndex>();
+        QSignalSpy batches(events.get(), &SearchEvents::batch);
+        SearchOptions options; options.query = "throw nullPointerException";
+        auto future = QtConcurrent::run([&] {
+            return searchProject(project, options, dir.path(), false, generating, control, events, 1, index, true);
+        });
+        auto cleanup = qScopeGuard([&] { control->canceled = true; generating->store(false); future.waitForFinished(); });
+        QTest::qWait(80);
+        QVERIFY(batches.isEmpty()); // Never consume a partially published map index.
+        write("source-maps.bin.index", mapIndex);
+        if (packedJava) {
+            QTest::qWait(80);
+            QVERIFY(batches.isEmpty()); // Java payload is still incomplete.
+            write("java-sources.bin", "GSMAP001" + code);
+        }
+        QTRY_COMPARE_WITH_TIMEOUT(batches.count(), 1, 3000);
+        QVERIFY(!future.isFinished()); // Ready is searchable while Later is still generating.
+        QCOMPARE(batches.first()[1].toJsonArray().first().toObject().value("class").toString(), QString("Ready"));
+        generating->store(false);
+        QTRY_VERIFY_WITH_TIMEOUT(future.isFinished(), 3000);
+        const auto result = future.result();
+        QCOMPARE(result.hits.size(), 1);
+        QCOMPARE(result.missing, 1); // Only Later is missing, not the initially buffered Ready.
+        QVERIFY(!result.canceled);
+        const auto repeated = searchProject(project, options, dir.path(), false, generating,
+            control, events, 2, index, true);
+        QCOMPARE(repeated.hits, result.hits);
+        QCOMPARE(repeated.cachedFiles, 1);
+    }
     void obfuscatedTypesAndLocals() {
         Project project;
         const QString glyph = QString(QChar(0xe123)) + QChar(0x2588);

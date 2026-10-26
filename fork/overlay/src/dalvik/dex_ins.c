@@ -794,10 +794,11 @@ static inline u8 dex_ins_parameter_45cc(jd_dex_ins *ins, int number)
     u2 v_bbbb = ins->param[1];
     u2 second = ins->param[2];
     u2 v_hhhh = ins->param[3];
-    u1 v_c = second >> 12;
-    u1 v_d = (second >> 8) & 0x0F;
-    u1 v_e = (second >> 4) & 0x0F;
-    u1 v_f = second & 0x0F;
+    /* 45cc stores F|E|D|C, just like 35c; C is the low nibble. */
+    u1 v_c = second & 0x0F;
+    u1 v_d = (second >> 4) & 0x0F;
+    u1 v_e = (second >> 8) & 0x0F;
+    u1 v_f = second >> 12;
 
     switch (number) {
         case 0:

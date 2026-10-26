@@ -170,7 +170,8 @@ static void dex_methods(jsource_file *jf)
 
 void dex_reserve_output_paths(jd_meta_dex *meta, bool decompile)
 {
-    if (meta->source_dir == NULL)
+    if (meta->source_dir == NULL || source_safe_paths_enabled() ||
+        (decompile && source_java_packed()))
         return;
 
     int collided = 0;
