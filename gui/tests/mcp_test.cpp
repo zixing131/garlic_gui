@@ -7,6 +7,7 @@
 #include <QProcess>
 #include <QSettings>
 #include <QtTest>
+#include <QtWidgets>
 
 class McpTest : public QObject {
     Q_OBJECT
@@ -92,6 +93,126 @@ class McpTest : public QObject {
         socket.connectToServer(second.endpoint());
         QVERIFY(socket.waitForConnected(3000));
         QVERIFY(call(socket, "initialize").contains("result"));
+    }
+    void multipleGuiHttpPorts() {
+        QCoreApplication::setOrganizationName("GarlicTests");
+        QCoreApplication::setApplicationName("McpTest");
+        QSettings().clear();
+        // Find a free consecutive range without assuming developer ports are free.
+        QTcpServer reservations[4];
+        int base = 0;
+        for (int attempt = 0; attempt < 100 && !base; ++attempt) {
+            for (auto &reservation : reservations) reservation.close();
+            QVERIFY(reservations[0].listen(QHostAddress::LocalHost, 0));
+            const int candidate = reservations[0].serverPort();
+            if (candidate > 65532) continue;
+            bool available = true;
+            for (int i = 1; i < 4; ++i)
+                available = reservations[i].listen(QHostAddress::LocalHost, candidate + i) && available;
+            if (available) base = candidate;
+        }
+        QVERIFY(base);
+        for (auto &reservation : reservations) reservation.close();
+        MainWindow first, second, third;
+        auto settings = first.backend()->settings();
+        settings.mcpEnabled = true;
+        settings.mcpTransport = "http";
+        settings.mcpPort = base;
+        settings.save();
+        auto a = first.findChild<McpServer *>();
+        auto b = second.findChild<McpServer *>();
+        auto c = third.findChild<McpServer *>();
+        QVERIFY(a && b && c);
+        first.applySettings(settings);
+        second.applySettings(settings);
+        third.applySettings(settings);
+        QCOMPARE(QUrl(a->httpUrl()).port(), base);
+        QCOMPARE(QUrl(b->httpUrl()).port(), base + 1);
+        QCOMPARE(QUrl(c->httpUrl()).port(), base + 2);
+        QVERIFY(a->endpoint() != b->endpoint());
+        QVERIFY(a->endpoint() != c->endpoint());
+        QVERIFY(b->endpoint() != c->endpoint());
+        for (auto server : {a, b, c}) {
+            QLocalSocket socket;
+            socket.connectToServer(server->endpoint());
+            QVERIFY(socket.waitForConnected(3000));
+            QVERIFY(call(socket, "initialize").contains("result"));
+        }
+        // A headless service must still honor its explicitly requested port.
+        Backend backend;
+        backend.configure(settings);
+        McpServer headless(&backend);
+        QString error;
+        QVERIFY(!headless.start(&error));
+        QVERIFY(!error.isEmpty());
+        a->stop();
+        settings.showMemory = !settings.showMemory;
+        second.applySettings(settings);
+        QCOMPARE(QUrl(b->httpUrl()).port(), base + 1);
+        QCOMPARE(second.backend()->settings().mcpPort, base);
+        // The copied configuration must retain the actual port after reopening preferences.
+        bool inspected = false;
+        QTimer::singleShot(0, &second, [&] {
+            auto dialog = second.findChild<QDialog *>();
+            if (!dialog) return;
+            auto config = dialog->findChild<QPlainTextEdit *>("mcpClientConfig");
+            auto port = dialog->findChild<QSpinBox *>("mcpPort");
+            auto activeUrl = dialog->findChild<QLabel *>("mcpActiveUrl");
+            if (config && port && activeUrl) {
+                const auto url = QJsonDocument::fromJson(config->toPlainText().toUtf8()).object()
+                    .value("mcpServers").toObject().value("garlic").toObject().value("url").toString();
+                inspected = url == b->httpUrl() && activeUrl->text() == url && port->value() == base;
+            }
+            dialog->accept();
+        });
+        second.findChild<QAction *>("settings")->trigger();
+        QVERIFY(inspected);
+        QCOMPARE(AppSettings::load().mcpPort, base);
+        QCOMPARE(QUrl(b->httpUrl()).port(), base + 1);
+        // Changing the starting port retries from the new base and skips a live instance.
+        settings.mcpPort = base + 2;
+        second.applySettings(settings);
+        QCOMPARE(QUrl(b->httpUrl()).port(), base + 3);
+        QNetworkAccessManager manager;
+        for (auto server : {b, c}) {
+            QNetworkRequest request{QUrl(server->httpUrl())};
+            request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+            auto reply = manager.post(request, R"({"jsonrpc":"2.0","id":1,"method":"initialize"})");
+            QTRY_VERIFY_WITH_TIMEOUT(reply->isFinished(), 5000);
+            QCOMPARE(reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(), 200);
+            QVERIFY(QJsonDocument::fromJson(reply->readAll()).object().contains("result"));
+            reply->deleteLater();
+        }
+        b->stop();
+        settings.mcpPort = base;
+        second.applySettings(settings);
+        QCOMPARE(QUrl(b->httpUrl()).port(), base);
+        QSettings().clear();
+    }
+    void httpPortExhaustion() {
+        QTcpServer reservation;
+        if (!reservation.listen(QHostAddress::LocalHost, 65535))
+            QSKIP("Port 65535 unavailable for boundary test");
+        MainWindow window;
+        auto settings = window.backend()->settings();
+        settings.mcpTransport = "http";
+        settings.mcpPort = 65535;
+        window.backend()->configure(settings);
+        auto server = window.findChild<McpServer *>();
+        QString error;
+        QVERIFY(!server->start(&error));
+        QVERIFY(!error.isEmpty());
+        QVERIFY(!server->isHttpListening());
+        reservation.close();
+        QVERIFY2(server->start(&error), qPrintable(error));
+        QCOMPARE(QUrl(server->httpUrl()).port(), 65535);
+        server->stop();
+        settings.mcpHost = "invalid-ip";
+        window.backend()->configure(settings);
+        error.clear();
+        QVERIFY(!server->start(&error));
+        QVERIFY(!error.isEmpty());
+        QVERIFY(!server->isHttpListening());
     }
     void progressiveMembers() {
         QCoreApplication::setOrganizationName("GarlicTests");

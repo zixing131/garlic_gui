@@ -10,6 +10,7 @@
 #include "resources.h"
 #include "searchdialog.h"
 #include <QFutureWatcher>
+#include <QProcess>
 #include <QtConcurrent>
 #include <QtWidgets>
 #include <algorithm>
@@ -39,6 +40,15 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     if (!engine.isEmpty())
         backend_.setEngine(QFileInfo(engine).absoluteFilePath());
     auto file = menuBar()->addMenu(tr("文件"));
+    file->addAction(tr("新建窗口"), QKeySequence::New, this, [this] {
+        QSettings().sync();
+        QProcess process;
+        process.setProgram(QCoreApplication::applicationFilePath());
+        process.setArguments({"--engine", backend_.engine()});
+        if (!process.startDetached())
+            QMessageBox::warning(this, tr("新建窗口"),
+                                 tr("无法启动新窗口：%1").arg(process.errorString()));
+    });
     openAction_ =
         file->addAction(tr("打开文件…"), QKeySequence::Open, this, &MainWindow::chooseFile);
     recentMenu_ = file->addMenu(tr("最近打开"));
@@ -486,6 +496,7 @@ MainWindow::MainWindow(const QString &engine, QWidget *parent)
     statusBar()->addPermanentWidget(progress_);
     // Persist shortcuts by stable IDs, never by translated display labels.
     const QList<QPair<const char *, const char *>> actionIds = {
+        {"新建窗口", "newWindow"},
         {"打开文件…", "openFile"}, {"保存项目…", "saveProject"}, {"导出源码…", "exportSources"},
         {"设置…", "settings"}, {"退出", "quit"}, {"跳转到声明", "declaration"},
         {"查找引用", "references"}, {"查看函数调用图", "callGraph"}, {"重命名", "rename"},

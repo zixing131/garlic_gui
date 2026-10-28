@@ -162,11 +162,15 @@ McpServer::McpServer(MainWindow *window, QObject *parent)
 McpServer::McpServer(Backend *backend, QObject *parent) : QObject(parent), backend_(backend) {
     connect(&http_, &QTcpServer::newConnection, this, &McpServer::acceptHttp);
     QDir().mkpath(QDir::homePath() + "/.garlic");
+    const auto instanceId = QString::number(QCoreApplication::applicationPid()) + "-" +
+                            QUuid::createUuid().toString(QUuid::WithoutBraces);
 #ifdef Q_OS_WIN
-    endpoint_ = "garlic-gui-" + QString::number(QCoreApplication::applicationPid());
+    endpoint_ = "garlic-gui-" + instanceId;
 #else
-    endpoint_ =
-        QDir::homePath() + "/.garlic/mcp-" + QString::number(QCoreApplication::applicationPid());
+    endpoint_ = QDir::homePath() + "/.garlic/mcp-" + instanceId;
+    // Leave room for the terminator in sockaddr_un, including on macOS.
+    if (endpoint_.toUtf8().size() > 100)
+        endpoint_ = "/tmp/garlic-mcp-" + instanceId;
 #endif
     server_.setSocketOptions(QLocalServer::UserAccessOption);
     connect(&server_, &QLocalServer::newConnection, this, [this] {
@@ -215,14 +219,25 @@ bool McpServer::start(QString *error, bool privateSession) {
                 *error = tr("MCP 绑定 IP 无效：%1").arg(settings.mcpHost);
             return false;
         }
-        if (http_.isListening() && (http_.serverPort() != settings.mcpPort ||
-                                    http_.serverAddress() != QHostAddress(settings.mcpHost)))
+        // Keep an automatically selected port when unrelated preferences change.
+        // The configured starting port must not drift between GUI instances.
+        if (http_.isListening() && (requestedHttpPort_ != settings.mcpPort ||
+                                    http_.serverAddress() != address))
             http_.close();
-        if (!http_.isListening() &&
-            !http_.listen(QHostAddress(settings.mcpHost), settings.mcpPort)) {
-            if (error)
-                *error = tr("MCP HTTP 启动失败：%1").arg(http_.errorString());
-            return false;
+        if (!http_.isListening()) {
+            int port = settings.mcpPort;
+            while (!http_.listen(address, quint16(port))) {
+                // Headless callers explicitly select their port. GUI instances
+                // instead claim the next free port, atomically via listen().
+                if (!window_ || http_.serverError() != QAbstractSocket::AddressInUseError ||
+                    port == 0 || port >= 65535) {
+                    if (error)
+                        *error = tr("MCP HTTP 启动失败：%1").arg(http_.errorString());
+                    return false;
+                }
+                ++port;
+            }
+            requestedHttpPort_ = settings.mcpPort;
         }
     } else
         http_.close();
@@ -237,7 +252,11 @@ bool McpServer::start(QString *error, bool privateSession) {
     QLocalSocket probe;
     probe.connectToServer(endpoint_);
     if (probe.waitForConnected(100)) {
-        endpoint_ += "-" + QString::number(QCoreApplication::applicationPid());
+#ifdef Q_OS_WIN
+        endpoint_ = "garlic-gui-" + QUuid::createUuid().toString(QUuid::WithoutBraces);
+#else
+        endpoint_ = "/tmp/garlic-mcp-" + QUuid::createUuid().toString(QUuid::WithoutBraces);
+#endif
     } else
         QLocalServer::removeServer(endpoint_);
     if (server_.listen(endpoint_)) {

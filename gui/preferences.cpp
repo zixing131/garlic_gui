@@ -357,12 +357,20 @@ void MainWindow::settingsDialog() {
     host->setObjectName("mcpHost");
     host->setPlaceholderText("127.0.0.1 / 0.0.0.0 / ::");
     mcp->addRow(tr("HTTP 绑定 IP"), host);
-    auto port = spin(mcp, tr("HTTP 端口"), settings.mcpPort, 1024, 65535);
+    auto port = spin(mcp, tr("HTTP 起始端口"), settings.mcpPort, 1024, 65535);
+    port->setObjectName("mcpPort");
+    if (mcp_->isHttpListening()) {
+        auto activeUrl = new QLabel(mcp_->httpUrl());
+        activeUrl->setObjectName("mcpActiveUrl");
+        activeUrl->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        mcp->addRow(tr("当前 HTTP 地址"), activeUrl);
+    }
     auto config = new QPlainTextEdit;
+    config->setObjectName("mcpClientConfig");
     config->setReadOnly(true);
     config->setPlainText(QJsonDocument(mcp_->clientConfig()).toJson(QJsonDocument::Indented));
     mcp->addRow(tr("客户端配置"), config);
-    auto updateConfig = [this, config, transport, port, host] {
+    auto updateConfig = [this, config, transport, port, host, enabled, settings] {
         port->setEnabled(transport->currentData() == "http");
         QJsonObject value;
         if (transport->currentData() == "http") {
@@ -376,6 +384,9 @@ void MainWindow::settingsDialog() {
                           {"garlic",
                            QJsonObject{
                                {"url", QString("http://%1:%2/mcp").arg(ip).arg(port->value())}}}}}};
+            if (enabled->isChecked() && mcp_->isHttpListening() &&
+                port->value() == settings.mcpPort && host->text().trimmed() == settings.mcpHost)
+                value = mcp_->httpConfig();
         } else
             value = {{"mcpServers",
                       QJsonObject{{"garlic",
@@ -387,6 +398,7 @@ void MainWindow::settingsDialog() {
     connect(transport, &QComboBox::currentIndexChanged, &dialog, updateConfig);
     connect(port, &QSpinBox::valueChanged, &dialog, updateConfig);
     connect(host, &QLineEdit::textChanged, &dialog, updateConfig);
+    connect(enabled, &QCheckBox::toggled, &dialog, updateConfig);
     updateConfig();
     auto copy = new QPushButton(tr("复制配置"));
     mcp->addRow(copy);
@@ -398,6 +410,9 @@ void MainWindow::settingsDialog() {
         "的重命名会同步到当前项目，可撤销。"));
     mcpNote->setWordWrap(true);
     mcp->addRow(mcpNote);
+    auto portNote = new QLabel(tr("多开时 HTTP 端口被占用会自动 +1，直到找到空闲端口。修改 MCP 设置后，请保存并重新打开此页复制实际配置。"));
+    portNote->setWordWrap(true);
+    mcp->addRow(portNote);
     auto scripting = page(tr("脚本"));
     auto interpreter = [&](const QString &label, const QString &value, bool python) {
         auto row = new QWidget; auto layout = new QHBoxLayout(row); layout->setContentsMargins(0, 0, 0, 0);

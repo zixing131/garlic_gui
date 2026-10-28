@@ -18,6 +18,7 @@ class McpServer : public QObject {
     QJsonObject clientConfig() const;
     QJsonObject httpConfig(int port = 0) const;
     QString httpUrl() const;
+    bool isHttpListening() const { return http_.isListening(); }
 
   private:
     void dispatch(QLocalSocket *socket, const QJsonObject &request);
@@ -26,6 +27,7 @@ class McpServer : public QObject {
     QLocalServer server_;
     QString endpoint_;
     QTcpServer http_;
+    int requestedHttpPort_ = -1;
     void acceptHttp();
 };
 int runHeadless(int argc, char **argv);

@@ -3,6 +3,11 @@
   "name": "English",
   "messages": {
     "文件": "File",
+    "新建窗口": "New window",
+    "无法启动新窗口：%1": "Could not start a new window: %1",
+    "HTTP 起始端口": "HTTP starting port",
+    "当前 HTTP 地址": "Current HTTP URL",
+    "多开时 HTTP 端口被占用会自动 +1，直到找到空闲端口。修改 MCP 设置后，请保存并重新打开此页复制实际配置。": "Additional instances increment an occupied HTTP port by 1 until a free port is found. After changing MCP settings, save and reopen this page to copy the actual configuration.",
     "导航": "Navigate",
     "视图": "View",
     "打开文件…": "Open file…",
