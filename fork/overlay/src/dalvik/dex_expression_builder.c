@@ -603,7 +603,8 @@ static void dex_fill_array_data_expression(jd_exp *exp, jd_dex_ins *ins)
         }
     }
     jd_dex_ins *allocation = ins->prev;
-    if (allocation && allocation->code == DEX_INS_NEW_ARRAY && ins->comings->size == 0 &&
+    if (allocation && allocation->code == DEX_INS_NEW_ARRAY &&
+        (ins->comings == NULL || ins->comings->size == 0) &&
         dex_ins_parameter(allocation, 0) == slot && allocation->expression &&
         allocation->expression->type == JD_EXPRESSION_STORE) {
         jd_val *length = allocation->stack_in->local_vars[dex_ins_parameter(allocation, 1)];

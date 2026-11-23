@@ -418,6 +418,21 @@ static jd_dex_ins *trace_comparison_dispatcher(state_graph *g, jd_dex_ins *origi
     return NULL;
 }
 
+/* Ordinary instructions no longer store the fall-through successor in
+ * targets. Unflatten still needs that edge. */
+static int dex_extra_fallthrough(jd_dex_ins *ins)
+{
+    if (ins->next == NULL || dex_ins_is_unconditional_jump(ins) ||
+        dex_ins_is_return_op(ins) || dex_ins_is_throw(ins))
+        return 0;
+    if (ins->targets != NULL) {
+        for (int j = 0; j < ins->targets->size; ++j)
+            if (lget_obj(ins->targets, j) == ins->next)
+                return 0;
+    }
+    return 1;
+}
+
 static int specialize_state_edges(jd_method *m)
 {
     int count = m->instructions->size, changed = 0;
@@ -432,7 +447,12 @@ static int specialize_state_edges(jd_method *m)
     state_graph g = {m, calloc(count, sizeof(int)), calloc(count, sizeof(bool))};
     int *queue = calloc(count, sizeof(int));
     size_t edges = 0;
-    for (int i = 0; i < count; ++i) edges += ((jd_dex_ins *)lget_obj(m->instructions, i))->targets->size;
+    for (int i = 0; i < count; ++i) {
+        jd_dex_ins *ins = lget_obj(m->instructions, i);
+        if (ins->targets != NULL)
+            edges += ins->targets->size;
+        edges += dex_extra_fallthrough(ins);
+    }
     g.first_pred = malloc(count * sizeof(int));
     g.edge_source = malloc((edges + 1) * sizeof(int));
     g.edge_next = malloc((edges + 1) * sizeof(int));
@@ -441,8 +461,10 @@ static int specialize_state_edges(jd_method *m)
     int head = 0, tail = 1; g.reachable[0] = true;
     while (head < tail) {
         jd_dex_ins *p = lget_obj(m->instructions, queue[head++]);
-        for (int j = 0; j < p->targets->size; ++j) {
-            jd_dex_ins *t = lget_obj(p->targets, j);
+        int ntargets = p->targets == NULL ? 0 : p->targets->size;
+        int extra = dex_extra_fallthrough(p);
+        for (int j = 0; j < ntargets + extra; ++j) {
+            jd_dex_ins *t = j < ntargets ? lget_obj(p->targets, j) : p->next;
             if (!t) continue;
             g.edge_source[edge] = p->idx;
             g.edge_next[edge] = g.first_pred[t->idx];
@@ -572,8 +594,10 @@ static void prune_state_graph(jd_method *m)
     int head = 0, tail = 1; live[0] = true;
     while (head < tail) {
         jd_dex_ins *p = lget_obj(m->instructions, queue[head++]);
-        for (int j = 0; j < p->targets->size; ++j) {
-            jd_dex_ins *t = lget_obj(p->targets, j);
+        int ntargets = p->targets == NULL ? 0 : p->targets->size;
+        int extra = dex_extra_fallthrough(p);
+        for (int j = 0; j < ntargets + extra; ++j) {
+            jd_dex_ins *t = j < ntargets ? lget_obj(p->targets, j) : p->next;
             if (t && !live[t->idx]) { live[t->idx] = true; queue[tail++] = t->idx; }
         }
     }
@@ -603,9 +627,9 @@ static void clear_edges(jd_method *m)
 {
     for (int i = 0; i < m->instructions->size; ++i) {
         jd_dex_ins *ins = lget_obj(m->instructions, i);
-        lclear_object(ins->targets);
-        lclear_object(ins->jumps);
-        lclear_object(ins->comings);
+        if (ins->targets) lclear_object(ins->targets);
+        if (ins->jumps) lclear_object(ins->jumps);
+        if (ins->comings) lclear_object(ins->comings);
     }
 }
 

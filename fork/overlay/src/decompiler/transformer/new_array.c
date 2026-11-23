@@ -17,8 +17,21 @@ static bool new_array_is_initializer(jd_exp_new_array *new_array)
 {
     if (new_array->values_only || new_array->fill_existing)
         return true;
-    return new_array->dimensions == 0 && new_array->list != NULL &&
-           new_array->list->len > 1;
+    if (new_array->list == NULL)
+        return false;
+    /* Dimension counts come first. Anything after them is an element,
+     * including stores folded onto a one-dimensional newarray. */
+    int counts = new_array->dimensions > 0 ? new_array->dimensions : 1;
+    return new_array->list->len > counts;
+}
+
+static int new_array_value_start(jd_exp_new_array *new_array)
+{
+    if (new_array->values_only)
+        return 0;
+    if (new_array->fill_existing || new_array->dimensions <= 0)
+        return 1;
+    return new_array->dimensions;
 }
 
 static string new_array_count_to_s(jd_exp_new_array *new_array, int i)
@@ -54,7 +67,7 @@ string exp_new_array_to_s(jd_exp *expression)
     if (new_array->fill_existing)
         str_concat(list, "System.arraycopy(");
     strs_concat(list, 3, "new ", type, "[]{");
-    int first = new_array->values_only ? 0 : 1;
+    int first = new_array_value_start(new_array);
     if (new_array->list != NULL) {
         for (int i = first; i < new_array->list->len; ++i) {
             if (i > first)
@@ -102,7 +115,7 @@ void exp_new_array_to_stream(FILE *stream, jd_node *node, jd_exp *expression)
     if (new_array->fill_existing)
         fprintf(stream, "System.arraycopy(");
     fprintf(stream, "new %s[]{", type);
-    int first = new_array->values_only ? 0 : 1;
+    int first = new_array_value_start(new_array);
     if (new_array->list != NULL) {
         for (int i = first; i < new_array->list->len; ++i) {
             if (i > first)

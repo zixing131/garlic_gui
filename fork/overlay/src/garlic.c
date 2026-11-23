@@ -71,11 +71,14 @@ static jd_file_type_t magic_of_file(char *filepath) {
         case JAVA_CLASS_MAGIC:
             return JD_FILE_TYPE_JAVA_CLASS;
         case JAR_FILE_MAGIC: {
-            int has_class = 0, has_dex = 0;
-            zip_content_flags(filepath, &has_class, &has_dex);
-            /* DEX or a nested APK decides the pipeline. A .jar that only
-             * wraps classes.dex is the same input as an .apk. */
-            if (has_dex)
+            int has_class = 0, root_dex = 0, nested_dex = 0, has_apk = 0;
+            zip_classify(filepath, &has_class, &root_dex, &nested_dex, &has_apk);
+            /* A root DEX or a nested APK is the same input as an .apk,
+             * including framework.jar. Subdirectory DEX stays on the
+             * archive path so those entries are not dropped. */
+            if (root_dex || has_apk)
+                return JD_FILE_TYPE_APK;
+            if (nested_dex)
                 return JD_FILE_TYPE_ARCHIVE;
             if (has_class)
                 return JD_FILE_TYPE_JAR;

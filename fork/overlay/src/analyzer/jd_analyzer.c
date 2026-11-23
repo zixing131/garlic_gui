@@ -765,9 +765,7 @@ static void apk_analyzer_process_zip(struct zip_t *zip)
             continue;
         }
 
-        if (strchr(entry_name, '/') != NULL &&
-            !str_end_with_lower(entry_name, ".dex") &&
-            !str_end_with_lower(entry_name, ".apk")) {
+        if (strchr(entry_name, '/') != NULL) {
             zip_entry_close(zip);
             continue;
         }
