@@ -2,6 +2,7 @@
 #include "decompiler/control_flow.h"
 #include "decompiler/expression.h"
 #include "decompiler/expression_node.h"
+#include "decompiler/expression_visitor.h"
 #include "decompiler/dominator_tree.h"
 
 static bool loop_already_exist(jd_method *m, jd_loop *loop)
@@ -112,6 +113,58 @@ static int count_jumps(jd_loop *loop, jd_bblock *target, jd_exp *exp)
     return jump;
 }
 
+static bool loop_backedge_condition(jd_method *m,
+                                    jd_loop *loop,
+                                    jd_bblock *header)
+{
+    jd_bblock *last = loop_last_block(loop);
+    if (last == NULL)
+        return false;
+    jd_exp *exp = get_exp(m, last->node->end_idx);
+    if (exp == NULL || !exp_is_if(exp))
+        return false;
+    jd_exp_if *if_exp = exp->data;
+    jd_exp *target = exp_of_offset(m, if_exp->offset);
+    if (target != NULL && target->block == header)
+        return true;
+    jd_ins *ins = exp->ins;
+    if (ins != NULL && ins->next != NULL) {
+        jd_exp *next = ins->next->expression;
+        if (next != NULL && next->block == header)
+            return true;
+    }
+    return false;
+}
+
+static bool loop_header_condition_only(jd_method *m,
+                                       jd_node *node,
+                                       jd_exp *condition_if)
+{
+    jd_exp_if *if_exp = condition_if->data;
+    jd_exp *condition = if_exp->expression;
+    if (condition == NULL)
+        return false;
+
+    for (int i = node->start_idx; i < node->end_idx; ++i) {
+        jd_exp *exp = get_exp(m, i);
+        if (exp == NULL || exp_is_nopped(exp) || exp_is_empty(exp))
+            continue;
+        if (!exp_is_store(exp))
+            return false;
+        jd_exp_store *store = exp->data;
+        jd_exp *left = &store->list->args[0];
+        jd_exp *right = &store->list->args[1];
+        if (!exp_is_local_variable(left) || !exp_is_const(right))
+            return false;
+        jd_val *val = left->data;
+        if (val == NULL || val->name == NULL)
+            return false;
+        if (expression_reads_name(condition, val->name))
+            return false;
+    }
+    return true;
+}
+
 static void find_loop_condition(jd_method *m, jd_loop *loop, jd_bblock *header)
 {
     jd_bblock *first = loop_first_block(loop);
@@ -119,6 +172,7 @@ static void find_loop_condition(jd_method *m, jd_loop *loop, jd_bblock *header)
 
     for (int i = 0; i <= 1; ++i) {
         bool is_post_condition = i == 1;
+        bool relaxed = false;
         jd_bblock *block = NULL;
         jd_node *node = NULL;
         bool found_condition = false;
@@ -134,8 +188,17 @@ static void find_loop_condition(jd_method *m, jd_loop *loop, jd_bblock *header)
             node = block->node;
             last_exp = get_exp(m, node->end_idx);
             found_condition = exp_is_if(last_exp);
-            found_condition = found_condition &&
-                              node_valid_exp_count(m, node) == 1;
+            if (found_condition && node_valid_exp_count(m, node) == 1) {
+                relaxed = false;
+            }
+            else if (found_condition &&
+                     !loop_backedge_condition(m, loop, header) &&
+                     loop_header_condition_only(m, node, last_exp)) {
+                relaxed = true;
+            }
+            else {
+                found_condition = false;
+            }
         }
         if (!found_condition)
             continue;
@@ -153,6 +216,20 @@ static void find_loop_condition(jd_method *m, jd_loop *loop, jd_bblock *header)
                 (!lcontains_obj(loop->blocks, true_target) ||
                  lcontains_obj(loop->blocks, false_target))) {
             continue;
+        }
+
+        if (relaxed) {
+            jd_bblock *inside = lcontains_obj(loop->blocks, false_target)
+                                ? false_target : true_target;
+            jd_exp *body_end = inside->node == NULL ? NULL :
+                               get_exp(m, inside->node->end_idx);
+            if (body_end != NULL && exp_is_if(body_end)) {
+                jd_exp_if *body_if = body_end->data;
+                jd_exp *body_target = exp_of_offset(m, body_if->offset);
+                if (body_target != NULL && body_target->block != NULL &&
+                    !lcontains_obj(loop->blocks, body_target->block))
+                    continue;
+            }
         }
 
         loop->condition = block;
@@ -352,7 +429,7 @@ static void loop_content_with_exit_block(jd_method *m,
             // if source's end instruction is swith
             // then switch's default target is loop's header
             if (source_end_ins != NULL &&
-                source_end_ins->fn->is_switch(source_end_ins) &&
+                ins_fn_of(source_end_ins)->is_switch(source_end_ins) &&
                 switch_contains_offset(source_nblock->end_ins,
                                        exit_start_exp->ins->offset)) {
                 compute_dominates_block(m, loop->exit_block);
@@ -402,7 +479,7 @@ static void loop_content_with_exit_blocks(jd_method *m,
     jd_exp *end_exp = lget_obj(m->expressions, snb->end_idx);
     jd_ins *end_ins = end_exp->ins;
     if (end_ins != NULL &&
-        end_ins->fn->is_switch(end_ins) &&
+        ins_fn_of(end_ins)->is_switch(end_ins) &&
         switch_contains_offset(end_ins,
                                exit_start_exp->ins->offset)) {
         compute_dominates_block(m, source_block);
@@ -447,7 +524,7 @@ static void loop_content_with_preheader(jd_method *m,
         jd_exp *end_exp = lget_obj(m->expressions, snb->end_idx);
         jd_ins *end_ins = end_exp->ins;
         if (end_ins != NULL &&
-            end_ins->fn->is_switch(end_ins) &&
+            ins_fn_of(end_ins)->is_switch(end_ins) &&
             switch_contains_offset(end_ins,
                                    exit_start_exp->ins->offset)) {
             compute_dominates_block(m, source_block);
@@ -538,5 +615,104 @@ void identify_loop(jd_method *m)
             continue;
 
         identify_loops_recursive(m, node, false);
+    }
+}
+
+static bool loop_node_type(jd_node *node)
+{
+    return node_is_while(node) || node_is_for(node) ||
+           node_is_do_while(node) || node_is_loop(node);
+}
+
+static jd_bblock* catch_last_block(jd_node *catch_node)
+{
+    jd_bblock *last = NULL;
+    for (int i = 0; i < catch_node->children->size; ++i) {
+        jd_node *child = lget_obj(catch_node->children, i);
+        if (!node_is_basic_block(child))
+            continue;
+        jd_bblock *block = child->data;
+        if (block == NULL || block->ub == NULL ||
+            block->ub->nblock == NULL)
+            continue;
+        if (last == NULL ||
+            block->ub->nblock->end_idx > last->ub->nblock->end_idx)
+            last = block;
+    }
+    return last;
+}
+
+static bool catch_block_has_terminator(jd_method *m, jd_bblock *block)
+{
+    jd_nblock *nb = block->ub->nblock;
+    for (int i = nb->start_idx; i <= nb->end_idx; ++i) {
+        jd_exp *e = get_exp(m, i);
+        if (e == NULL || exp_is_nopped(e))
+            continue;
+        if (exp_is_break(e) || exp_is_continue(e) ||
+            exp_is_goto(e) || exp_is_return(e) || exp_is_athrow(e))
+            return true;
+    }
+    return false;
+}
+
+void insert_catch_fallthrough_break(jd_method *m)
+{
+    if (m->type != JD_TYPE_DALVIK)
+        return;
+
+    size_t count = m->nodes->size;
+    for (int i = 0; i < count; ++i) {
+        jd_node *catch_node = lget_obj(m->nodes, i);
+        if (!node_is_catch(catch_node))
+            continue;
+
+        jd_node *loop = NULL;
+        for (jd_node *p = catch_node->parent; p != NULL; p = p->parent) {
+            if (loop_node_type(p)) {
+                loop = p;
+                break;
+            }
+        }
+        if (loop == NULL)
+            continue;
+
+        jd_bblock *last = catch_last_block(catch_node);
+        if (last == NULL || last->out == NULL)
+            continue;
+        if (catch_block_has_terminator(m, last))
+            continue;
+
+        jd_nblock *nb = last->ub->nblock;
+        jd_ins *end = nb->end_ins;
+        jd_ins_fn *fn = end == NULL ? NULL : ins_fn_of(end);
+        if (fn == NULL || fn->is_block_end(end))
+            continue;
+
+        jd_bblock *succ = NULL;
+        int count_out = 0;
+        for (int j = 0; j < last->out->size; ++j) {
+            jd_edge *edge = lget_obj(last->out, j);
+            if (edge->type != JD_EDGE_NORMAL || edge->target_block == NULL ||
+                edge->target_block->type != JD_BB_NORMAL)
+                continue;
+            count_out++;
+            succ = edge->target_block;
+        }
+        if (count_out != 1 || succ == NULL)
+            continue;
+        if (succ->ub->nblock->start_idx <= loop->end_idx)
+            continue;
+
+        jd_exp *be = make_obj(jd_exp);
+        jd_exp_goto *bg = make_obj(jd_exp_goto);
+        bg->goto_offset = succ->ub->nblock->start_offset;
+        be->type = JD_EXPRESSION_BREAK;
+        be->data = bg;
+        be->idx = catch_node->end_idx;
+        be->ins = end;
+        jd_node *bn = create_expression_node(m, be);
+        bn->parent = catch_node;
+        ladd_obj(catch_node->children, bn);
     }
 }

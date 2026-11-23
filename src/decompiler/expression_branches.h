@@ -7,13 +7,19 @@ void remove_empty_if_else_of_method(jd_method *m);
 
 void identify_branches(jd_method *m);
 
+void unwrap_if_branch_nodes(jd_method *m);
+
 void identify_else_if_of_method(jd_method *m);
 
 void flatten_empty_if_branches(jd_method *m);
 
 void empty_if_branch_stat(int *promoted, int *merged, int *shared_target);
 
-void attach_dropped_terminals(jd_method *m);
+bool attach_dropped_terminals(jd_method *m);
+
+bool flatten_else_after_terminating_if(jd_method *m);
+
+void hoist_shared_else_block(jd_method *m);
 
 void empty_if_left_report(void);
 

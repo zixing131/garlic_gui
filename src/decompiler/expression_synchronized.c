@@ -128,7 +128,7 @@ static jd_exp* find_monitor_enter_back(jd_method *m, int index, int *out_distanc
 
 static int monitor_expression_register(jd_exp *exp)
 {
-    if (exp == NULL || exp->ins == NULL || exp->ins->type != JD_TYPE_DALVIK)
+    if (exp == NULL || exp->ins == NULL || ins_method_type(exp->ins) != JD_TYPE_DALVIK)
         return -1;
     if (!exp_is_monitor_exit(exp) && !exp_is_monitor_enter(exp))
         return -1;
@@ -148,6 +148,25 @@ static void nop_monitor_exits_of(jd_method *m, int reg)
         if (monitor_expression_register(exp) == reg)
             exp_mark_nopped(exp);
     }
+}
+
+static void nop_basic_block_at(jd_method *m, jd_node *node, int start_idx)
+{
+    if (node == NULL)
+        return;
+    if (node_is_basic_block(node)) {
+        if (node->start_idx == start_idx) {
+            jd_bblock *block = node->data;
+            jd_nblock *nb = block->ub->nblock;
+            for (int i = nb->start_idx; i <= nb->end_idx; ++i)
+                exp_mark_nopped(get_exp(m, i));
+        }
+        return;
+    }
+    if (node->children == NULL)
+        return;
+    for (int i = 0; i < node->children->size; ++i)
+        nop_basic_block_at(m, lget_obj(node->children, i), start_idx);
 }
 
 static void nop_monitor_exit_recursive(jd_method *m, jd_node *node)
@@ -314,10 +333,30 @@ int identify_synchronized(jd_method *m)
         sync_dump_nodes(m, "before");
 
         jd_node *try = child_of_type(node, JD_NODE_TRY);
+        list_object *nested = linit_object();
+        for (int k = 0; k < finally->children->size; ++k) {
+            jd_node *child = lget_obj(finally->children, k);
+            if (!node_is_exception(child))
+                continue;
+            bool live = false;
+            for (int x = child->start_idx; x <= child->end_idx; ++x) {
+                jd_ins *ins = get_ins(m, x);
+                if (ins != NULL && !ins_is_nopped(ins)) {
+                    live = true;
+                    break;
+                }
+            }
+            if (live && child_of_type(child, JD_NODE_CATCH) != NULL)
+                ladd_obj(nested, child);
+        }
         ldel_obj(node->children, finally);
 
         nop_monitor_exit_recursive(m, try);
         nop_monitor_exits_of(m, monitor_expression_register(exp));
+        /* the catch-all handler block can also sit inside the try range
+         * (d8 places it between loop blocks); its move-exception/goto must
+         * not be written into the synchronized body */
+        nop_basic_block_at(m, try, finally->start_idx);
 
         bool keeps_catch = false;
         for (int k = 0; k < node->children->size; ++k) {
@@ -327,6 +366,12 @@ int identify_synchronized(jd_method *m)
 
         if (keeps_catch) {
             node->type = JD_NODE_SYNCHRONIZED;
+            for (int k = 0; k < nested->size; ++k) {
+                jd_node *child = lget_obj(nested, k);
+                ldel_obj(finally->children, child);
+                child->parent = node;
+                ladd_obj(node->children, child);
+            }
         }
         else {
             jd_node *parent = node->parent;
@@ -335,6 +380,12 @@ int identify_synchronized(jd_method *m)
             ldel_obj(parent->children, node);
             try->parent = parent;
             try->type = JD_NODE_SYNCHRONIZED;
+            for (int k = 0; k < nested->size; ++k) {
+                jd_node *child = lget_obj(nested, k);
+                ldel_obj(finally->children, child);
+                child->parent = try;
+                ladd_obj(try->children, child);
+            }
             ldel_obj(m->nodes, node);
             i--;
         }

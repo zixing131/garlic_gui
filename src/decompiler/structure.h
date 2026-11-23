@@ -241,7 +241,6 @@ typedef struct {
 } jd_ins_fn;
 
 struct jd_ins {
-    jd_support_type     type;
     u2                  code;
     string              name;
     u2                  state_flag;
@@ -269,8 +268,6 @@ struct jd_ins {
     bitset_t            *uses;
     bitset_t            *defs;
 
-    jd_ins_fn           *fn;
-
     void                *extra;
     int                 format;
 };
@@ -293,6 +290,7 @@ typedef struct {
     int         handler_end_idx;
 
     int         catch_type_index;
+    bool        merged_split;
 } jd_exc;
 
 typedef struct {
@@ -307,6 +305,12 @@ typedef struct {
     list_object     *catches;
     jd_range        *finally;
 } jd_mix_exception;
+
+typedef struct {
+    string          cname;
+    string          name;
+    string          init;
+} jd_try_resource;
 
 typedef enum {
     JD_OP_UNKNOWN = -1,
@@ -554,7 +558,8 @@ typedef struct {
 
 typedef struct {
     jd_exp_list *list;
-    string          class_name;
+    string      class_name;
+    int         dimensions;
 } jd_exp_new_array;
 
 typedef struct {
@@ -733,6 +738,7 @@ typedef enum {
     JD_NODE_CATCH,
     JD_NODE_FINALLY,
     JD_NODE_SYNCHRONIZED,
+    JD_NODE_TRY_RESOURCES,
     JD_NODE_LOOP,
     JD_NODE_WHILE,
     JD_NODE_FOR,
@@ -759,6 +765,7 @@ typedef struct jd_case {
     u4 start_idx;
     u4 end_idx;
     int key;
+    list_int *keys;
     int is_default;
     jd_bblock  *block;
     list_object *blocks;
@@ -887,6 +894,8 @@ struct jd_method {
 
     jd_method_fn    *fn;
 
+    jd_ins_fn       *ins_fn;
+
 //    jd_access_flag_fn           access_flags_fn;
 //    jd_meth_param_val_fn        param_val_fn;
 //    jd_meth_param_annotation_fn param_annotation_fn;
@@ -896,6 +905,10 @@ struct jd_method {
     string          name;
 
     string          signature;
+
+    string          throws_types;
+
+    bool            is_override;
 
     string          defination;
 
@@ -908,6 +921,8 @@ struct jd_method {
     int             variable_counter;
 
     hashmap         *slot_counter_map;
+
+    hashmap         *slot_name_map;
 
     hashmap         *offset2id_map;
 
@@ -1144,6 +1159,9 @@ struct jsource_file {
     list_object     *interfaces;
 
     string          fname; // full class cname
+
+    // dex or class come from
+    string          source_name;
 
     bool            is_inner;
 

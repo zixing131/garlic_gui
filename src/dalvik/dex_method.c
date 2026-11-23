@@ -45,29 +45,18 @@ static void init_dex_ins_unconditional_jump(jd_dex_ins *ins)
 {
     u4 jump_offset = dex_goto_offset(ins);
     jd_dex_ins *target_ins = (jd_dex_ins *) ins_of_offset(ins->method, jump_offset);
-    ladd_obj(ins->targets, target_ins);
-    ladd_obj(ins->jumps, target_ins);
+    ladd_obj(ins_targets((jd_ins *) ins), target_ins);
+    ladd_obj(ins_jumps((jd_ins *) ins), target_ins);
 }
 
 static void init_dex_ins_conditional_jump(jd_dex_ins *ins)
 {
     u4 jump_offset = (s2)(ins->param[1]) + ins->offset;
-    jd_dex_ins *next = ins->next;
-    if (next != NULL)
-        ladd_obj_no_dup(ins->targets, next);
-
     jd_dex_ins *jump_to_ins = (jd_dex_ins *) ins_of_offset(ins->method, jump_offset);
-    ladd_obj(ins->targets, jump_to_ins);
-    ladd_obj(ins->jumps, jump_to_ins);
+    ladd_obj(ins_targets((jd_ins *) ins), jump_to_ins);
+    ladd_obj(ins_jumps((jd_ins *) ins), jump_to_ins);
 }
 
-static void init_dex_ins_default_jump(jd_dex_ins *ins)
-{
-    jd_dex_ins *next = ins->next;
-    if (next == NULL)
-        return;
-    ladd_obj(ins->targets, next);
-}
 
 static void init_dex_packed_switch_jump(jd_dex_ins *ins)
 {
@@ -84,13 +73,13 @@ static void init_dex_packed_switch_jump(jd_dex_ins *ins)
         int offset = packed_ins->param[5 + i * 2] << 16 |
                      packed_ins->param[4 + i * 2];
         jd_dex_ins *target_ins = (jd_dex_ins *) ins_of_offset(m, ins->offset+offset);
-        ladd_obj(ins->targets, target_ins);
-        ladd_obj(ins->jumps, target_ins);
+        ladd_obj(ins_targets((jd_ins *) ins), target_ins);
+        ladd_obj(ins_jumps((jd_ins *) ins), target_ins);
         DEBUG_PRINT("key: %d, goto_offset: %d\n",
                 first_key+i, offset+ins->offset);
     }
     if (ins->next != NULL)
-        ladd_obj_no_dup(ins->targets, ins->next);
+        ladd_obj_no_dup(ins_targets((jd_ins *) ins), ins->next);
 }
 
 static void init_dex_sparse_switch_jump(jd_dex_ins *ins)
@@ -107,12 +96,12 @@ static void init_dex_sparse_switch_jump(jd_dex_ins *ins)
         int val = params[3+size*2+i*2] << 16 | params[2+size*2+i*2];
         int target_id = hget_i2i(m->offset2id_map, ins->offset + val);
         jd_dex_ins *target_ins = get_dex_ins(m, target_id);
-        ladd_obj(ins->targets, target_ins);
-        ladd_obj(ins->jumps, target_ins);
+        ladd_obj(ins_targets((jd_ins *) ins), target_ins);
+        ladd_obj(ins_jumps((jd_ins *) ins), target_ins);
         DEBUG_PRINT("key is: %d -> val: %d\n", key, val);
     }
     if (ins->next != NULL)
-        ladd_obj_no_dup(ins->targets, ins->next);
+        ladd_obj_no_dup(ins_targets((jd_ins *) ins), ins->next);
 }
 
 static void init_dex_instruction_graph(jd_method *m)
@@ -135,13 +124,10 @@ static void init_dex_instruction_graph(jd_method *m)
         else if (dex_ins_is_return_op(ins) || dex_ins_is_throw(ins)) {
 
         }
-        else {
-            init_dex_ins_default_jump(ins);
-        }
 
-        for (int j = 0; j < ins->jumps->size; ++j) {
+        for (int j = 0; ins->jumps != NULL && j < ins->jumps->size; ++j) {
             jd_dex_ins *jump_to_ins = lget_obj(ins->jumps, j);
-            ladd_obj(jump_to_ins->comings, ins);
+            ladd_obj(ins_comings((jd_ins *) jump_to_ins), ins);
         }
     }
 }
@@ -150,6 +136,7 @@ static void dex_code_item_instruction(jd_method *m, dex_code_item *code)
 {
     m->instructions = linit_object();
     m->offset2id_map = hashmap_init((hcmp_fn) i2i_cmp, 0);
+    m->ins_fn = ((jd_dex*)(m->meta))->ins_fn;
     jd_dex_ins *prev = NULL;
     uint32_t offset = 0;
     for (int i = 0; i < code->insns_size; ++i) {
@@ -162,17 +149,12 @@ static void dex_code_item_instruction(jd_method *m, dex_code_item *code)
         ins->format = dex_opcode_fmt(opcode);
         ins->idx = m->instructions->size;
         ins->offset = offset;
-        ins->type = m->type;
-        ins->targets = linit_object_with_capacity(1);
-        ins->jumps = linit_object_with_capacity(2);
-        ins->comings = linit_object_with_capacity(1);
         ins->extra = NULL;
 
         ins->method = m;
         ins->param = &code->insns[i];
         ins->uses = bitset_create_with_capacity(m->max_locals);
         ins->defs = bitset_create_with_capacity(m->max_locals);
-        ins->fn = ((jd_dex*)(m->meta))->ins_fn;
         ladd_obj(m->instructions, ins);
         hset_i2i(m->offset2id_map, offset, ins->idx);
         dex_ins_use_def_init(ins);
@@ -224,6 +206,159 @@ static void dex_code_item_instruction(jd_method *m, dex_code_item *code)
     }
 }
 
+static bool dex_method_signature_equal(jd_meta_dex *meta,
+                                       dex_method_id *a,
+                                       dex_method_id *b)
+{
+    if (a->name_idx != b->name_idx)
+        return false;
+    dex_proto_id *pa = &meta->proto_ids[a->proto_idx];
+    dex_proto_id *pb = &meta->proto_ids[b->proto_idx];
+    if (pa->return_type_idx != pb->return_type_idx)
+        return false;
+    u4 sa = pa->type_list == NULL ? 0 : pa->type_list->size;
+    u4 sb = pb->type_list == NULL ? 0 : pb->type_list->size;
+    if (sa != sb)
+        return false;
+    for (u4 i = 0; i < sa; ++i) {
+        if (pa->type_list->list[i].type_idx !=
+            pb->type_list->list[i].type_idx)
+            return false;
+    }
+    return true;
+}
+
+static bool dex_ancestor_method_accessible(jd_method *m,
+                                           dex_class_def *ancestor,
+                                           encoded_method *am)
+{
+    if ((am->access_flags & (ACC_DEX_PRIVATE | ACC_DEX_STATIC)) != 0)
+        return false;
+    if (am->access_flags & (ACC_DEX_PUBLIC | ACC_DEX_PROTECTED))
+        return true;
+
+    jd_meta_dex *meta = ((jd_dex *) m->meta)->meta;
+    string desc = dex_str_of_type_id(meta, ancestor->class_idx);
+    string anc_pkg = class_package_name_of(class_full_name(desc));
+    if (anc_pkg == NULL)
+        anc_pkg = (string) g_str_default;
+    string my_pkg = m->jfile->pname;
+    return my_pkg != NULL && STR_EQL(anc_pkg, my_pkg);
+}
+
+static bool dex_class_declares_override(jd_method *m,
+                                        dex_class_def *ancestor,
+                                        dex_method_id *mid)
+{
+    if (ancestor->class_data == NULL)
+        return false;
+    jd_meta_dex *meta = ((jd_dex *) m->meta)->meta;
+    dex_class_data_item *data = ancestor->class_data;
+    encoded_method *lists[2] = {data->virtual_methods, data->direct_methods};
+    u4 sizes[2] = {data->virtual_methods_size, data->direct_methods_size};
+    for (int l = 0; l < 2; ++l) {
+        for (u4 i = 0; i < sizes[l]; ++i) {
+            encoded_method *am = &lists[l][i];
+            dex_method_id *amid = &meta->method_ids[am->method_id];
+            if (!dex_method_signature_equal(meta, amid, mid))
+                continue;
+            if (dex_ancestor_method_accessible(m, ancestor, am))
+                return true;
+        }
+    }
+    return false;
+}
+
+static void dex_push_ancestors(jd_meta_dex *meta,
+                               dex_class_def *cf,
+                               dex_class_def **queue,
+                               int *tail)
+{
+    if (cf->superclass_idx != NO_INDEX) {
+        string desc = dex_str_of_type_id(meta, cf->superclass_idx);
+        dex_class_def *parent = hget_s2o(meta->class_name_map, desc);
+        if (parent != NULL && *tail < 32)
+            queue[(*tail)++] = parent;
+    }
+    if (cf->interfaces == NULL)
+        return;
+    for (u4 i = 0; i < cf->interfaces->size && *tail < 32; ++i) {
+        string desc = dex_str_of_type_id(meta,
+                                         cf->interfaces->list[i].type_idx);
+        dex_class_def *parent = hget_s2o(meta->class_name_map, desc);
+        if (parent != NULL)
+            queue[(*tail)++] = parent;
+    }
+}
+
+static bool dex_method_is_object_override(jd_meta_dex *meta,
+                                          dex_method_id *mid)
+{
+    string name = dex_str_of_idx(meta, mid->name_idx);
+    dex_proto_id *proto = &meta->proto_ids[mid->proto_idx];
+    string ret = dex_str_of_type_id(meta, proto->return_type_idx);
+    u4 count = proto->type_list == NULL ? 0 : proto->type_list->size;
+
+    if (STR_EQL(name, "toString"))
+        return count == 0 && STR_EQL(ret, "Ljava/lang/String;");
+    if (STR_EQL(name, "hashCode"))
+        return count == 0 && STR_EQL(ret, "I");
+    if (STR_EQL(name, "equals"))
+        return count == 1 && STR_EQL(ret, "Z") &&
+               STR_EQL(dex_str_of_type_id(meta,
+                       proto->type_list->list[0].type_idx),
+                       "Ljava/lang/Object;");
+    if (STR_EQL(name, "clone"))
+        return count == 0 && STR_EQL(ret, "Ljava/lang/Object;");
+    if (STR_EQL(name, "finalize"))
+        return count == 0 && STR_EQL(ret, "V");
+    return false;
+}
+
+static bool dex_method_overrides(jd_method *m, encoded_method *em)
+{
+    if ((em->access_flags & (ACC_DEX_PRIVATE | ACC_DEX_STATIC |
+                             ACC_DEX_SYNTHETIC)) != 0)
+        return false;
+
+    jd_dex *dex = m->meta;
+    jd_meta_dex *meta = dex->meta;
+    dex_method_id *mid = &meta->method_ids[em->method_id];
+    string name = dex_str_of_idx(meta, mid->name_idx);
+    if (name == NULL || name[0] == '<')
+        return false;
+
+    dex_class_def *queue[32];
+    dex_class_def *visited[32];
+    int head = 0, tail = 0, visited_count = 0;
+    dex_class_def *cf = (dex_class_def *) m->jfile->jclass;
+    if ((cf->access_flags & ACC_DEX_INTERFACE) == 0 &&
+        dex_method_is_object_override(meta, mid))
+        return true;
+
+    dex_push_ancestors(meta, cf, queue, &tail);
+
+    while (head < tail) {
+        dex_class_def *ancestor = queue[head++];
+        bool seen = false;
+        for (int i = 0; i < visited_count; ++i) {
+            if (visited[i] == ancestor) {
+                seen = true;
+                break;
+            }
+        }
+        if (seen)
+            continue;
+        if (visited_count < 32)
+            visited[visited_count++] = ancestor;
+
+        if (dex_class_declares_override(m, ancestor, mid))
+            return true;
+        dex_push_ancestors(meta, ancestor, queue, &tail);
+    }
+    return false;
+}
+
 void dex_method_init(jsource_file *jf, jd_method *m, encoded_method *em)
 {
     jd_dex *dex = jf->meta;
@@ -238,6 +373,8 @@ void dex_method_init(jsource_file *jf, jd_method *m, encoded_method *em)
     m->fn = dex->method_fn;
 
     dex_method_descriptor(m);
+
+    m->is_override = dex_method_overrides(m, em);
 
     if (em->code == NULL)
         return;

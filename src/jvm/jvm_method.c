@@ -10,6 +10,8 @@
 #include "jvm_optimizer.h"
 #include "jvm/jvm_exception.h"
 #include "jvm/jvm_annotation.h"
+#include "common/str_tools.h"
+#include "decompiler/klass.h"
 #include "jvm/jvm_descriptor.h"
 
 void jvm_method_access_flags(jd_method *m, str_list *list) {
@@ -38,6 +40,12 @@ void jvm_method_access_flags(jd_method *m, str_list *list) {
         if (list->len > 0)
             str_concat(list, (" "));
         str_concat(list, ("static"));
+    }
+
+    if (method_has_flag(m, METHOD_ACC_SYNCHRONIZED)) {
+        if (list->len > 0)
+            str_concat(list, (" "));
+        str_concat(list, ("synchronized"));
     }
 
     if (method_has_flag(m, METHOD_ACC_NATIVE)) {
@@ -141,10 +149,10 @@ static void init_tableswitch_jumps(jd_ins *ins) {
                                default_offset);
 
     jd_ins *default_ins = get_ins(ins->method, default_idx);
-    if (!lcontains_obj(ins->targets, default_ins))
-        ladd_obj(ins->targets, default_ins);
-    if (!lcontains_obj(ins->jumps, default_ins))
-        ladd_obj(ins->jumps, default_ins);
+    if (!lcontains_obj(ins_targets(ins), default_ins))
+        ladd_obj(ins_targets(ins), default_ins);
+    if (!lcontains_obj(ins_jumps(ins), default_ins))
+        ladd_obj(ins_jumps(ins), default_ins);
 
     uint32_t low_byte  = be_32(p5, p6, p7, p8);
     uint32_t high_byte = be_32(p9, p10, p11, p12);
@@ -160,8 +168,8 @@ static void init_tableswitch_jumps(jd_ins *ins) {
         uint32_t jump_offset = offset + ins->offset;
 
         jd_ins *jump_ins = ins_of_offset(ins->method, jump_offset);
-        ladd_obj_no_dup(ins->targets, jump_ins);
-        ladd_obj_no_dup(ins->jumps, jump_ins);
+        ladd_obj_no_dup(ins_targets(ins), jump_ins);
+        ladd_obj_no_dup(ins_jumps(ins), jump_ins);
     }
 }
 
@@ -183,8 +191,8 @@ static void init_lookupswitch_jumps(jd_ins *ins)
     int default_idx = hget_i2i(map, default_offset);
 
     jd_ins *default_ins = get_ins(ins->method, default_idx);
-    ladd_obj_no_dup(ins->targets, default_ins);
-    ladd_obj_no_dup(ins->jumps, default_ins);
+    ladd_obj_no_dup(ins_targets(ins), default_ins);
+    ladd_obj_no_dup(ins_jumps(ins), default_ins);
 
     uint32_t npair = be_32(p5, p6, p7, p8);
     uint32_t start_npair = padding + 8;
@@ -196,8 +204,8 @@ static void init_lookupswitch_jumps(jd_ins *ins)
         uint32_t val         = be_32(p5, p6, p7, p8);
         uint32_t jump_offset = val + ins->offset;
         jd_ins *jump_ins = ins_of_offset(ins->method, jump_offset);
-        ladd_obj_no_dup(ins->targets, jump_ins);
-        ladd_obj_no_dup(ins->jumps, jump_ins);
+        ladd_obj_no_dup(ins_targets(ins), jump_ins);
+        ladd_obj_no_dup(ins_jumps(ins), jump_ins);
     }
 }
 
@@ -210,10 +218,8 @@ static void init_conditional_jumps(jd_ins *ins)
     uint16_t next_offset = ins->offset + ins->param_length + 1;
 
     jd_ins *jump_to_ins = ins_of_offset(ins->method, jump_offset);
-    jd_ins *next_ins = ins_of_offset(ins->method, next_offset);
-    ladd_obj(ins->targets, jump_to_ins);
-    ladd_obj(ins->targets, next_ins);
-    ladd_obj(ins->jumps, jump_to_ins);
+    ladd_obj(ins_targets(ins), jump_to_ins);
+    ladd_obj(ins_jumps(ins), jump_to_ins);
 }
 
 static void init_unconditional_jumps(jd_ins *ins)
@@ -237,19 +243,10 @@ static void init_unconditional_jumps(jd_ins *ins)
     uint32_t jump_offset = jump_byte + ins->offset;
     int target_id = hget_i2i(ins->method->offset2id_map, jump_offset);
     jd_ins *target_ins = get_ins(ins->method, target_id);
-    ladd_obj(ins->targets, target_ins);
-    ladd_obj(ins->jumps, target_ins);
+    ladd_obj(ins_targets(ins), target_ins);
+    ladd_obj(ins_jumps(ins), target_ins);
 }
 
-static void init_default_jumps(jd_ins *ins)
-{
-    if (jvm_ins_is_return(ins) || jvm_ins_is_athrow(ins)) return;
-    uint32_t next_offset = ins->offset + ins->param_length + 1;
-    int idx = hget_i2i(ins->method->offset2id_map, next_offset);
-
-    jd_ins *target_ins = get_ins(ins->method, idx);
-    ladd_obj(ins->targets, target_ins);
-}
 
 uint32_t caculate_param_length(jd_method *m, uint32_t i)
 {
@@ -310,6 +307,8 @@ static void init_method_instructions(jd_method *m)
     m->instructions = linit_object_with_capacity(ins_count);
     m->offset2id_map = hashmap_init((hcmp_fn) i2i_cmp, ins_count);
 
+    m->ins_fn = jf->ins_fn;
+
     int idx = 0;
     jd_ins *prev_ins = NULL;
     for (uint32_t i = 0; i < be32toh(m->code_length); ) {
@@ -319,7 +318,6 @@ static void init_method_instructions(jd_method *m)
         ins->method = m;
         ins->code = opcode;
         ins->name = get_opcode_name(m->meta, opcode);
-        ins->fn = jf->ins_fn;
         if (param_length > 0) {
             ins->param = &m->code[i + 1];
         }
@@ -367,9 +365,6 @@ static void init_method_instructions(jd_method *m)
         ins->idx = m->instructions->size;
         ins->offset = i;
 
-        ins->targets = linit_object_with_capacity(1);
-        ins->jumps = linit_object_with_capacity(2);
-        ins->comings = linit_object_with_capacity(1);
 
         if (jvm_ins_is_store(ins)) {
             ins->defs = bitset_create();
@@ -454,15 +449,40 @@ static void init_jvm_instruction_graph(jd_method *m)
             init_lookupswitch_jumps(ins);
         else if (opcode == INS_GOTO_W || opcode == INS_GOTO)
             init_unconditional_jumps(ins);
-        else
-            init_default_jumps(ins);
 
-        for (int j = 0; j < ins->jumps->size; ++j) {
+        for (int j = 0; ins->jumps != NULL && j < ins->jumps->size; ++j) {
             jd_ins *jump_to_ins = lget_obj(ins->jumps, j);
-            ladd_obj(jump_to_ins->comings, ins);
+            ladd_obj(ins_comings(jump_to_ins), ins);
         }
 
     }
+}
+
+static string jvm_method_throws(jclass_file *jc, jmethod *item)
+{
+    int count = be16toh(item->attributes_count);
+    for (int i = 0; i < count; ++i) {
+        jattr *attr = &item->attributes[i];
+        if (attr == NULL || attr->name == NULL ||
+            !STR_EQL(attr->name, "Exceptions"))
+            continue;
+        jattr_exception *ex = (jattr_exception *) attr->info;
+        if (ex == NULL)
+            return NULL;
+        int n = be16toh(ex->number_of_exceptions);
+        str_list *list = str_list_init();
+        for (int j = 0; j < n; ++j) {
+            string cname = pool_str(jc, ex->exception_index_table[j]);
+            if (cname != NULL) {
+                class_import(jc->jfile, cname);
+                str_concat(list, class_simple_name(cname));
+            }
+        }
+        if (list->count == 0)
+            return NULL;
+        return str_join_with(list, ", ");
+    }
+    return NULL;
 }
 
 void jvm_method_init(jclass_file *jc, jd_method *m, jmethod *item)
@@ -477,14 +497,14 @@ void jvm_method_init(jclass_file *jc, jd_method *m, jmethod *item)
     m->desc = descriptor;
     m->meta_method = item;
     m->type = JD_TYPE_JVM;
+    m->throws_types = jvm_method_throws(jc, item);
     m->fn = jf->method_fn;
 
     jattr_code *code_attribute = item->code_attribute;
-    // the abstract and native m doesn't have code attribute
+    m->access_flags = be16toh(item->access_flags);
     if (item->code_attribute == NULL)
         return;
     m->max_locals = be16toh(code_attribute->max_locals);
-    m->access_flags = be16toh(item->access_flags);
     m->code_length = code_attribute->code_length;
     m->code = code_attribute->code;
 

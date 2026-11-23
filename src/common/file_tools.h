@@ -3,7 +3,15 @@
 
 #include <unistd.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <sys/stat.h>
+
+#define OUTPUT_BUFFER_SIZE (64 * 1024)
+static inline void output_set_buffer(FILE *stream)
+{
+    if (stream != NULL)
+        setvbuf(stream, NULL, _IOFBF, OUTPUT_BUFFER_SIZE);
+}
 
 static bool inline file_exist(const char *path)
 {
@@ -17,7 +25,14 @@ static inline void make_dir(const char *dir)
     size_t len;
 
     snprintf(tmp, sizeof(tmp),"%s",dir);
+#ifdef _WIN32
+    for (p = tmp; *p; p++)
+        if (*p == '\\')
+            *p = '/';
+#endif
     len = strlen(tmp);
+    if (len == 0)
+        return;
     if (tmp[len - 1] == '/')
         tmp[len - 1] = 0;
     for (p = tmp + 1; *p; p++)

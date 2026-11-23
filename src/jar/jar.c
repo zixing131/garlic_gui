@@ -167,13 +167,16 @@ static string jar_dir_of(string path)
 static void jar_entry_source_file(jclass_file *jc, string dir, string name)
 {
     struct stat sb;
-    string full_dir = str_create("%s/%s", dir, jar_dir_of(name));
+    string package = jar_dir_of(name);
+    if (strcmp(package, ".") != 0 && strcmp(package, "/") != 0)
+        package = java_class_path(package);
+    string full_dir = str_create("%s/%s", dir, package);
     if (stat(full_dir, &sb) == -1)
         make_dir(full_dir);
 
     jcp_info *info = pool_item(jc, jc->this_class);
     string full = get_class_name(jc, info);
-    string class_name = class_simple_name(full);
+    string class_name = class_simple_name_without_primitive(full);
     string path = str_create("%s/%s", full_dir,
                              output_path_resolve(
                                      full_dir,
@@ -181,6 +184,7 @@ static void jar_entry_source_file(jclass_file *jc, string dir, string name)
     FILE *stream = fopen(path, "w");
     if (stream == NULL)
         output_open_failed(path);
+    output_set_buffer(stream);
     jc->jfile->source = stream;
 }
 
@@ -192,10 +196,13 @@ static void jar_reserve_output_paths(jd_jar *jar)
         if (entry->is_inner || entry->is_anoymous)
             continue;
 
-        string full_dir = str_create("%s/%s", jar->save,
-                                     jar_dir_of(entry->path));
+        string package = jar_dir_of(entry->path);
+        if (strcmp(package, ".") != 0 && strcmp(package, "/") != 0)
+            package = java_class_path(package);
+        string full_dir = str_create("%s/%s", jar->save, package);
         if (output_path_reserve(
-                    full_dir, str_create("%s.java", entry->cname)))
+                    full_dir,
+                    str_create("%s.java", java_identifier(entry->cname))))
             collided++;
     }
 

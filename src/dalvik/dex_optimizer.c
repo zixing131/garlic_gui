@@ -171,6 +171,8 @@ void optimize_dex_method(jd_method *m)
 
     analyse_local_variables(m);
 
+    hoist_shared_else_block(m);
+
     identify_loop_type(m);
 
 //    remove_empty_if_else_of_method(m);
@@ -179,11 +181,27 @@ void optimize_dex_method(jd_method *m)
 
     setup_expression_node_param(m);
 
+    ensure_undeclared_variables(m);
+
     flatten_empty_if_branches(m);
 
     attach_dropped_terminals(m);
 
+    flatten_else_after_terminating_if(m);
+
+    fix_exception_handler_blocks(m);
+
+    optimize_goto_expression(m);
+
+    nop_catch_handler_gotos(m);
+
     optimize_exception_block(m);
+
+    unwrap_if_branch_nodes(m);
+
+    identify_try_with_resources(m);
+
+    insert_catch_fallthrough_break(m);
 
     sync_stat_count_leftover(m);
 
