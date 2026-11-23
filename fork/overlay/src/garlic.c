@@ -7,6 +7,7 @@
 #include "jar/jar.h"
 #include "apk/apk.h"
 #include "libs/zip/zip.h"
+#include "common/archive_kind.h"
 #include "dalvik/dex_decompile.h"
 #include "dex_smali.h"
 #include "analyzer/jd_analyzer.h"
@@ -70,13 +71,15 @@ static jd_file_type_t magic_of_file(char *filepath) {
         case JAVA_CLASS_MAGIC:
             return JD_FILE_TYPE_JAVA_CLASS;
         case JAR_FILE_MAGIC: {
-            if (str_is_apk_path(filepath)) {
-                return JD_FILE_TYPE_APK;
-            } else if (str_is_zip_path(filepath)) {
+            int has_class = 0, has_dex = 0;
+            zip_content_flags(filepath, &has_class, &has_dex);
+            /* DEX or a nested APK decides the pipeline. A .jar that only
+             * wraps classes.dex is the same input as an .apk. */
+            if (has_dex)
                 return JD_FILE_TYPE_ARCHIVE;
-            } else {
+            if (has_class)
                 return JD_FILE_TYPE_JAR;
-            }
+            return JD_FILE_TYPE_ARCHIVE;
         }
         case DEX_FILE_MAGIC:
             return JD_FILE_TYPE_DEX;
@@ -453,7 +456,7 @@ int main(int argc, char **argv)
     if (opt->option == JD_FILE_OPTION_CALL_GRAPH) {
         prepare_opt_output(opt);
         mem_init_pool();
-        if (is_apk_file(opt))
+        if (is_apk_file(opt) || is_archive_file(opt))
             apk_analyzer(opt->path, opt->out);
         else
             jd_dex_analyzer_from_file(opt->path, opt->out);

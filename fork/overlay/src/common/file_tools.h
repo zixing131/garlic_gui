@@ -3,6 +3,7 @@
 
 #include <unistd.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <sys/stat.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,6 +52,13 @@ static inline char *source_storage_name(const char *name)
     return hex_storage_name(name);
 }
 
+#define OUTPUT_BUFFER_SIZE (64 * 1024)
+static inline void output_set_buffer(FILE *stream)
+{
+    if (stream != NULL)
+        setvbuf(stream, NULL, _IOFBF, OUTPUT_BUFFER_SIZE);
+}
+
 static bool inline file_exist(const char *path)
 {
     return access(path, F_OK) == 0;
@@ -63,6 +71,12 @@ static inline void make_dir(const char *dir)
     char *tmp = malloc(len + 1);
     if (!tmp) return;
     memcpy(tmp, dir, len + 1);
+#ifdef _WIN32
+    for (char *s = tmp; *s; s++)
+        if (*s == '\\')
+            *s = '/';
+    len = strlen(tmp);
+#endif
     if (len > 1 && tmp[len - 1] == '/')
         tmp[len - 1] = 0;
     for (char *p = tmp + 1; *p; p++) {

@@ -236,7 +236,7 @@ void source_map_method(FILE *stream, long start, jsource_file *jf, jd_method *m)
                           m->name[0] == '<' ? jf->sname : m->name, 1);
 }
 void source_map_location(FILE *stream, long start, jd_ins *ins) {
-    if (!spans || start < 0 || !ins || !ins->method || ins->type != JD_TYPE_DALVIK) return;
+    if (!spans || start < 0 || !ins || !ins->method || ins->method->type != JD_TYPE_DALVIK) return;
     long end = ftell(stream);
     if (end <= start) return;
     jd_method *method = ins->method;
@@ -282,7 +282,7 @@ void source_map_expression(FILE *stream, long start, jd_exp *exp) {
                 exp->type == JD_EXPRESSION_GET_STATIC || exp->type == JD_EXPRESSION_PUT_STATIC;
     if (!method && !field)
         return;
-    if (ins->type == JD_TYPE_DALVIK) {
+    if (ins->method->type == JD_TYPE_DALVIK) {
         jd_dex *dex = ins->method->meta;
         jd_meta_dex *meta = dex->meta;
         unsigned idx = dex_ins_parameter((jd_dex_ins *)ins, field && ins->code < 0x60 ? 2 : 1);
@@ -308,7 +308,7 @@ void source_map_expression(FILE *stream, long start, jd_exp *exp) {
             id = str_create("%s->%s:%s", dex_str_of_type_id(meta, f->class_idx), token,
                             dex_str_of_type_id(meta, f->type_idx));
         }
-    } else if (ins->type == JD_TYPE_JVM && ins->param_length >= 2) {
+    } else if (ins->method->type == JD_TYPE_JVM && ins->param_length >= 2) {
         jclass_file *jc = ins->method->meta;
         u2 idx = be16toh((ins->param[0] << 8) | ins->param[1]);
         jcp_info *cp = pool_item(jc, idx);

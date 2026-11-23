@@ -602,7 +602,7 @@ void MainWindow::chooseFile() {
         return;
     const auto paths = QFileDialog::getOpenFileNames(
         this, tr("打开字节码"), QSettings().value("lastDirectory").toString(),
-        tr("可分析文件 (*.apk *.xapk *.apks *.dex *.jar *.war *.zip *.class *.so *.dylib)"));
+        tr("可分析文件 (*.apk *.xapk *.apks *.dex *.jar *.war *.zip *.class *.so *.dylib);;所有文件 (*)"));
     if (!paths.isEmpty())
         openPaths(paths);
 }

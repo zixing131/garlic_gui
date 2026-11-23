@@ -12,6 +12,7 @@
 #include "control_flow.h"
 #include "parser/class/class_tools.h"
 #include "dalvik/dex_meta_helper.h"
+#include <ctype.h>
 
 static __thread FILE *class_output;
 static inline FILE* file_output(jsource_file *jf)
@@ -472,8 +473,8 @@ static void write_notice(jsource_file *jf)
     FILE *stream = file_output(jf);
 
     fprintf(stream, "/*\n");
-    fprintf(stream, " * Decompiled by Garlic\n");
-    fprintf(stream, " * Version: 1.8\n");
+    fprintf(stream, " * decompiled by garlic version: 1.8\n");
+    fprintf(stream, " * https://github.com/neocanable/garlic\n");
     fprintf(stream, " */ \n");
 }
 
@@ -502,7 +503,21 @@ static void write_class_annotation(jsource_file *jf)
     FILE *stream = file_output(jf);
     for (int i = 0; i < jf->annotations->size; ++i) {
         jd_annotation *ano = lget_obj(jf->annotations, i);
-        fprintf(stream, "%s\n", ano->str);
+        string s = ano->str;
+        if (s == NULL) {
+            fputc('\n', stream);
+            continue;
+        }
+        for (const unsigned char *p = (const unsigned char *) s;
+             *p != '\0'; ++p) {
+            if (iscntrl(*p)) {
+                fprintf(stream, "\\%02X", *p);
+            }
+            else {
+                fputc(*p, stream);
+            }
+        }
+        fputc('\n', stream);
     }
 }
 
@@ -526,7 +541,7 @@ static void write_enum_constants(jsource_file *jf, jd_node *node)
         return;
 
     FILE *stream = file_output(jf);
-    fprintf(stream, "%s", get_node_ident(node));
+    fputs(get_node_ident(node), stream);
     expression_to_stream(stream, node, jf->enum_constants);
     fprintf(stream, ";\n\n");
 }
@@ -598,7 +613,13 @@ static void write_class(FILE *stream, jd_node *n)
 {
     string ident = get_node_ident(n);
     jsource_file *_source_file = n->data;
-    fprintf(stream, "%s// class: %s\n", ident, _source_file->fname);
+    if (_source_file->source_name != NULL) {
+        fprintf(stream, "%s/* load from: %s, dex: %s */\n",
+                ident, _source_file->fname, _source_file->source_name);
+    }
+    else {
+        fprintf(stream, "%s// class: %s\n", ident, _source_file->fname);
+    }
     write_class_annotation(_source_file);
     long class_start=ftell(stream);
     fprintf(stream, "%s%s {\n", ident, _source_file->defination);
@@ -627,6 +648,8 @@ static void write_method(FILE *stream, jsource_file *jf, jd_node *node)
         return;
 
     write_method_annotation(jf, node);
+    if (m->is_override)
+        fprintf(stream, "%s@Override\n", ident);
     long method_start=ftell(stream);
     if (method_is_empty(m)) {
         fprintf(stream, "%s%s;\n\n", ident,
@@ -649,7 +672,7 @@ static void write_expression_node(FILE *stream, jsource_file *jf, jd_node *n)
         exp_is_empty(exp))
         return;
     string ident = get_node_ident(n);
-    fprintf(stream, "%s", ident);
+    fputs(ident, stream);
     write_expression(jf, n, exp, exp->ins, true);
 }
 
@@ -661,7 +684,7 @@ static void write_basic_block(FILE *stream, jsource_file *jf, jd_node *n)
         if (exp_is_nopped(exp) ||
             exp_is_empty(exp))
             continue;
-        fprintf(stream, "%s", ident);
+        fputs(ident, stream);
         write_expression(jf, n, exp, exp->ins, true);
     }
 }
@@ -679,9 +702,52 @@ static void write_if_return_node(FILE *stream, jsource_file *jf, jd_node *n)
         if (exp_is_nopped(exp) ||
             exp_is_empty(exp))
             continue;
-        fprintf(stream, "%s", ident);
+        fputs(ident, stream);
         write_expression(jf, n, exp, exp->ins, true);
     }
+}
+
+static bool if_node_draws_body(jd_node *n)
+{
+    for (int i = 0; i < n->children->size; ++i) {
+        jd_node *child = lget_obj(n->children, i);
+        if (child->type == JD_NODE_DELETED)
+            continue;
+        if (node_is_expression(child)) {
+            jd_exp *exp = child->data;
+            if (exp == n->param_exp ||
+                exp_is_nopped(exp) || exp_is_empty(exp))
+                continue;
+            return true;
+        }
+        if (child->type == JD_NODE_BASIC_BLOCK) {
+            jd_method *m = child->method;
+            if (m == NULL)
+                return true;
+            for (int j = child->start_idx; j <= child->end_idx; ++j) {
+                jd_exp *exp = get_exp(m, j);
+                if (exp != NULL && !exp_is_nopped(exp) && !exp_is_empty(exp))
+                    return true;
+            }
+            continue;
+        }
+        return true;
+    }
+    return false;
+}
+
+static void write_condition(FILE *stream, jsource_file *jf,
+                            jd_node *n, jd_exp *exp)
+{
+    if (exp == NULL)
+        return;
+    if (exp->type == JD_EXPRESSION_IF_BREAK) {
+        jd_exp_if *if_exp = exp->data;
+        write_expression(jf, n, if_exp->expression,
+                         if_exp->expression->ins, false);
+        return;
+    }
+    write_expression(jf, n, exp, exp->ins, false);
 }
 
 static void write_if_node(FILE *stream, jsource_file *jf, jd_node *n)
@@ -689,11 +755,19 @@ static void write_if_node(FILE *stream, jsource_file *jf, jd_node *n)
     if (n->children->size == 0)
         return;
     string ident = get_node_ident(n);
-    fprintf(stream, "%s", ident);
+    bool break_condition = n->param_exp != NULL &&
+                           n->param_exp->type == JD_EXPRESSION_IF_BREAK;
+    bool has_body = break_condition && if_node_draws_body(n);
+    fputs(ident, stream);
     fprintf(stream, "%s (", node_name(n));
-    write_expression(jf, n, n->param_exp, n->param_exp->ins, false);
+    write_condition(stream, jf, n, n->param_exp);
     fprintf(stream, ") {");
     write_node_debug_info(jf, n);
+    if (break_condition && !has_body) {
+        fprintf(stream, "%s    break;", ident);
+        fprintf(stream, "\n%s}\n", ident);
+        return;
+    }
     writter_for_class(jf, n);
     fprintf(stream, "%s}\n", ident);
 }
@@ -713,7 +787,7 @@ static void write_for_loop_node(FILE *stream, jsource_file *jf, jd_node *n)
 {
     string ident = get_node_ident(n);
     fprintf(stream, "%s%s (", ident, node_name(n));
-    write_expression(jf, n, n->param_exp, n->param_exp->ins, false);
+    write_condition(stream, jf, n, n->param_exp);
     fprintf(stream, ") {");
     write_node_debug_info(jf, n);
     writter_for_class(jf, n);
@@ -724,7 +798,7 @@ static void write_while_node(FILE *stream, jsource_file *jf, jd_node *n)
 {
     string ident = get_node_ident(n);
     fprintf(stream, "%s%s (", ident, node_name(n));
-    write_expression(jf, n, n->param_exp, n->param_exp->ins, false);
+    write_condition(stream, jf, n, n->param_exp);
     fprintf(stream, ") {");
     write_node_debug_info(jf, n);
     writter_for_class(jf, n);
@@ -738,7 +812,7 @@ static void write_do_while_node(FILE *stream, jsource_file *jf, jd_node *n)
     write_node_debug_info(jf, n);
     writter_for_class(jf, n);
     fprintf(stream, "%s} while(", ident);
-    write_expression(jf, n, n->param_exp, n->param_exp->ins, false);
+    write_condition(stream, jf, n, n->param_exp);
     fprintf(stream, ");\n");
 }
 
@@ -771,8 +845,23 @@ static void write_case(FILE *stream, jsource_file *jf, jd_node *n)
 {
     string ident = get_node_ident(n);
     jd_case *_case = n->data;
-    if (_case->is_default)
+    int count = _case->keys != NULL ? (int) _case->keys->size : 0;
+
+    if (_case->is_default) {
+        // cases that jump at the default body keep their labels
+        for (int i = 0; i < count; ++i)
+            fprintf(stream, "%s%s %d:\n", ident, node_name(n),
+                    lget_int(_case->keys, i));
         fprintf(stream, "%sdefault: {", ident);
+    }
+    else if (count > 0) {
+        // one body can carry several labels: case 0:\ncase 1: {
+        for (int i = 0; i < count; ++i) {
+            fprintf(stream, "%s%s %d:%s", ident, node_name(n),
+                    lget_int(_case->keys, i),
+                    i + 1 < count ? "\n" : " {");
+        }
+    }
     else {
         fprintf(stream, "%s%s ", ident, node_name(n));
         fprintf(stream, "%s", const_integer_to_s(_case->key, false));
@@ -795,10 +884,25 @@ static void write_synchronized(FILE *stream, jsource_file *jf, jd_node *n)
     fprintf(stream, "%s}\n", ident);
 }
 
+static void write_try_resources_node(FILE *stream, jsource_file *jf, jd_node *n)
+{
+    string ident = get_node_ident(n);
+    jd_try_resource *r = n->data;
+    fprintf(stream, "%stry (", ident);
+    if (r != NULL) {
+        fprintf(stream, "%s %s = %s", r->cname, r->name,
+                r->init == NULL ? r->name : r->init);
+    }
+    fprintf(stream, ") {");
+    write_node_debug_info(jf, n);
+    writter_for_class(jf, n);
+    fprintf(stream, "%s}\n", ident);
+}
+
 static void write_default(FILE *stream, jsource_file *jf, jd_node *n)
 {
     string ident = get_node_ident(n);
-    fprintf(stream, "%s", ident);
+    fputs(ident, stream);
     fprintf(stream, "%s {", node_name(n));
     write_node_debug_info(jf, n);
     writter_for_class(jf, n);
@@ -892,6 +996,9 @@ void writter_for_class(jsource_file *jf, jd_node *node)
             case JD_NODE_SYNCHRONIZED:
                 write_synchronized(stream, jf, child);
                 break;
+            case JD_NODE_TRY_RESOURCES:
+                write_try_resources_node(stream, jf, child);
+                break;
             default:
                 write_default(stream, jf, child);
                 break;
@@ -976,6 +1083,9 @@ void writter_for_anonymous_class(jsource_file *jf, jd_node *node)
                 break;
             case JD_NODE_SYNCHRONIZED:
                 write_synchronized(stream, jf, child);
+                break;
+            case JD_NODE_TRY_RESOURCES:
+                write_try_resources_node(stream, jf, child);
                 break;
             default:
                 write_default(stream, jf, child);

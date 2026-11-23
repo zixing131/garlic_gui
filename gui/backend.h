@@ -122,6 +122,7 @@ class Backend : public QObject {
     std::shared_ptr<std::atomic_bool> indexCanceled_;
     bool indexing_ = false, postprocessing_ = false, clearing_ = false;
     bool directoryOnly_ = false, metadataReady_ = true, metadataPreparing_ = false;
+    bool dexArchive_ = false;
     bool sourcesAfterMetadata_ = false;
     std::shared_ptr<std::atomic_bool> metadataCanceled_;
     std::shared_ptr<SearchControl> exportControl_;

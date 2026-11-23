@@ -12,11 +12,11 @@
 static bool fold_string_owner(jd_ins *ins) {
     if (!ins) return false;
     string raw = NULL;
-    if (ins->type == JD_TYPE_JVM) {
+    if (ins->method != NULL && ins->method->type == JD_TYPE_JVM) {
         if (ins->code < 0xb6 || ins->code > 0xb9) return false;
         jcp_info *ref = jvm_invoke_methodref_info(ins);
         if (ref) raw = get_class_name(ins->method->meta, ref);
-    } else if (ins->type == JD_TYPE_DALVIK) {
+    } else if (ins->method != NULL && ins->method->type == JD_TYPE_DALVIK) {
         if (!((ins->code >= 0x6e && ins->code <= 0x72) ||
               (ins->code >= 0x74 && ins->code <= 0x78))) return false;
         jd_meta_dex *meta = dex_ins_meta(((jd_dex_ins *)ins));

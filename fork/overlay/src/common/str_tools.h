@@ -23,31 +23,38 @@
 static inline string str_create(string fmt, ...)
 {
     va_list args;
-    string str;
-    va_start(args, fmt);
     va_list args2;
+    va_start(args, fmt);
     va_copy(args2, args);
     int len = vsnprintf(NULL, 0, fmt, args2);
-    str = x_alloc(len+1);
-    vsnprintf(str, len+1, fmt, args);
-    va_end(args);
+    va_end(args2);
+    if (len < 0) {
+        va_end(args);
+        return NULL;
+    }
 
+    string str = x_alloc((size_t) len + 1);
+    vsnprintf(str, (size_t) len + 1, fmt, args);
+    va_end(args);
     return str;
 }
 
 static inline string str_create_in(mem_pool *pool, string fmt, ...)
 {
     va_list args;
-    string str;
-    va_start(args, fmt);
     va_list args2;
+    va_start(args, fmt);
     va_copy(args2, args);
     int len = vsnprintf(NULL, 0, fmt, args2);
-    str = x_alloc_in(pool, len+1);
-    vsnprintf(str, len+1, fmt, args);
-    str[len] = '\0';
-    va_end(args);
+    va_end(args2);
+    if (len < 0) {
+        va_end(args);
+        return NULL;
+    }
 
+    string str = x_alloc_in(pool, (size_t) len + 1);
+    vsnprintf(str, (size_t) len + 1, fmt, args);
+    va_end(args);
     return str;
 }
 
@@ -66,7 +73,6 @@ static inline string double2a(double num)
     return str_create("%f", num);
 }
 
-/* Case-sensitive: does s end with the suffix suff? */
 static inline int str_end_with(const char *s, const char *suff)
 {
     size_t slen     = strlen(s);
@@ -75,7 +81,6 @@ static inline int str_end_with(const char *s, const char *suff)
         !memcmp(s + slen - sufflen, suff, sufflen);
 }
 
-/* Case-insensitive: does s end with the suffix suff? */
 static inline int str_end_with_lower(const char *s, const char *suff)
 {
     size_t slen     = strlen(s);
@@ -90,13 +95,11 @@ static inline int str_end_with_lower(const char *s, const char *suff)
     return 1;
 }
 
-/* File extensions for Android APK and split-APK containers (.apk/.xapk/.apks) */
 #define APK_EXTENSION       ".apk"
 #define SPLIT_APK_XAPK      ".xapk"
 #define SPLIT_APK_APKS      ".apks"
 #define ZIP_EXTENSION       ".zip"
 
-/* Case-insensitive check: does path end in an APK / split-APK container extension? */
 static inline int str_is_apk_path(const char *path)
 {
     return str_end_with_lower(path, APK_EXTENSION)  ||
@@ -125,7 +128,6 @@ static inline string str_dup(const char *str)
     memcpy(new_str, str, len);
     new_str[len] = '\0';
     return new_str;
-//    return str_create("%s", str);
 }
 
 static inline int str_replace_char(char *str, char orig, char rep)

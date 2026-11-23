@@ -102,6 +102,8 @@ void optimize_jvm_method(jd_method *m)
 
     analyse_local_variables(m);
 
+    hoist_shared_else_block(m);
+
     copy_propagation_of_dup_local_variable(m);
 
     identify_loop_type(m);
@@ -112,6 +114,18 @@ void optimize_jvm_method(jd_method *m)
 
     setup_expression_node_param(m);
 
+    attach_dropped_terminals(m);
+
+    flatten_else_after_terminating_if(m);
+
+    fix_exception_handler_blocks(m);
+
+    optimize_goto_expression(m);
+
+    nop_catch_handler_gotos(m);
+
     optimize_exception_block(m);
+
+    unwrap_if_branch_nodes(m);
 }
 

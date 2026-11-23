@@ -33,7 +33,7 @@ static bool identify_initialize_of_assignment(jd_method *m, jd_exp *exp, int i)
         jd_ins *invoke_ins = invoke_exp->ins;
         if (invoke_ins == NULL)
             continue;
-        jd_ins_fn *fn = invoke_ins->fn;
+        jd_ins_fn *fn = ins_fn_of(invoke_ins);
         if (!fn->is_invoke_special(invoke_ins))
             continue;
 
@@ -102,7 +102,7 @@ static bool identify_initialize_of_store(jd_method *m, jd_exp *exp, int i)
         jd_ins *invoke_ins = invoke_exp->ins;
         if (invoke_ins == NULL)
             continue;
-        jd_ins_fn *fn = invoke_ins->fn;
+        jd_ins_fn *fn = ins_fn_of(invoke_ins);
         if (!fn->is_invoke_special(invoke_ins))
             continue;
         jd_exp_invoke *invoke = invoke_exp->data;
@@ -128,9 +128,6 @@ static bool identify_initialize_of_store(jd_method *m, jd_exp *exp, int i)
                    invoke->list->args,
                    size);
         }
-        invoke_exp->data = initialize;
-        invoke_exp->type = JD_EXPRESSION_INITIALIZE;
-
         jd_val *val = left->data;
         jd_var *var = val->stack_var;
         if (var != NULL)
@@ -149,7 +146,9 @@ static bool identify_initialize_of_store(jd_method *m, jd_exp *exp, int i)
             right->data = initialize;
         }
 
-        exp_mark_nopped(invoke_exp);
+        invoke_exp->type = exp->type;
+        invoke_exp->data = exp->data;
+        exp_mark_nopped(exp);
         found = true;
         break;
     }

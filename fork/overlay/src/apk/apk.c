@@ -311,6 +311,9 @@ static void apk_process_dex_from_zip(jd_apk *apk, struct zip_t *zip, const char 
                 fprintf(stderr, "Failed to read DEX entry\n"); exit(EXIT_FAILURE);
             }
         }
+        size_t name_len = strlen(path_in_zip);
+        char *source_name = x_alloc_in(apk->pool, name_len + 1);
+        memcpy(source_name, path_in_zip, name_len + 1);
         zip_entry_close(zip);
 
         int directory = browse_index_dex_directory((const unsigned char *)buf, buf_size);
@@ -320,6 +323,7 @@ static void apk_process_dex_from_zip(jd_apk *apk, struct zip_t *zip, const char 
             continue;
         }
         jd_meta_dex *meta = parse_dex_from_buffer(buf, buf_size);
+        meta->source_name = source_name;
         if (class_selection_indexing()) {
             index_dex_classes(apk, meta);
             mem_pool_free(meta->pool);

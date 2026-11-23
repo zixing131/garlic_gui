@@ -574,6 +574,8 @@ static void parse_dex_code_debug_item(jd_meta_dex *dex, dex_code_item *code)
     u4 itor = 0;
     for (int i = 0; i < debug_info->parameters_size; ++i) {
         u4 name_idx = read_unsigned_leb128(dex) - 1;
+        if (name_idx != NO_INDEX && name_idx >= dex->header->string_ids_size)
+            name_idx = NO_INDEX;
         debug_info->parameter_name[i] = name_idx;
         if (name_idx != NO_INDEX) {
             string param_name = dex_str_of_idx(dex, name_idx);
@@ -611,6 +613,9 @@ static void parse_dex_code_debug_item(jd_meta_dex *dex, dex_code_item *code)
                 s4 reg = read_unsigned_leb128(dex);
                 u4 name_idx = read_unsigned_leb128(dex) - 1;
                 u4 type_idx = read_unsigned_leb128(dex) - 1;
+                if (name_idx != NO_INDEX &&
+                    name_idx >= dex->header->string_ids_size)
+                    name_idx = NO_INDEX;
 
                 dex_dbg_item *dbg_item = &items[itor];
                 dbg_item->code = DBG_START_LOCAL;
@@ -625,6 +630,9 @@ static void parse_dex_code_debug_item(jd_meta_dex *dex, dex_code_item *code)
                 u4 name_idx = read_unsigned_leb128(dex) - 1;
                 u4 type_idx = read_unsigned_leb128(dex) - 1;
                 u4 sig_idx = read_unsigned_leb128(dex) -1;
+                if (name_idx != NO_INDEX &&
+                    name_idx >= dex->header->string_ids_size)
+                    name_idx = NO_INDEX;
 
                 dex_dbg_item *dbg_item = &items[itor];
                 dbg_item->code = DBG_START_LOCAL;
@@ -936,6 +944,19 @@ static void init_dex_extract_data(jd_meta_dex *dex)
     dex->class_name_map = hashmap_init_in(dex->pool, (hcmp_fn) s2o_cmp, 0);
 }
 
+static string dex_basename(mem_pool *pool, string path)
+{
+    string name = path;
+    for (string p = path; *p != '\0'; ++p) {
+        if (*p == '/' || *p == '\\')
+            name = p + 1;
+    }
+    size_t len = strlen(name);
+    char *copy = x_alloc_in(pool, len + 1);
+    memcpy(copy, name, len + 1);
+    return copy;
+}
+
 jd_meta_dex* parse_dex_file(string path)
 {
 //    init_dex_opcode_hashmap();
@@ -943,6 +964,7 @@ jd_meta_dex* parse_dex_file(string path)
     mem_pool *pool = mem_create_pool();
 
     jd_meta_dex *dex = init_dex_content(pool, path);
+    dex->source_name = dex_basename(pool, path);
 
     init_dex_extract_data(dex);
 

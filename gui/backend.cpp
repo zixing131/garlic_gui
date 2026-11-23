@@ -1,4 +1,7 @@
 #include "backend.h"
+extern "C" {
+#include "zip.h"
+}
 #include <QCoreApplication>
 #include <QDir>
 #include <QDirIterator>
@@ -19,6 +22,53 @@
 #include <QUuid>
 #include <QtConcurrent>
 #include <future>
+
+namespace {
+bool fileMagic(const QString &path, QByteArray *magic) {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return false;
+    *magic = file.read(8);
+    return true;
+}
+bool zipContainsDex(const QString &path) {
+    struct zip_t *zip = zip_open(path.toUtf8().constData(), 0, 'r');
+    if (!zip)
+        return false;
+    bool found = false;
+    const int total = int(zip_entries_total(zip));
+    for (int i = 0; i < total && !found; ++i) {
+        if (zip_entry_openbyindex(zip, i) < 0)
+            continue;
+        const auto name = QString::fromUtf8(zip_entry_name(zip));
+        found = name.endsWith(".dex", Qt::CaseInsensitive) || name.endsWith(".apk", Qt::CaseInsensitive);
+        zip_entry_close(zip);
+    }
+    zip_close(zip);
+    return found;
+}
+bool analyzableBytecode(const QString &path) {
+    if (!QFileInfo(path).isFile())
+        return false;
+    const auto ext = QFileInfo(path).suffix().toLower();
+    if (QStringList{"apk", "dex", "jar", "war", "zip", "class", "xapk", "apks"}.contains(ext))
+        return true;
+    QByteArray magic;
+    if (!fileMagic(path, &magic))
+        return false;
+    return magic.startsWith("PK\x03\x04") || magic.startsWith("dex\n") || magic.startsWith("\xCA\xFE\xBA\xBE");
+}
+bool inputContainsDex(const QString &path) {
+    QByteArray magic;
+    if (!fileMagic(path, &magic))
+        return false;
+    if (magic.startsWith("dex\n"))
+        return true;
+    if (!magic.startsWith("PK\x03\x04"))
+        return false;
+    return zipContainsDex(path);
+}
+}
 
 Backend::Backend(QObject *parent)
     : QObject(parent), project_(this), settings_(AppSettings::load()) {
@@ -133,13 +183,20 @@ QString Backend::classInput(const QString &name) const {
     return project_.info(name).value("input").toString(input_);
 }
 bool Backend::supportsSmali(const QString &name) const {
+    const auto originIsDex = [](const QString &origin) {
+        return origin.endsWith(".dex", Qt::CaseInsensitive);
+    };
+    if (!name.isEmpty() && originIsDex(project_.info(name).value("origin").toString()))
+        return true;
+    if (dexArchive_)
+        return true;
     const auto ext = QFileInfo(name.isEmpty() ? input_ : classInput(name)).suffix().toLower();
     if (ext == "apk" || ext == "dex" || ext == "xapk" || ext == "apks")
         return true;
-    if (ext != "zip") return false;
-    if (!name.isEmpty()) return project_.info(name).value("origin").toString().endsWith(".dex", Qt::CaseInsensitive);
-    for (const auto &entry : project_.classes())
-        if (project_.info(entry).value("origin").toString().endsWith(".dex", Qt::CaseInsensitive)) return true;
+    if (name.isEmpty())
+        for (const auto &entry : project_.classes())
+            if (originIsDex(project_.info(entry).value("origin").toString()))
+                return true;
     return false;
 }
 
@@ -162,9 +219,9 @@ void Backend::start(Job job, const QStringList &arguments) {
     indexProgress_ = -1;
     process_.setWorkingDirectory(workspace_->path());
     applyEnvironment(process_, jobDir_);
-    if (job == Job::Source && QStringList{"apk", "zip", "jar", "war"}.contains(QFileInfo(arguments.value(0)).suffix().toLower())) {
+    if (job == Job::Source) {
         const auto origin = project_.info(argumentClass_).value("origin").toString();
-        if (!origin.isEmpty() && origin.endsWith(".dex", Qt::CaseSensitive)) {
+        if (!origin.isEmpty() && origin.endsWith(".dex", Qt::CaseInsensitive)) {
             auto environment = process_.processEnvironment();
             environment.insert("GARLIC_DEX_ENTRY", origin);
             process_.setProcessEnvironment(environment);
@@ -198,9 +255,7 @@ void Backend::openPaths(const QStringList &paths) {
         return;
     const auto path = paths.first();
     for (const auto &p : paths)
-        if (!QFileInfo(p).isFile() ||
-            !QStringList{"apk", "dex", "jar", "war", "zip", "class", "xapk", "apks"}.contains(
-                QFileInfo(p).suffix().toLower())) {
+        if (!analyzableBytecode(p)) {
             emit failed(tr("不支持或不存在的文件：%1").arg(p));
             return;
         }
@@ -211,10 +266,10 @@ void Backend::openPaths(const QStringList &paths) {
         return;
     }
     const QString ext = QFileInfo(path).suffix().toLower();
-    if (!QStringList{"apk", "dex", "jar", "war", "zip", "class", "xapk", "apks"}.contains(ext)) {
-        emit failed(tr("请选择 APK、DEX、JAR、WAR、ZIP 或 CLASS 文件。"));
-        return;
-    }
+    dexArchive_ = false;
+    for (const auto &p : paths)
+        if (inputContainsDex(p))
+            dexArchive_ = true;
     auto workspace = std::shared_ptr<QTemporaryDir>(
         new QTemporaryDir(QDir::tempPath() + "/garlic-gui-XXXXXX"),
         [](QTemporaryDir *dir) { QThreadPool::globalInstance()->start([dir] { delete dir; }); });
@@ -228,7 +283,8 @@ void Backend::openPaths(const QStringList &paths) {
     metadataPreparing_ = false;
     directoryOnly_ = paths.size() == 1 &&
         (property("fastOpen").toBool() ||
-         (QStringList{"apk", "apks", "xapk", "dex", "zip"}.contains(ext) && QFileInfo(path).size() >= 32LL * 1048576));
+         ((dexArchive_ || QStringList{"apk", "apks", "xapk", "dex", "zip"}.contains(ext)) &&
+          QFileInfo(path).size() >= 32LL * 1048576));
     metadataReady_ = !directoryOnly_;
     sourcesAfterMetadata_ = false;
     if (searchWarmControl_)
@@ -905,7 +961,7 @@ void Backend::nextBackground() {
         QFileInfo(input).suffix() == "class" ? directory + "/source.java" : QString());
     auto environment = background_.processEnvironment();
     const auto suffix = QFileInfo(input).suffix().toLower();
-    if (QStringList{"apk", "apks", "xapk", "dex"}.contains(suffix))
+    if (dexArchive_ || QStringList{"apk", "apks", "xapk", "dex"}.contains(suffix))
         environment.insert("GARLIC_JAVA_PACK", "1");
     else environment.remove("GARLIC_JAVA_PACK");
     background_.setProcessEnvironment(environment);

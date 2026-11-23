@@ -1,5 +1,6 @@
 #include "source_map.h"
 #include "decompiler/transformer/transformer.h"
+#include "decompiler/instruction.h"
 #include "jvm/jvm_ins_helper.h"
 
 string lambda_receiver_to_s(jd_exp *exp)
@@ -32,7 +33,7 @@ string exp_to_s(jd_exp *expression)
     {
         case JD_EXPRESSION_INVOKE:
         {
-            jd_ins_fn *fn = expression->ins->fn;
+            jd_ins_fn *fn = ins_fn_of(expression->ins);
             jd_ins *ins = expression->ins;
             if (fn->is_invoke_static(ins))
                 return exp_invokestatic_to_s(expression);
@@ -149,7 +150,7 @@ static void expression_to_stream_impl(FILE *stream, jd_node *node, jd_exp *expre
 {
     switch(expression->type) {
         case JD_EXPRESSION_INVOKE: {
-            jd_ins_fn *fn = expression->ins->fn;
+            jd_ins_fn *fn = ins_fn_of(expression->ins);
             jd_ins *ins = expression->ins;
             if (fn->is_invoke_static(ins))
                 exp_invokestatic_to_stream(stream, node, expression);

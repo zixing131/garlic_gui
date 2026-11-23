@@ -1,5 +1,6 @@
 #include "jd_mcp.h"
 #include "str_tools.h"
+#include "common/archive_kind.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -198,7 +199,9 @@ int jd_mcp_detect_file_type(const char *path)
         case DEX_FILE_MAGIC:
             return JD_MCP_FILE_DEX;
         case ZIP_FILE_MAGIC: {
-            if (str_is_apk_path(path))
+            int has_class = 0, has_dex = 0;
+            zip_content_flags(path, &has_class, &has_dex);
+            if (has_dex)
                 return JD_MCP_FILE_APK;
             return JD_MCP_FILE_JAR;
         }
