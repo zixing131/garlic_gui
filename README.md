@@ -14,7 +14,28 @@ Android/Java decompiler written in C
 
 Tool for produces java source code from class/jar/dex/apk file
 
-### AI headless / MCP
+The engine and the sections below are from the original project by **neocanable**:
+[neocanable/garlic](https://github.com/neocanable/garlic).
+
+### This fork: Garlic GUI 0.5.48
+
+This repository keeps that engine and adds a Qt 6 desktop browser, **Garlic GUI 0.5.48**.
+The interface, headless mode, MCP and app metadata share this version (`GARLIC_GUI_VERSION`
+in `gui/CMakeLists.txt`). Local engine edits live in `fork/overlay`; `src/` stays aligned
+with upstream. After fetching upstream, run `scripts/sync-upstream.sh`.
+
+The browser opens APK, DEX, JAR, WAR, ZIP, CLASS, XAPK and APKS files. It builds a class,
+member and reference index, then generates Java or Smali when a class is opened. It also
+has project search, reference navigation, aliases, preferences, scripting and MCP.
+Full notes are in [Garlic GUI](docs/garlic-gui.md).
+
+ZIP files are recognized by the `PK` header and their entries, not by the filename suffix.
+A `framework.jar` that contains `classes.dex` is indexed like an APK. A JAR that only
+contains `.class` files is still Java bytecode. DEX files that live only in subdirectories
+are still read; a package that already has a root DEX does not pull extra DEX files out of
+resource directories.
+
+#### AI headless / MCP
 
 Given the software directory and an APK path, start with the
 [headless MCP setup](docs/garlic-gui.md#ai-无头模式与-mcp-自动接入).
@@ -23,11 +44,31 @@ The client launches that command and opens the APK; you do not need to start the
 On macOS use `Garlic.app/Contents/MacOS/garlic-gui` inside the app bundle.
 Omit `--print-mcp-config` to run the service.
 
-### Native C++ GUI
+#### Build the GUI
 
-An optional Qt 6 desktop browser provides typed class/member trees, bottom Java/Smali
-tabs, reference navigation, project aliases, full-project search, preferences and MCP. Enable
-`-DGARLIC_BUILD_GUI=ON`; see [the GUI build and usage guide](docs/garlic-gui.md).
+Requirements: CMake >= 3.26, a C++17 compiler, and Qt 6.5+ (Widgets, Network, Concurrent).
+The CLI build does not need Qt. `GARLIC_BUILD_GUI` is off unless you turn it on.
+
+```sh
+git clone https://github.com/zixing131/garlic_gui.git
+cd garlic_gui
+./build_gui.sh
+# macOS
+open build/gui/garlic-gui.app
+# or
+./build/gui/garlic-gui.app/Contents/MacOS/garlic-gui /path/to/app.apk
+```
+
+Manual build:
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGARLIC_BUILD_GUI=ON
+cmake --build build --parallel
+```
+
+On macOS, point `CMAKE_PREFIX_PATH` at Homebrew Qt if CMake does not find it:
+`-DCMAKE_PREFIX_PATH="$(brew --prefix qtbase)"`. Linux uses the Qt 6 development
+packages and runs `build/gui/garlic-gui`. The tested platform is macOS arm64.
 
 ### Features
 

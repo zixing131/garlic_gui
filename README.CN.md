@@ -12,20 +12,56 @@
 
 从 class/jar/dex/apk 文件生成 Java 源码的工具
 
+引擎以及后面的功能、编译和使用说明来自原作者 **neocanable** 的项目：
+[neocanable/garlic](https://github.com/neocanable/garlic)。
 
+### 本仓库：Garlic GUI 0.5.48
 
-### AI headless / 无头模式
+这个仓库保留上游引擎，并加上 Qt 6 桌面浏览器 **Garlic GUI 0.5.48**。
+界面、无头模式、MCP 和应用包元数据共用这个版本号（`gui/CMakeLists.txt` 里的
+`GARLIC_GUI_VERSION`）。对本仓库引擎的本地修改放在 `fork/overlay`，`src/` 与上游保持一致。
+拉取上游后运行 `scripts/sync-upstream.sh`。
 
-AI 给定软件目录和 APK 路径后，请先阅读 [无头模式与 MCP 自动接入](docs/garlic-gui.md#ai-无头模式与-mcp-自动接入)。
+浏览器可以打开 APK、DEX、JAR、WAR、ZIP、CLASS、XAPK 和 APKS。它先建立类、成员和引用索引，
+打开类时再生成 Java 或 Smali，并带有项目搜索、引用跳转、别名、首选项、脚本和 MCP。
+完整说明见 [Garlic GUI](docs/garlic-gui.md)。
+
+ZIP 按文件头 `PK` 和内部条目识别，不看外层后缀。含 `classes.dex` 的 `framework.jar`
+会像 APK 一样建立索引。只含 `.class` 的 JAR 仍走 Java 字节码。只有子目录里才有 DEX 时仍会读取；
+根目录已经有 DEX 的包不会再把资源目录里的 DEX 一并解析。
+
+#### AI 无头模式
+
+给定软件目录和 APK 路径后，请先阅读 [无头模式与 MCP 自动接入](docs/garlic-gui.md#ai-无头模式与-mcp-自动接入)。
 使用 `garlic-gui --headless --apk /absolute/path/app.apk --print-mcp-config` 生成配置；
 客户端启动该命令即可自动打开 APK，无需先启动 GUI。macOS 请使用应用包内
-`Garlic.app/Contents/MacOS/garlic-gui`。移除 `--print-mcp-config` 即运行服务。
+`Garlic.app/Contents/MacOS/garlic-gui`。去掉 `--print-mcp-config` 即运行服务。
 
-### 原生 C++ GUI
+#### 编译 GUI
 
-现在可以构建基于 Qt 6 的桌面浏览器：类型与成员树、底部 Java/Smali 切换、语法高亮、
-引用与声明导航、项目别名重命名、全文搜索、设置和 MCP。构建时启用 `-DGARLIC_BUILD_GUI=ON`。
-完整说明见 [Garlic GUI](docs/garlic-gui.md)。
+需要 CMake >= 3.26、C++17 编译器，以及 Qt 6.5+（Widgets、Network、Concurrent）。
+只编译命令行引擎时不需要 Qt。不显式打开 `GARLIC_BUILD_GUI` 时不会构建界面。
+
+```sh
+git clone https://github.com/zixing131/garlic_gui.git
+cd garlic_gui
+./build_gui.sh
+# macOS
+open build/gui/garlic-gui.app
+# 或直接打开文件
+./build/gui/garlic-gui.app/Contents/MacOS/garlic-gui /path/to/app.apk
+```
+
+也可以手动构建：
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGARLIC_BUILD_GUI=ON
+cmake --build build --parallel
+```
+
+macOS 上如果 CMake 找不到 Qt，加上 Homebrew 路径：
+`-DCMAKE_PREFIX_PATH="$(brew --prefix qtbase)"`。Linux 安装 Qt 6 开发包后运行
+`build/gui/garlic-gui`。目前实际验证过的平台是 macOS arm64。
 
 ### 定制服务
 
