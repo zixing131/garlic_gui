@@ -105,7 +105,11 @@ char *class_selection_format(cJSON *entry)
 void class_selection_write_line(const char *line)
 {
     if (!index_stream) return;
-    if (!line || (*line && fprintf(index_stream, "%s\n", line) < 0)) selection_error = 1;
+    if (!line) { selection_error = 1; return; }
+    if (!*line) return;
+    size_t n = strlen(line);
+    if (fwrite(line, 1, n, index_stream) != n || fputc('\n', index_stream) == EOF)
+        selection_error = 1;
 }
 static char *line_buf;
 static size_t line_cap, line_len;

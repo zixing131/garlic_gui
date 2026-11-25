@@ -246,8 +246,16 @@ static void idx_json(idx_buf *b, const char *text)
 static void idx_int(idx_buf *b, int value)
 {
     char tmp[16];
-    int n = snprintf(tmp, sizeof tmp, "%d", value);
-    if (n > 0) idx_add(b, tmp, (size_t)n);
+    char *end = tmp + sizeof tmp;
+    char *p = end;
+    unsigned u = value < 0 ? 0u - (unsigned)value : (unsigned)value;
+    do {
+        *--p = (char)('0' + u % 10);
+        u /= 10;
+    } while (u);
+    if (value < 0)
+        *--p = '-';
+    idx_add(b, p, (size_t)(end - p));
 }
 static int idx_compact_mode(void)
 {
