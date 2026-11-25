@@ -15,7 +15,25 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
 #include <unistd.h>
+#else
+#include <windows.h>
+#endif
+
+static int host_cpu_count(void)
+{
+#ifdef _WIN32
+    SYSTEM_INFO info;
+    GetSystemInfo(&info);
+    return info.dwNumberOfProcessors > 0 ? (int)info.dwNumberOfProcessors : 1;
+#elif defined(_SC_NPROCESSORS_ONLN)
+    long cpus = sysconf(_SC_NPROCESSORS_ONLN);
+    return cpus > 1 ? (int)cpus : 1;
+#else
+    return 1;
+#endif
+}
 
 static __thread hashmap *reference_ids, *reference_groups;
 static __thread cJSON *reference_dictionary;
@@ -253,9 +271,9 @@ static void fill_parallel(jd_meta_dex *meta, int kind, u4 count)
         return;
     int threads = 1;
     if (count >= 2048) {
-        long cpus = sysconf(_SC_NPROCESSORS_ONLN);
+        int cpus = host_cpu_count();
         if (cpus > 12) cpus = 12;
-        if (cpus > 1) threads = (int)cpus;
+        if (cpus > 1) threads = cpus;
     }
     if (threads > (int)count) threads = (int)count;
     fill_job *jobs = calloc((size_t)threads, sizeof *jobs);
