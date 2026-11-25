@@ -986,8 +986,8 @@ static int ends_with_ci(const char *s, const char *suff)
     if (slen < sufflen)
         return 0;
     for (size_t i = 0; i < sufflen; i++) {
-        if (tolower((unsigned char)s[slen - sufflen + i]) !=
-                tolower((unsigned char)suff[i]))
+        if (ascii_lower((unsigned char)s[slen - sufflen + i]) !=
+                ascii_lower((unsigned char)suff[i]))
             return 0;
     }
     return 1;

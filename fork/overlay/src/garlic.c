@@ -56,11 +56,11 @@ static jd_file_type_t magic_of_file(char *filepath) {
     }
     uint32_t magic = 0;
     size_t bytes_read = fread(&magic, 1, sizeof(magic), fp);
+    fclose(fp);
     if (bytes_read != sizeof(magic)) {
         fprintf(stderr, "[garlic] File %s read error.\n", filepath);
         return JD_FILE_TYPE_UNKNOWN;
     }
-    fclose(fp);
 
     uint32_t be_magic = ((magic & 0xFF) << 24) |
                         (((magic >> 8) & 0xFF) << 16) |
@@ -348,14 +348,14 @@ static void run_for_archive(jd_opt *opt)
     if (zip) {
         const int total = zip_entries_total(zip);
         for (int i = 0; i < total; ++i) {
-            if (zip_entry_openbyindex(zip, i) < 0)
+            const char *entry = NULL;
+            size_t length = 0;
+            if (zip_entry_filename(zip, (size_t)i, &entry, &length) < 0)
                 continue;
-            const char *entry = zip_entry_name(zip);
-            if (entry && str_end_with_lower(entry, ".class"))
+            if (zip_name_ends(entry, length, ".class"))
                 has_class = 1;
-            if (entry && (str_end_with_lower(entry, ".dex") || str_end_with_lower(entry, ".apk")))
+            if (zip_name_ends(entry, length, ".dex") || zip_name_ends(entry, length, ".apk"))
                 has_dex = 1;
-            zip_entry_close(zip);
             if (has_class && has_dex)
                 break;
         }

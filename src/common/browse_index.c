@@ -385,20 +385,18 @@ int browse_index_dex_directory(const unsigned char *data, size_t size) {
         const unsigned char *end = memchr(data + offset, 0, size - offset);
         if (!end || end - (data + offset) < 3 || data[offset] != 'L' || end[-1] != ';') return -1;
         size_t length = end - (data + offset) - 2;
-        char *name = malloc(length + 1);
-        if (!name) return -1;
+        char stack[1024];
+        char *name = stack;
+        if (length >= sizeof stack) {
+            name = malloc(length + 1);
+            if (!name) return -1;
+        }
         memcpy(name, data + offset + 1, length); name[length] = 0;
-        cJSON *entry = cJSON_CreateObject();
-        cJSON_AddStringToObject(entry, "name", name);
-        cJSON_AddNumberToObject(entry, "flags", flags);
-        cJSON_AddStringToObject(entry, "kind", flags & 0x2000 ? "annotation" :
-            flags & 0x4000 ? "enum" : flags & 0x0200 ? "interface" :
-            flags & 0x0400 ? "abstract" : "class");
         char *simple = strrchr(name, '/');
         simple = simple ? simple + 1 : name;
-        cJSON_AddBoolToObject(entry, "inner", is_inner_class(simple) || is_anonymous_class(simple));
-        class_selection_write(entry);
-        cJSON_Delete(entry); free(name);
+        class_selection_write_directory(name, flags,
+            is_inner_class(simple) || is_anonymous_class(simple));
+        if (name != stack) free(name);
     }
     return 1;
 }

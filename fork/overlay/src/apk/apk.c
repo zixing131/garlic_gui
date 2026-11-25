@@ -17,6 +17,33 @@
 #include "file_tools.h"
 #include "common/jd_progress.h"
 #include "libs/memory/mem_pool.h"
+#include "libs/zip/zip.h"
+#include <string.h>
+
+/* Entry names live in the central directory. Reading them does not inflate
+ * the entry or stat its local header, which is what a resource-heavy APK
+ * spends its time on before the first DEX byte is parsed. */
+static int zip_raw_suffix(const char *name, size_t length, const char *suffix)
+{
+    size_t n = strlen(suffix);
+    if (name == NULL || length < n)
+        return 0;
+    for (size_t i = 0; i < n; ++i)
+        if (ascii_lower((unsigned char)name[length - n + i]) !=
+            ascii_lower((unsigned char)suffix[i]))
+            return 0;
+    return 1;
+}
+static int zip_raw_slash(const char *name, size_t length)
+{
+    return name != NULL && memchr(name, '/', length) != NULL;
+}
+static int zip_raw_name(struct zip_t *zip, int index, const char **name, size_t *length)
+{
+    if (zip_entry_filename(zip, (size_t)index, name, length) < 0 || *length == 0)
+        return 0;
+    return 1;
+}
 
 /* Inflate independent DEX entries concurrently; the main thread still parses
  * and emits them in archive order, preserving deterministic class precedence. */
@@ -65,13 +92,14 @@ static index_inflater *start_index_inflater(jd_apk *apk, struct zip_t *zip) {
     if (!state->jobs) { free(state); return NULL; }
     state->path = apk->path;
     for (int i = 0; i < zip_entries_total(zip); ++i) {
+        const char *raw = NULL;
+        size_t raw_len = 0;
+        if (!zip_raw_name(zip, i, &raw, &raw_len) || !zip_raw_suffix(raw, raw_len, ".dex") ||
+            (!apk->allow_nested_dex && zip_raw_slash(raw, raw_len)))
+            continue;
         if (zip_entry_openbyindex(zip, i) < 0) continue;
-        const char *name = zip_entry_name(zip);
-        if (str_end_with((string)name, ".dex") &&
-            (apk->allow_nested_dex || !strchr(name, '/'))) {
-            index_inflate_job *job = &state->jobs[state->count++];
-            job->entry = i; job->size = zip_entry_size(zip);
-        }
+        index_inflate_job *job = &state->jobs[state->count++];
+        job->entry = i; job->size = zip_entry_size(zip);
         zip_entry_close(zip);
     }
     pthread_mutex_init(&state->lock, NULL);
@@ -226,19 +254,29 @@ static void apk_process_dex_from_zip(jd_apk *apk, struct zip_t *zip, const char 
     int dex_total = 0, dex_done = 0;
     if (class_selection_indexing()) {
         for (int i = 0; i < total; ++i) {
-            if (zip_entry_openbyindex(zip, i) < 0) continue;
-            const char *name = zip_entry_name(zip);
-            if (str_end_with((string)name, ".dex") &&
-                (apk->allow_nested_dex || !strchr(name, '/'))) ++dex_total;
-            zip_entry_close(zip);
+            const char *raw = NULL;
+            size_t raw_len = 0;
+            if (zip_raw_name(zip, i, &raw, &raw_len) && zip_raw_suffix(raw, raw_len, ".dex") &&
+                (apk->allow_nested_dex || !zip_raw_slash(raw, raw_len)))
+                ++dex_total;
         }
         fprintf(stderr, "GARLIC_INDEX_PROGRESS 0 %d\n", dex_total);
     }
     for (int i = 0; i < total; ++i) {
-        zip_entry_openbyindex(zip, i);
+        const char *raw = NULL;
+        size_t raw_len = 0;
+        if (!zip_raw_name(zip, i, &raw, &raw_len))
+            continue;
+        int is_apk_entry = zip_raw_suffix(raw, raw_len, ".apk");
+        int is_dex_entry = zip_raw_suffix(raw, raw_len, ".dex");
+        if (!is_apk_entry && (!is_dex_entry ||
+                              (!apk->allow_nested_dex && zip_raw_slash(raw, raw_len))))
+            continue;
+        if (zip_entry_openbyindex(zip, i) < 0)
+            continue;
         string path_in_zip = (string)zip_entry_name(zip);
 
-        if (str_end_with(path_in_zip, ".apk")) {
+        if (str_end_with_lower(path_in_zip, ".apk")) {
             size_t buf_size = zip_entry_size(zip);
             string key = str_create("%s|%zu:%s:%u:%zu", chain, strlen(path_in_zip), path_in_zip,
                                     zip_entry_crc32(zip), buf_size);
@@ -370,8 +408,7 @@ static void apk_run_dex_tasks(jd_apk *apk, jd_meta_dex *meta)
             if (dex_class_is_rebuilt_lambda_class(dex->meta, cf))
                 continue;
             if (!class_selection_explicit() &&
-                (dex_class_is_inner_class(dex->meta, cf) ||
-                 dex_class_is_anonymous_class(dex->meta, cf)))
+                (cf->is_inner || cf->is_anonymous))
                 continue;
         }
         if (!class_selection_accept(dex_str_of_type_id(meta, cf->class_idx)))
@@ -439,9 +476,16 @@ static void apk_decompile_task_start(jd_apk *apk)
 
         if (!manifest_done && !class_selection_indexing()) {
             for (int i = 0; i < (int)apk->entries_size; ++i) {
-                zip_entry_openbyindex(zip, i);
+                const char *raw = NULL;
+                size_t raw_len = 0;
+                if (!zip_raw_name(zip, i, &raw, &raw_len) ||
+                    !zip_raw_suffix(raw, raw_len, "AndroidManifest.xml"))
+                    continue;
+                if (zip_entry_openbyindex(zip, i) < 0)
+                    continue;
                 string path_in_zip = (string)zip_entry_name(zip);
                 if (path_in_zip == NULL) {
+                    zip_entry_close(zip);
                     continue;
                 }
 

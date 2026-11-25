@@ -81,6 +81,11 @@ static inline int str_end_with(const char *s, const char *suff)
         !memcmp(s + slen - sufflen, suff, sufflen);
 }
 
+static inline int ascii_lower(unsigned char c)
+{
+    return c >= 'A' && c <= 'Z' ? c + 32 : c;
+}
+
 static inline int str_end_with_lower(const char *s, const char *suff)
 {
     size_t slen     = strlen(s);
@@ -89,7 +94,7 @@ static inline int str_end_with_lower(const char *s, const char *suff)
         return 0;
     const char *p = s + slen - sufflen;
     for (size_t i = 0; i < sufflen; ++i) {
-        if (tolower((unsigned char)p[i]) != tolower((unsigned char)suff[i]))
+        if (ascii_lower((unsigned char)p[i]) != ascii_lower((unsigned char)suff[i]))
             return 0;
     }
     return 1;
@@ -160,7 +165,8 @@ static inline char* get_last_word_lower(const char* class_name) {
     size_t len = strlen(class_name);
 
     for (size_t i = 0; i < len; i++) {
-        if (isupper((unsigned char)class_name[i]))
+        unsigned char c = (unsigned char)class_name[i];
+        if (c >= 'A' && c <= 'Z')
             last_upper_pos = (int)i;
     }
 
@@ -172,8 +178,8 @@ static inline char* get_last_word_lower(const char* class_name) {
         return NULL;
 
     strcpy(result, class_name + last_upper_pos);
-    for (char* p = result; *p; p++)
-        *p = tolower((unsigned char)*p);
+    for (unsigned char *p = (unsigned char *)result; *p; p++)
+        *p = (unsigned char)ascii_lower(*p);
 
     return result;
 }

@@ -10,6 +10,7 @@
 #include "klass.h"
 #include "common/str_tools.h"
 #include "common/file_tools.h"
+#include "common/output_path.h"
 
 #include <string.h>
 
@@ -1026,13 +1027,23 @@ static int smali_write_class_by_desc(jd_meta_dex *meta, string class_desc, strin
             continue;
 
         string full = class_full_name(desc);
-        string pname = class_package_name_of(full);
-        if (pname == NULL)
-            pname = (string) g_str_default;
-        string dir = str_create("%s/%s", out_dir, pname);
-        mkdir_p(dir);
-        string path = str_create("%s/%s.smali", dir,
-                                 class_simple_name_without_primitive(full));
+        string path;
+        if (source_safe_paths_enabled()) {
+            char *stem = source_storage_name(desc);
+            path = str_create("%s/%s.smali", out_dir, stem);
+            free(stem);
+            char *parent = str_dup(path), *slash = strrchr(parent, '/');
+            if (slash) { *slash = 0; mkdir_p(parent); }
+        } else {
+            string pname = class_package_name_of(full);
+            if (pname == NULL)
+                pname = (string) g_str_default;
+            string dir = str_create("%s/%s", out_dir, pname);
+            mkdir_p(dir);
+            path = str_create("%s/%s", dir,
+                              output_path_resolve(dir, str_create("%s.smali",
+                                  class_simple_name_without_primitive(full))));
+        }
 
         FILE *stream = fopen(path, "wb");
         if (stream == NULL) {

@@ -239,6 +239,14 @@ extern ZIP_EXPORT int zip_entry_close(struct zip_t *zip);
 extern ZIP_EXPORT const char *zip_entry_name(struct zip_t *zip);
 
 /**
+ * Filename of an entry, read from the central directory only.
+ * The pointer is not necessarily NUL-terminated; use @p length.
+ * It remains valid until the archive is closed or mutated.
+ */
+extern ZIP_EXPORT int zip_entry_filename(struct zip_t *zip, size_t index,
+                                         const char **name, size_t *length);
+
+/**
  * Returns an index of the current zip entry.
  *
  * @param zip zip archive handler.

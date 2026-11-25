@@ -31,6 +31,20 @@ bool fileMagic(const QString &path, QByteArray *magic) {
     *magic = file.read(8);
     return true;
 }
+bool nameEnds(const char *name, size_t length, const char *suffix) {
+    const auto n = strlen(suffix);
+    if (name == nullptr || length < n)
+        return false;
+    for (size_t i = 0; i < n; ++i) {
+        const auto a = name[length - n + i];
+        const auto b = suffix[i];
+        const auto al = a >= 'A' && a <= 'Z' ? a + 32 : static_cast<unsigned char>(a);
+        const auto bl = b >= 'A' && b <= 'Z' ? b + 32 : static_cast<unsigned char>(b);
+        if (al != bl)
+            return false;
+    }
+    return true;
+}
 bool zipContainsDex(const QString &path) {
     struct zip_t *zip = zip_open(path.toUtf8().constData(), 0, 'r');
     if (!zip)
@@ -38,11 +52,11 @@ bool zipContainsDex(const QString &path) {
     bool found = false;
     const int total = int(zip_entries_total(zip));
     for (int i = 0; i < total && !found; ++i) {
-        if (zip_entry_openbyindex(zip, i) < 0)
+        const char *name = nullptr;
+        size_t length = 0;
+        if (zip_entry_filename(zip, static_cast<size_t>(i), &name, &length) < 0)
             continue;
-        const auto name = QString::fromUtf8(zip_entry_name(zip));
-        found = name.endsWith(".dex", Qt::CaseInsensitive) || name.endsWith(".apk", Qt::CaseInsensitive);
-        zip_entry_close(zip);
+        found = nameEnds(name, length, ".dex") || nameEnds(name, length, ".apk");
     }
     zip_close(zip);
     return found;

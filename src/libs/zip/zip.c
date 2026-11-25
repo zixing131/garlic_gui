@@ -1449,6 +1449,32 @@ const char *zip_entry_name(struct zip_t *zip) {
   return zip->entry.name;
 }
 
+int zip_entry_filename(struct zip_t *zip, size_t index, const char **name,
+                       size_t *length) {
+  mz_zip_archive *pZip = NULL;
+  const mz_uint8 *pHeader;
+  mz_uint namelen;
+
+  if (!zip || !name || !length)
+    return ZIP_EINVMODE;
+  *name = NULL;
+  *length = 0;
+  pZip = &(zip->archive);
+  if (pZip->m_zip_mode != MZ_ZIP_MODE_READING)
+    return ZIP_EINVMODE;
+  if (index >= (size_t)pZip->m_total_files)
+    return ZIP_EINVIDX;
+  if (!(pHeader = &MZ_ZIP_ARRAY_ELEMENT(
+            &pZip->m_pState->m_central_dir, mz_uint8,
+            MZ_ZIP_ARRAY_ELEMENT(&pZip->m_pState->m_central_dir_offsets,
+                                 mz_uint32, index))))
+    return ZIP_ENOHDR;
+  namelen = MZ_READ_LE16(pHeader + MZ_ZIP_CDH_FILENAME_LEN_OFS);
+  *name = (const char *)pHeader + MZ_ZIP_CENTRAL_DIR_HEADER_SIZE;
+  *length = namelen;
+  return 0;
+}
+
 ssize_t zip_entry_index(struct zip_t *zip) {
   if (!zip) {
     // zip_t handler is not initialized

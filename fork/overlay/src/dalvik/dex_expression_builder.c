@@ -1109,7 +1109,7 @@ static void dex_invoke_expression(jd_exp *exp, jd_dex_ins *ins)
         dex_class_def *cf = hget_u4obj(meta->synthetic_classes_map,
                                        method_id->class_idx);
         if (cf != NULL &&
-            (dex_class_is_anonymous_class(meta, cf) ||
+            (cf->is_anonymous ||
              dex_class_is_lambda_shape(meta, cf))) {
             lambda_exp = dex_lambda_cached(meta, cf, dex, jf, invoke, true);
             if (lambda_exp != NULL) {
@@ -1132,7 +1132,7 @@ static void dex_invoke_expression(jd_exp *exp, jd_dex_ins *ins)
 
         if (cf != NULL &&
             !is_nested_inner_class(cf, jf) &&
-            (dex_class_is_anonymous_class(meta, cf) ||
+            (cf->is_anonymous ||
              dex_class_is_lambda_shape(meta, cf))) {
             lambda_exp = dex_lambda_cached(meta, cf, dex, jf, invoke, false);
             if (lambda_exp != NULL)
@@ -1142,7 +1142,7 @@ static void dex_invoke_expression(jd_exp *exp, jd_dex_ins *ins)
         cf = hget_u4obj(meta->class_type_id_map, method_id->class_idx);
         if (cf != NULL &&
             !is_nested_inner_class(cf, jf) &&
-            dex_class_is_anonymous_class(meta, cf)) {
+            cf->is_anonymous) {
             jsource_file *parent = ins->method->jfile;
             jsource_file *_inner = dex_inner_class(dex, parent, cf);
             jd_exp_anonymous *anonymous_exp = make_obj(jd_exp_anonymous);
@@ -1260,7 +1260,7 @@ static void dex_invoke_range_expression(jd_exp *exp, jd_dex_ins *ins)
         dex_class_def *cf = hget_u4obj(meta->synthetic_classes_map,
                                        method_id->class_idx);
         if (cf != NULL &&
-            (dex_class_is_anonymous_class(meta, cf) ||
+            (cf->is_anonymous ||
              dex_class_is_lambda_shape(meta, cf))) {
             lambda_exp = dex_lambda_cached(meta, cf, dex, jf, invoke, true);
             if (lambda_exp != NULL) {
@@ -1282,7 +1282,7 @@ static void dex_invoke_range_expression(jd_exp *exp, jd_dex_ins *ins)
                                        method_id->class_idx);
         jd_dex *dex = ins->method->meta;
         if (cf != NULL &&
-            (dex_class_is_anonymous_class(meta, cf) ||
+            (cf->is_anonymous ||
              dex_class_is_lambda_shape(meta, cf))) {
             lambda_exp = dex_lambda_cached(meta, cf, dex, jf, invoke, false);
             if (lambda_exp != NULL)
@@ -1290,7 +1290,7 @@ static void dex_invoke_range_expression(jd_exp *exp, jd_dex_ins *ins)
         }
 
         cf = hget_u4obj(meta->class_type_id_map, method_id->class_idx);
-        if (cf != NULL && dex_class_is_anonymous_class(meta, cf)) {
+        if (cf != NULL && cf->is_anonymous) {
             jsource_file *parent = ins->method->jfile;
             jsource_file *_inner = dex_inner_class(dex, parent, cf);
             jd_exp_anonymous *anonymous_exp = make_obj(jd_exp_anonymous);

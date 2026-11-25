@@ -23,15 +23,27 @@ int class_selection_open(const char *index_path, const char *class_name)
             fprintf(stderr, "[garlic] Cannot create class index: %s\n", index_path);
             return 0;
         }
+        setvbuf(index_stream, NULL, _IOFBF, 256 * 1024);
     }
     return 1;
 }
 
 int class_selection_indexing(void) { return index_stream != NULL; }
 
+static const char *excluded_packages(void)
+{
+    static int loaded;
+    static const char *list;
+    if (!loaded) {
+        list = getenv("GARLIC_EXCLUDED_PACKAGES");
+        loaded = 1;
+    }
+    return list;
+}
+static void index_name_record(const char *name, size_t len);
 static int excluded(const char *name, size_t len)
 {
-    const char *list=getenv("GARLIC_EXCLUDED_PACKAGES");
+    const char *list = excluded_packages();
     while(list && *list) {
         const char *end=strchr(list,';'); size_t n=end?(size_t)(end-list):strlen(list);
         if(n && len>=n && !strncmp(name,list,n) && (len==n||name[n]=='/')) return 1;
@@ -41,7 +53,7 @@ static int excluded(const char *name, size_t len)
 }
 int class_selection_accept(const char *name)
 {
-    if (!index_stream && !selected_class && !getenv("GARLIC_EXCLUDED_PACKAGES")) return 1;
+    if (!index_stream && !selected_class && !excluded_packages()) return 1;
     size_t len = strlen(name);
     if (len > 2 && name[0] == 'L' && name[len - 1] == ';') {
         ++name;
@@ -50,22 +62,16 @@ int class_selection_accept(const char *name)
         len -= 6;
     }
     if (excluded(name,len)) return 0;
-    char *normalized = malloc(len + 1);
-    if (!normalized) { selection_error = 1; return 0; }
-    memcpy(normalized, name, len);
-    normalized[len] = 0;
-    int accept = !selected_class || strcmp(normalized, selected_class) == 0;
+    int accept = 1;
+    if (selected_class) {
+        accept = strlen(selected_class) == len &&
+                 memcmp(name, selected_class, len) == 0;
+    }
     if (accept) matched++;
     if (index_stream) {
-        cJSON *entry = cJSON_CreateObject();
-        cJSON_AddStringToObject(entry, "name", normalized);
-        char *json = cJSON_PrintUnformatted(entry);
-        if (!json || fprintf(index_stream, "%s\n", json) < 0) selection_error = 1;
-        free(json);
-        cJSON_Delete(entry);
+        index_name_record(name, len);
         accept = 0;
     }
-    free(normalized);
     return accept;
 }
 
@@ -95,6 +101,89 @@ void class_selection_write_line(const char *line)
     if (!index_stream) return;
     if (!line || (*line && fprintf(index_stream, "%s\n", line) < 0)) selection_error = 1;
 }
+static char *line_buf;
+static size_t line_cap, line_len;
+
+static void line_put(const char *text, size_t n)
+{
+    if (line_cap < line_len + n + 1) {
+        size_t cap = line_cap ? line_cap : 256;
+        while (cap < line_len + n + 1) cap *= 2;
+        char *next = realloc(line_buf, cap);
+        if (!next) { selection_error = 1; return; }
+        line_buf = next;
+        line_cap = cap;
+    }
+    memcpy(line_buf + line_len, text, n);
+    line_len += n;
+}
+
+static void line_json(const char *text, size_t n)
+{
+    line_put("\"", 1);
+    for (size_t i = 0; i < n; ++i) {
+        unsigned char c = (unsigned char)text[i];
+        if (c == '"' || c == '\\') {
+            char escaped[2] = {'\\', (char)c};
+            line_put(escaped, 2);
+        } else if (c < 32) {
+            char hex[7];
+            int wrote = snprintf(hex, sizeof hex, "\\u%04x", c);
+            if (wrote > 0) line_put(hex, (size_t)wrote);
+        } else {
+            char raw = (char)c;
+            line_put(&raw, 1);
+        }
+    }
+    line_put("\"", 1);
+}
+
+static void line_flush(void)
+{
+    line_put("\n", 1);
+    if (!index_stream || !line_buf ||
+        fwrite(line_buf, 1, line_len, index_stream) != line_len)
+        selection_error = 1;
+    line_len = 0;
+}
+
+static void index_name_record(const char *name, size_t len)
+{
+    if (!index_stream || !name) return;
+    line_len = 0;
+    line_put("{\"name\":", 8);
+    line_json(name, len);
+    line_put("}", 1);
+    line_flush();
+}
+
+void class_selection_write_directory(const char *name, unsigned flags, int inner)
+{
+    if (!index_stream || !name) return;
+    size_t len = strlen(name);
+    if (excluded(name, len)) return;
+    const char *kind = (flags & 0x2000) ? "annotation"
+                      : (flags & 0x4000) ? "enum"
+                      : (flags & 0x0200) ? "interface"
+                      : (flags & 0x0400) ? "abstract"
+                                         : "class";
+    char tail[96];
+    int wrote = snprintf(tail, sizeof tail,
+                         ",\"flags\":%u,\"kind\":\"%s\",\"inner\":%s",
+                         flags, kind, inner ? "true" : "false");
+    if (wrote < 0) { selection_error = 1; return; }
+    line_len = 0;
+    line_put("{\"name\":", 8);
+    line_json(name, len);
+    line_put(tail, (size_t)wrote);
+    if (origin) {
+        line_put(",\"origin\":", 10);
+        line_json(origin, strlen(origin));
+    }
+    line_put("}", 1);
+    line_flush();
+}
+
 void class_selection_write(cJSON *entry)
 {
     if (!index_stream) return;

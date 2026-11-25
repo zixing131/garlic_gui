@@ -173,9 +173,10 @@ static void jar_entry_source_file(jclass_file *jc, string dir, string name)
     string class_name = class_simple_name_without_primitive(full);
     char *mapped = source_layout_mapped_path(dir, full, ".java");
     if (mapped) {
-        FILE *stream = fopen(mapped, "w");
+        FILE *stream = fopen(mapped, "wb");
         if (stream == NULL)
             output_open_failed(mapped);
+        output_set_buffer(stream);
         free(mapped);
         jc->jfile->source = stream;
         return;
@@ -186,9 +187,10 @@ static void jar_entry_source_file(jclass_file *jc, string dir, string name)
         free(stem);
         char *parent = str_dup(path), *slash = strrchr(parent, '/');
         if (slash) { *slash = 0; mkdir_p(parent); }
-        FILE *stream = fopen(path, "w");
+        FILE *stream = fopen(path, "wb");
         if (stream == NULL)
             output_open_failed(path);
+        output_set_buffer(stream);
         jc->jfile->source = stream;
         return;
     }
@@ -204,7 +206,7 @@ static void jar_entry_source_file(jclass_file *jc, string dir, string name)
                              output_path_resolve(
                                      full_dir,
                                      str_create("%s.java", class_name)));
-    FILE *stream = fopen(path, "w");
+    FILE *stream = fopen(path, "wb");
     if (stream == NULL)
         output_open_failed(path);
     output_set_buffer(stream);

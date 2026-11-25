@@ -178,8 +178,7 @@ void dex_reserve_output_paths(jd_meta_dex *meta, bool decompile)
     for (int i = 0; i < meta->header->class_defs_size; ++i) {
         dex_class_def *cf = &meta->class_defs[i];
         if (decompile &&
-            (dex_class_is_inner_class(meta, cf) ||
-             dex_class_is_anonymous_class(meta, cf) ||
+            (cf->is_inner || cf->is_anonymous ||
              dex_class_is_rebuilt_lambda_class(meta, cf)))
             continue;
 
@@ -233,6 +232,7 @@ static void dex_class_source_save_dir(jd_dex *dex, jsource_file *jf)
             output_open_failed(path);
             return;
         }
+        output_set_buffer(safe);
         jf->source = safe;
         return;
     }
@@ -396,8 +396,7 @@ jsource_file* dex_inner_class(jd_dex *dex,
 void dex_decompile_class(jd_dex *dex, dex_class_def *cf)
 {
     mem_pool *outer = mem_scratch_enter();
-    if (!dex_class_is_inner_class(dex->meta, cf) &&
-        !dex_class_is_anonymous_class(dex->meta, cf) &&
+    if (!cf->is_inner && !cf->is_anonymous &&
         !dex_class_is_rebuilt_lambda_class(dex->meta, cf)) {
         jsource_file *jf = dex_class_inside(dex, cf, NULL);
         if (jf->parent == NULL) {
@@ -545,8 +544,7 @@ void dex_decompile_threadpool_start(jd_dex *dex)
         dex_class_def *cf = &meta->class_defs[i];
         if (dex_class_is_rebuilt_lambda_class(dex->meta, cf))
             continue;
-        if (!class_selection_explicit() && (dex_class_is_inner_class(dex->meta, cf) ||
-            dex_class_is_anonymous_class(dex->meta, cf)))
+        if (!class_selection_explicit() && (cf->is_inner || cf->is_anonymous))
             continue;
 
         if (!class_selection_accept(dex_str_of_type_id(meta, cf->class_idx)))
@@ -580,8 +578,7 @@ void dex_decompile_main_thread_start(jd_dex *dex)
          * counted ones advance the progress. */
         if (!dex_class_is_rebuilt_lambda_class(dex->meta, cf) &&
             (class_selection_explicit() ||
-             (!dex_class_is_inner_class(dex->meta, cf) &&
-              !dex_class_is_anonymous_class(dex->meta, cf))) &&
+             (!cf->is_inner && !cf->is_anonymous)) &&
             class_selection_accept(dex_str_of_type_id(meta, cf->class_idx))) {
             jsource_file *jf = dex_class_inside(dex, cf, NULL);
             if (jf->parent == NULL) {
@@ -726,8 +723,7 @@ void dex_analyse_in_apk_task(jd_meta_dex *meta)
         dex_class_def *cf = &meta->class_defs[i];
         if (dex_class_is_rebuilt_lambda_class(dex->meta, cf))
             continue;
-        if (!class_selection_explicit() && (dex_class_is_inner_class(dex->meta, cf) ||
-            dex_class_is_anonymous_class(dex->meta, cf)))
+        if (!class_selection_explicit() && (cf->is_inner || cf->is_anonymous))
             continue;
 
         jsource_file *jf = dex_class_inside(dex, cf, NULL);

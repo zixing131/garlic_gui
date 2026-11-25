@@ -8,6 +8,7 @@
 void class_selection_write(cJSON *entry);
 char *class_selection_format(cJSON *entry);
 void class_selection_write_line(const char *line);
+void class_selection_write_directory(const char *name, unsigned flags, int inner);
 int class_selection_open(const char *index_path, const char *class_name);
 int class_selection_accept(const char *name);
 int class_selection_close(void);

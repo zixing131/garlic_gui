@@ -6,6 +6,38 @@
 #include "decompiler/descriptor.h"
 #include "decompiler/field.h"
 
+#include <string.h>
+
+/* Copy the simple name onto the stack when every byte is already a Java
+ * identifier part. Sanitization allocates and can only change a name that
+ * contains a rejected byte, so those names keep the old path. */
+static int dex_simple_on_stack(const char *cname, char *stack, size_t cap)
+{
+    if (cname == NULL || cname[0] == '\0' || cname[0] == '[')
+        return 0;
+    const char *slash = strrchr(cname, '/');
+    const char *start = slash ? slash + 1 : cname;
+    const char *end = strchr(start, ';');
+    size_t len = end ? (size_t)(end - start) : strlen(start);
+    if (len == 0 || len + 1 > cap)
+        return 0;
+    unsigned char first = (unsigned char)start[0];
+    if (!(first == '_' || first == '$' ||
+          (first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') ||
+          first >= 0x80))
+        return 0;
+    for (size_t i = 1; i < len; ++i) {
+        unsigned char c = (unsigned char)start[i];
+        if (!(c == '_' || c == '$' ||
+              (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              c >= 0x80 || (c >= '0' && c <= '9')))
+            return 0;
+    }
+    memcpy(stack, start, len);
+    stack[len] = 0;
+    return 1;
+}
+
 bool dex_class_is_synthetic(jd_meta_dex *meta, dex_class_def *def) {
     if (def->class_data_off == 0) {
         return false;
@@ -126,29 +158,10 @@ bool dex_class_is_inner_class(jd_meta_dex *meta, dex_class_def *cf) {
     string cname = dex_str_of_type_id(meta, cf->class_idx);
     if (cname == NULL)
         return false;
-    string class_name = class_simple_name(cname);
-
-    bool result = is_inner_class(class_name);
-
-    if (!result) return result;
-
-    dex_annotations_directory_item *annotations = cf->annotations;
-    if (annotations == NULL)
-        return result;
-    annotation_set_item *set_item = annotations->class_annotation;
-    if (set_item == NULL)
-        return result;
-
-    for (int i = 0; i < set_item->size; ++i) {
-        annotation_item *item = set_item->entries[i].annotation_item;
-        u4 type_idx = item->encoded_annotation->type_idx;
-        string type_name = dex_str_of_type_id(meta, type_idx);
-        if (STR_EQL(type_name, "Ldalvik/annotation/InnerClass;")) {
-            result = true;
-            break;
-        }
-    }
-    return result;
+    char stack[1024];
+    string class_name = dex_simple_on_stack(cname, stack, sizeof stack)
+                        ? stack : class_simple_name(cname);
+    return is_inner_class(class_name);
 }
 
 bool dex_class_is_lambda_shape(jd_meta_dex *meta, dex_class_def *cf) {
@@ -170,29 +183,11 @@ int dex_class_is_anonymous_class(jd_meta_dex *meta, dex_class_def *cf) {
     string cname = dex_str_of_type_id(meta, cf->class_idx);
     if (cname == NULL)
         return false;
-    string class_name = class_simple_name(cname);
-    bool result = is_anonymous_class(class_name) ||
-                  is_synthetic_lambda_class(class_name);
-    if (!result) return result;
-
-    dex_annotations_directory_item *annotations = cf->annotations;
-    if (annotations == NULL)
-        return result;
-    annotation_set_item *set_item = annotations->class_annotation;
-    if (set_item == NULL)
-        return result;
-
-    for (int i = 0; i < set_item->size; ++i) {
-        annotation_item *item = set_item->entries[i].annotation_item;
-        u4 type_idx = item->encoded_annotation->type_idx;
-        string type_name = dex_str_of_type_id(meta, type_idx);
-        if (STR_EQL(type_name, "Ldalvik/annotation/EnclosingClass;")) {
-            result = true;
-            break;
-        }
-    }
-
-    return result;
+    char stack[1024];
+    string class_name = dex_simple_on_stack(cname, stack, sizeof stack)
+                        ? stack : class_simple_name(cname);
+    return is_anonymous_class(class_name) ||
+           is_synthetic_lambda_class(class_name);
 }
 
 static void dex_encoded_field_to_field(jd_dex *dex,
