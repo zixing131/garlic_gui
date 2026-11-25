@@ -213,7 +213,14 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         message(FATAL_ERROR "Unsupported Linux architecture: ${CMAKE_SYSTEM_PROCESSOR}")
     endif()
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+    # CMAKE_SYSTEM_PROCESSOR stays at the host CPU when only
+    # CMAKE_OSX_ARCHITECTURES is set, which is how the Intel runner
+    # cross-compiles the Apple Silicon package.
+    if(CMAKE_OSX_ARCHITECTURES MATCHES "(^|;)(arm64|aarch64)($|;)")
+        set(ROSEMARYLIB_FILE "${CMAKE_SOURCE_DIR}/libs/macos-aarch64/librosemarylib.dylib")
+    elseif(CMAKE_OSX_ARCHITECTURES MATCHES "(^|;)x86_64($|;)")
+        set(ROSEMARYLIB_FILE "${CMAKE_SOURCE_DIR}/libs/macos-x64/librosemarylib.dylib")
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
         set(ROSEMARYLIB_FILE "${CMAKE_SOURCE_DIR}/libs/macos-aarch64/librosemarylib.dylib")
     elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64")
         set(ROSEMARYLIB_FILE "${CMAKE_SOURCE_DIR}/libs/macos-x64/librosemarylib.dylib")

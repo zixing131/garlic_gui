@@ -84,6 +84,8 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--platform', choices=['macos-arm64', 'macos-x64', 'windows-x64', 'linux-arm64', 'linux-x64'], required=True)
     parser.add_argument('--qt', type=Path, required=True)
+    parser.add_argument('--skip-launch', action='store_true',
+                        help='Check the binary architecture and archive it without executing it')
     args = parser.parse_args()
     build, qt, output = args.build.resolve(), args.qt.resolve(), args.output.resolve()
     folder = output / ('Garlic-' + args.platform)
@@ -159,12 +161,15 @@ def main():
     if args.platform.startswith('windows'):
         for binary in folder.rglob('*.dll'):
             architecture(binary, args.platform)
-    run(gui, '--version', env=env, timeout=30)
-    run(gui, '--smoke-test', env=env, timeout=30)
-    smoke = output / ('smoke-' + args.platform)
-    smoke.mkdir()
-    run(engine, build / 'fixtures/demo.jar', '-I', smoke / 'classes.jsonl', '-o', smoke, '-t', '1', env=env, timeout=30, stdout=subprocess.DEVNULL)
-    assert (smoke / 'classes.jsonl').stat().st_size > 0
+    if args.skip_launch:
+        print('Skipping launch; this binary cannot run on the build host.')
+    else:
+        run(gui, '--version', env=env, timeout=30)
+        run(gui, '--smoke-test', env=env, timeout=30)
+        smoke = output / ('smoke-' + args.platform)
+        smoke.mkdir()
+        run(engine, build / 'fixtures/demo.jar', '-I', smoke / 'classes.jsonl', '-o', smoke, '-t', '1', env=env, timeout=30, stdout=subprocess.DEVNULL)
+        assert (smoke / 'classes.jsonl').stat().st_size > 0
     if args.platform.startswith('macos'):
         archive = str(output / ('Garlic-' + args.platform + '.zip'))
         run('ditto', '-c', '-k', '--sequesterRsrc', '--keepParent', folder, archive)

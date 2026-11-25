@@ -580,7 +580,7 @@ macOS 用同一 Qt SDK 的 `macdeployqt` 打包 app，包含 Qt 运行库和平�
 
 | 平台 | 架构 | 构建环境 |
 | --- | --- | --- |
-| macOS | ARM64、x64 | macos-15 / macos-15-intel，Qt 6.8.3 |
+| macOS | ARM64、x64 | 都在 macos-15-intel 上构建。ARM64 用通用 Qt 交叉编译，不能在这台机器上启动 |
 | Windows | x64 | windows-2022，MSYS2 CLANG64。ARM64 设备运行这份 x64 包 |
 | Linux | ARM64、x64 | ubuntu-24.04-arm / ubuntu-24.04，Qt 6.8.3 |
 
