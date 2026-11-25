@@ -92,11 +92,12 @@ jobs:
           TARGET_PLATFORM: ${{ matrix.platform }}
         run: |
           set -euo pipefail
-          extra=()
+          # macOS bash 3.2 treats "${extra[@]}" as unbound when the array is empty.
+          cmd=(python scripts/package_gui.py --build build --output dist --platform "$TARGET_PLATFORM" --qt "$QT_ROOT_DIR")
           if [[ "${{ matrix.launch }}" == "false" ]]; then
-            extra+=(--skip-launch)
+            cmd+=(--skip-launch)
           fi
-          python scripts/package_gui.py --build build --output dist --platform "$TARGET_PLATFORM" --qt "$QT_ROOT_DIR" "${extra[@]}"
+          "${cmd[@]}"
       - uses: actions/upload-artifact@v4
         with:
           name: garlic-${{ matrix.platform }}
