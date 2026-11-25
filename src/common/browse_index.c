@@ -11,9 +11,11 @@
 #include "libs/hashmap/hashmap_tools.h"
 
 #include <limits.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static __thread hashmap *reference_ids, *reference_groups;
 static __thread cJSON *reference_dictionary;
@@ -113,6 +115,8 @@ static jd_meta_dex *proto_meta;
 static string *proto_desc, *method_desc, *field_desc;
 static u4 proto_desc_n, method_desc_n, field_desc_n;
 static int id_cache_ready;
+static uint8_t opcode_len_tab[256];
+static int opcode_len_ready;
 
 static string dex_proto_to_descriptor(jd_meta_dex *meta, dex_proto_id *proto) {
     str_list *list = str_list_init();
@@ -132,36 +136,198 @@ static string proto_of(jd_meta_dex *meta, u4 idx)
         return proto_desc[idx];
     return dex_proto_to_descriptor(meta, &meta->proto_ids[idx]);
 }
+typedef struct id_block {
+    char *data;
+    struct id_block *next;
+} id_block;
+static id_block *id_blocks;
+
+static void id_blocks_free(void)
+{
+    while (id_blocks) {
+        id_block *next = id_blocks->next;
+        free(id_blocks->data);
+        free(id_blocks);
+        id_blocks = next;
+    }
+}
+
+typedef struct {
+    jd_meta_dex *meta;
+    u4 lo, hi;
+    int kind;
+    char *data;
+} fill_job;
+
+static const char *nz(const char *s) { return s ? s : ""; }
+
+static size_t proto_bytes(jd_meta_dex *meta, dex_proto_id *proto)
+{
+    size_t n = 3;
+    n += strlen(nz(dex_str_of_type_id(meta, proto->return_type_idx)));
+    if (proto->type_list)
+        for (u4 i = 0; i < proto->type_list->size; ++i)
+            n += strlen(nz(dex_str_of_type_id(meta, proto->type_list->list[i].type_idx)));
+    return n;
+}
+static char *proto_write(char *p, jd_meta_dex *meta, dex_proto_id *proto)
+{
+    *p++ = '(';
+    if (proto->type_list)
+        for (u4 i = 0; i < proto->type_list->size; ++i) {
+            const char *t = nz(dex_str_of_type_id(meta, proto->type_list->list[i].type_idx));
+            size_t n = strlen(t);
+            memcpy(p, t, n);
+            p += n;
+        }
+    *p++ = ')';
+    const char *ret = nz(dex_str_of_type_id(meta, proto->return_type_idx));
+    size_t n = strlen(ret);
+    memcpy(p, ret, n);
+    p += n;
+    *p++ = 0;
+    return p;
+}
+static void *fill_ids(void *opaque)
+{
+    fill_job *job = opaque;
+    jd_meta_dex *meta = job->meta;
+    size_t bytes = 0;
+    for (u4 i = job->lo; i < job->hi; ++i) {
+        if (job->kind == 0)
+            bytes += proto_bytes(meta, &meta->proto_ids[i]);
+        else if (job->kind == 1) {
+            dex_method_id *m = &meta->method_ids[i];
+            bytes += strlen(nz(dex_str_of_type_id(meta, m->class_idx))) + 2
+                   + strlen(nz(dex_str_of_idx(meta, m->name_idx)))
+                   + strlen(nz(proto_desc[m->proto_idx])) + 1;
+        } else {
+            dex_field_id *f = &meta->field_ids[i];
+            bytes += strlen(nz(dex_str_of_type_id(meta, f->class_idx))) + 2
+                   + strlen(nz(dex_str_of_idx(meta, f->name_idx))) + 1
+                   + strlen(nz(dex_str_of_type_id(meta, f->type_idx))) + 1;
+        }
+    }
+    char *p = job->data = bytes ? malloc(bytes) : NULL;
+    char *end = p ? p + bytes : NULL;
+    if (bytes && !p)
+        return NULL;
+    for (u4 i = job->lo; i < job->hi; ++i) {
+        char *start = p;
+        if (job->kind == 0)
+            p = proto_write(p, meta, &meta->proto_ids[i]);
+        else if (job->kind == 1) {
+            dex_method_id *m = &meta->method_ids[i];
+            const char *a = nz(dex_str_of_type_id(meta, m->class_idx));
+            const char *b = nz(dex_str_of_idx(meta, m->name_idx));
+            const char *c = nz(proto_desc[m->proto_idx]);
+            size_t na = strlen(a), nb = strlen(b), nc = strlen(c);
+            memcpy(p, a, na); p += na;
+            memcpy(p, "->", 2); p += 2;
+            memcpy(p, b, nb); p += nb;
+            memcpy(p, c, nc); p += nc;
+            *p++ = 0;
+        } else {
+            dex_field_id *f = &meta->field_ids[i];
+            const char *a = nz(dex_str_of_type_id(meta, f->class_idx));
+            const char *b = nz(dex_str_of_idx(meta, f->name_idx));
+            const char *c = nz(dex_str_of_type_id(meta, f->type_idx));
+            size_t na = strlen(a), nb = strlen(b), nc = strlen(c);
+            memcpy(p, a, na); p += na;
+            memcpy(p, "->", 2); p += 2;
+            memcpy(p, b, nb); p += nb;
+            *p++ = ':';
+            memcpy(p, c, nc); p += nc;
+            *p++ = 0;
+        }
+        if (job->kind == 0) proto_desc[i] = start;
+        else if (job->kind == 1) method_desc[i] = start;
+        else field_desc[i] = start;
+    }
+    (void)end;
+    return NULL;
+}
+static void fill_parallel(jd_meta_dex *meta, int kind, u4 count)
+{
+    if (!count)
+        return;
+    int threads = 1;
+    if (count >= 2048) {
+        long cpus = sysconf(_SC_NPROCESSORS_ONLN);
+        if (cpus > 12) cpus = 12;
+        if (cpus > 1) threads = (int)cpus;
+    }
+    if (threads > (int)count) threads = (int)count;
+    fill_job *jobs = calloc((size_t)threads, sizeof *jobs);
+    pthread_t *handles = calloc((size_t)threads, sizeof *handles);
+    if (!jobs || !handles) {
+        free(jobs);
+        free(handles);
+        return;
+    }
+    u4 chunk = (count + (u4)threads - 1) / (u4)threads;
+    for (int t = 0; t < threads; ++t) {
+        u4 lo = (u4)t * chunk;
+        if (lo >= count) break;
+        jobs[t].meta = meta;
+        jobs[t].lo = lo;
+        jobs[t].hi = lo + chunk > count ? count : lo + chunk;
+        jobs[t].kind = kind;
+        if (t == 0 || pthread_create(&handles[t], NULL, fill_ids, &jobs[t]) != 0)
+            fill_ids(&jobs[t]);
+    }
+    for (int t = 1; t < threads; ++t)
+        if (handles[t]) pthread_join(handles[t], NULL);
+    for (int t = 0; t < threads; ++t) {
+        if (!jobs[t].data) continue;
+        id_block *block = malloc(sizeof *block);
+        if (!block) { free(jobs[t].data); continue; }
+        block->data = jobs[t].data;
+        block->next = id_blocks;
+        id_blocks = block;
+    }
+    free(jobs);
+    free(handles);
+}
+
 void browse_index_dex_end(void)
 {
     proto_meta = NULL;
     proto_desc = method_desc = field_desc = NULL;
     proto_desc_n = method_desc_n = field_desc_n = 0;
     id_cache_ready = 0;
+    id_blocks_free();
 }
 void browse_index_dex_begin(jd_meta_dex *meta)
 {
     browse_index_dex_end();
+    if (!opcode_len_ready) {
+        for (int i = 0; i < 256; ++i) {
+            int n = dex_opcode_len((u1)i);
+            opcode_len_tab[i] = (uint8_t)(n < 0 ? 0 : n > 255 ? 255 : n);
+        }
+        opcode_len_ready = 1;
+    }
     if (!meta || !meta->header || !meta->pool)
         return;
     thread_local_data *tls = get_thread_local_data();
     mem_pool *previous = tls ? tls->pool : global_pool;
     if (tls) tls->pool = meta->pool; else global_pool = meta->pool;
     proto_desc_n = meta->header->proto_ids_size;
-    proto_desc = x_alloc_in(meta->pool, sizeof(string) * (proto_desc_n + 1));
-    for (u4 i = 0; i < proto_desc_n; ++i)
-        proto_desc[i] = dex_proto_to_descriptor(meta, &meta->proto_ids[i]);
     method_desc_n = meta->header->method_ids_size;
     field_desc_n = meta->header->field_ids_size;
+    proto_desc = x_alloc_in(meta->pool, sizeof(string) * (proto_desc_n + 1));
     method_desc = x_alloc_in(meta->pool, sizeof(string) * (method_desc_n + 1));
     field_desc = x_alloc_in(meta->pool, sizeof(string) * (field_desc_n + 1));
-    proto_meta = meta;
-    for (u4 i = 0; i < method_desc_n; ++i)
-        method_desc[i] = dex_mid(meta, i);
-    for (u4 i = 0; i < field_desc_n; ++i)
-        field_desc[i] = dex_fid(meta, i);
-    id_cache_ready = 1;
+    memset(proto_desc, 0, sizeof(string) * (proto_desc_n + 1));
+    memset(method_desc, 0, sizeof(string) * (method_desc_n + 1));
+    memset(field_desc, 0, sizeof(string) * (field_desc_n + 1));
     if (tls) tls->pool = previous; else global_pool = previous;
+    fill_parallel(meta, 0, proto_desc_n);
+    proto_meta = meta;
+    fill_parallel(meta, 1, method_desc_n);
+    fill_parallel(meta, 2, field_desc_n);
+    id_cache_ready = 1;
 }
 static string dex_mid(jd_meta_dex *meta, unsigned idx) {
     if (id_cache_ready && proto_meta == meta && idx < method_desc_n)
@@ -192,6 +358,10 @@ typedef struct {
     const char *id, *desc;
     int method;
 } idx_sig;
+typedef struct {
+    uint64_t key;
+    int id;
+} idx_id_slot;
 typedef struct idx {
     int compact;
     uint64_t units;
@@ -201,6 +371,8 @@ typedef struct idx {
     int target_count;
     idx_sig *sigs;
     size_t sig_n, sig_cap;
+    idx_id_slot *slots;
+    unsigned slot_n, slot_mask;
 } idx;
 
 static void idx_add(idx_buf *b, const char *s, size_t n)
@@ -219,26 +391,34 @@ static void idx_add(idx_buf *b, const char *s, size_t n)
     b->data[b->len] = 0;
 }
 static void idx_puts(idx_buf *b, const char *s) { idx_add(b, s, strlen(s)); }
+static void idx_escape(idx_buf *b, unsigned char c)
+{
+    if (c == '"' || c == '\\') {
+        char escaped[2] = {'\\', (char)c};
+        idx_add(b, escaped, 2);
+    } else if (c == '\b') idx_puts(b, "\\b");
+    else if (c == '\f') idx_puts(b, "\\f");
+    else if (c == '\n') idx_puts(b, "\\n");
+    else if (c == '\r') idx_puts(b, "\\r");
+    else if (c == '\t') idx_puts(b, "\\t");
+    else {
+        char hex[8];
+        int n = snprintf(hex, sizeof hex, "\\u%04x", c);
+        if (n > 0) idx_add(b, hex, (size_t)n);
+    }
+}
 static void idx_json(idx_buf *b, const char *text)
 {
     idx_add(b, "\"", 1);
     if (!text) { idx_add(b, "\"", 1); return; }
-    for (const unsigned char *p = (const unsigned char *)text; *p; ++p) {
-        if (*p == '"' || *p == '\\') {
-            char escaped[2] = {'\\', (char)*p};
-            idx_add(b, escaped, 2);
-        } else if (*p == '\b') idx_puts(b, "\\b");
-        else if (*p == '\f') idx_puts(b, "\\f");
-        else if (*p == '\n') idx_puts(b, "\\n");
-        else if (*p == '\r') idx_puts(b, "\\r");
-        else if (*p == '\t') idx_puts(b, "\\t");
-        else if (*p < 32) {
-            char hex[8];
-            int n = snprintf(hex, sizeof hex, "\\u%04x", *p);
-            if (n > 0) idx_add(b, hex, (size_t)n);
-        } else {
-            char raw = (char)*p;
-            idx_add(b, &raw, 1);
+    const char *start = text;
+    for (const unsigned char *p = (const unsigned char *)text;; ++p) {
+        if (*p == 0 || *p == '"' || *p == '\\' || *p < 32) {
+            idx_add(b, start, (size_t)((const char *)p - start));
+            if (*p == 0)
+                break;
+            idx_escape(b, *p);
+            start = (const char *)p + 1;
         }
     }
     idx_add(b, "\"", 1);
@@ -273,29 +453,89 @@ static void idx_init(idx *x)
     if (x->compact == 2)
         x->ids = hashmap_init((hcmp_fn)s2i_cmp, 128);
 }
-static void idx_reference(idx *x, const char *from, const char *target, int offset, const char *kind)
+static idx_group *idx_group_for(idx *x, const char *from)
 {
-    int bytecode = kind && !strcmp(kind, "bytecode");
-    if (x->compact) {
-        idx_group *group = hget_s2o(x->groups, (string)from);
-        if (!group) {
-            group = x_alloc(sizeof *group);
-            memset(group, 0, sizeof *group);
-            group->from = from;
-            if (x->tail) x->tail->next = group; else x->head = group;
-            x->tail = group;
-            hset_s2o(x->groups, (string)from, group);
+    idx_group *group = hget_s2o(x->groups, (string)from);
+    if (group)
+        return group;
+    group = x_alloc(sizeof *group);
+    memset(group, 0, sizeof *group);
+    group->from = from;
+    if (x->tail) x->tail->next = group; else x->head = group;
+    x->tail = group;
+    hset_s2o(x->groups, (string)from, group);
+    return group;
+}
+static int idx_intern(idx *x, const char *target)
+{
+    int id = hget_s2i(x->ids, (string)target);
+    if (id >= 0)
+        return id;
+    id = x->target_count++;
+    hset_s2i(x->ids, (string)target, id);
+    if (x->targets.len) idx_add(&x->targets, ",", 1);
+    idx_json(&x->targets, target);
+    return id;
+}
+static void idx_slots_grow(idx *x)
+{
+    unsigned size = (x->slot_mask + 1) * 2;
+    idx_id_slot *slots = calloc(size, sizeof *slots);
+    unsigned mask = size - 1;
+    if (!slots)
+        return;
+    for (unsigned i = 0; i <= x->slot_mask; ++i) {
+        if (!x->slots[i].key)
+            continue;
+        unsigned j = (unsigned)x->slots[i].key * 0x9E3779B1u & mask;
+        while (slots[j].key)
+            j = (j + 1) & mask;
+        slots[j] = x->slots[i];
+    }
+    free(x->slots);
+    x->slots = slots;
+    x->slot_mask = mask;
+}
+/* Repeated bytecode targets are the same method, field or type index.
+ * Remember the id by that index so the long descriptor is hashed once. */
+static int idx_intern_keyed(idx *x, unsigned kind, unsigned index, const char *target)
+{
+    if (!x->slots) {
+        x->slots = calloc(64, sizeof *x->slots);
+        x->slot_mask = 63;
+        if (!x->slots)
+            return idx_intern(x, target);
+    } else if ((x->slot_n + 1) * 2 > x->slot_mask)
+        idx_slots_grow(x);
+    if (!x->slots || x->slot_n > x->slot_mask)
+        return idx_intern(x, target);
+    uint64_t key = ((uint64_t)kind << 32) | index;
+    unsigned mask = x->slot_mask;
+    unsigned i = (unsigned)key * 0x9E3779B1u & mask;
+    for (;;) {
+        if (x->slots[i].key == key)
+            return x->slots[i].id;
+        if (!x->slots[i].key) {
+            int id = idx_intern(x, target);
+            x->slots[i].key = key;
+            x->slots[i].id = id;
+            x->slot_n++;
+            return id;
         }
+        i = (i + 1) & mask;
+    }
+}
+static void idx_row(idx *x, idx_group *group, const char *from, const char *target,
+                    int offset, int bytecode, const char *kind, unsigned tkind, unsigned tindex)
+{
+    if (x->compact) {
+        if (!group)
+            group = idx_group_for(x, from);
         if (group->body.len) idx_add(&group->body, ",", 1);
         idx_add(&group->body, "[", 1);
         if (x->compact == 2) {
-            int id = hget_s2i(x->ids, (string)target);
-            if (id < 0) {
-                id = x->target_count++;
-                hset_s2i(x->ids, (string)target, id);
-                if (x->targets.len) idx_add(&x->targets, ",", 1);
-                idx_json(&x->targets, target);
-            }
+            int id = tkind ? idx_intern_keyed(x, tkind, tindex, target)
+                           : idx_intern(x, target);
             idx_int(&group->body, id);
         } else idx_json(&group->body, target);
         idx_add(&group->body, ",", 1);
@@ -318,6 +558,11 @@ static void idx_reference(idx *x, const char *from, const char *target, int offs
     idx_json(&x->flat, kind);
     idx_add(&x->flat, "}", 1);
 }
+static void idx_reference(idx *x, const char *from, const char *target, int offset, const char *kind)
+{
+    int bytecode = kind && !strcmp(kind, "bytecode");
+    idx_row(x, NULL, from, target, offset, bytecode, kind, 0, 0);
+}
 static void idx_descriptor_references(idx *x, const char *from, const char *desc, const char *kind)
 {
     while (desc && (desc = strchr(desc, 'L'))) {
@@ -332,12 +577,10 @@ static void idx_descriptor_references(idx *x, const char *from, const char *desc
         desc = end + 1;
     }
 }
-static void idx_member(idx *x, int method, const char *owner, const char *name,
+static void idx_member(idx *x, int method, const char *id, const char *name,
                        const char *desc, unsigned flags)
 {
     idx_buf *body = method ? &x->methods : &x->fields;
-    const char *id = method ? str_create("L%s;->%s%s", owner, name, desc)
-                            : str_create("L%s;->%s:%s", owner, name, desc);
     if (body->len) idx_add(body, ",", 1);
     idx_puts(body, "{\"id\":");
     idx_json(body, id);
@@ -426,6 +669,7 @@ static void idx_dispose(idx *x)
     free(x->targets.data);
     free(x->flat.data);
     free(x->sigs);
+    free(x->slots);
     for (idx_group *group = x->head; group; group = group->next)
         free(group->body.data);
 }
@@ -508,20 +752,23 @@ static void dex_all_annotation_refs(idx *x, jd_meta_dex *meta, dex_class_def *cf
 }
 static void dex_methods(idx *x, jd_meta_dex *meta, encoded_method *methods, unsigned size,
                         const char *owner) {
+    (void)owner;
     for (unsigned n = 0; n < size; n++) {
         encoded_method *em = &methods[n];
         dex_method_id *m = &meta->method_ids[em->method_id];
-        idx_member(x, 1, owner, dex_str_of_idx(meta, m->name_idx),
+        const char *id = dex_mid(meta, em->method_id);
+        idx_member(x, 1, id, dex_str_of_idx(meta, m->name_idx),
                    proto_of(meta, m->proto_idx), em->access_flags);
         dex_code_item *code = em->code;
         if (!code)
             continue;
         x->units += code->insns_size;
-        string from = dex_mid(meta, em->method_id);
+        string from = (string)id;
+        idx_group *group = NULL;
         for (u4 i = 0; i < code->insns_size;) {
             u2 word = code->insns[i];
             unsigned op = word & 255;
-            uint64_t length = dex_opcode_len(op);
+            uint64_t length = opcode_len_ready ? opcode_len_tab[op] : (uint64_t)dex_opcode_len((u1)op);
             if (!length)
                 length = 1;
             if (op == 0 && word != 0) {
@@ -544,33 +791,49 @@ static void dex_methods(idx *x, jd_meta_dex *meta, encoded_method *methods, unsi
             if (length >= 2) {
                 unsigned idx = code->insns[i + 1];
                 string target = NULL;
+                unsigned tkind = 0;
                 if (((op >= 0x6e && op <= 0x72) || (op >= 0x74 && op <= 0x78) || op == 0xfa ||
                      op == 0xfb) &&
-                    idx < meta->header->method_ids_size)
+                    idx < meta->header->method_ids_size) {
                     target = dex_mid(meta, idx);
-                else if (op >= 0x52 && op <= 0x6d && idx < meta->header->field_ids_size)
+                    tkind = 1;
+                } else if (op >= 0x52 && op <= 0x6d && idx < meta->header->field_ids_size) {
                     target = dex_fid(meta, idx);
-                else if ((op == 0x1c || op == 0x1f || op == 0x20 || op == 0x22 || op == 0x23 ||
+                    tkind = 2;
+                } else if ((op == 0x1c || op == 0x1f || op == 0x20 || op == 0x22 || op == 0x23 ||
                           op == 0x24 || op == 0x25) &&
-                         idx < meta->header->type_ids_size)
+                         idx < meta->header->type_ids_size) {
                     target = dex_str_of_type_id(meta, idx);
-                if (target)
-                    idx_reference(x, from, target, (int)i, "bytecode");
+                    tkind = 3;
+                }
+                if (target) {
+                    if (!group && x->compact)
+                        group = idx_group_for(x, from);
+                    idx_row(x, group, from, target, (int)i, 1, "bytecode", tkind, idx);
+                }
             }
             i += (u4)length;
         }
     }
 }
+static __thread mem_pool *index_scratch;
+static mem_pool *index_scratch_get(void)
+{
+    if (!index_scratch)
+        index_scratch = mem_create_pool();
+    else
+        mem_pool_clear(index_scratch);
+    return index_scratch;
+}
 char *browse_index_dex_json(jd_meta_dex *meta, dex_class_def *cf) {
     thread_local_data *tls = get_thread_local_data();
     mem_pool *previous_pool = tls ? tls->pool : global_pool;
-    mem_pool *scratch = mem_create_pool();
+    mem_pool *scratch = index_scratch_get();
     if (tls) tls->pool = scratch; else global_pool = scratch;
     string desc = dex_str_of_type_id(meta, cf->class_idx);
     string name = str_dup(desc + 1);
     if (name[0]) name[strlen(name) - 1] = 0;
     if (class_selection_excluded_name(name)) {
-        mem_pool_free(scratch);
         if (tls) tls->pool = previous_pool; else global_pool = previous_pool;
         return strdup("");
     }
@@ -579,7 +842,6 @@ char *browse_index_dex_json(jd_meta_dex *meta, dex_class_def *cf) {
         cJSON *entry = class_json(name, cf->access_flags, cf->is_inner || cf->is_anonymous);
         char *json = class_selection_format(entry);
         cJSON_Delete(entry);
-        mem_pool_free(scratch);
         if (tls) tls->pool = previous_pool; else global_pool = previous_pool;
         return json;
     }
@@ -599,7 +861,8 @@ char *browse_index_dex_json(jd_meta_dex *meta, dex_class_def *cf) {
             unsigned count = kind ? data->instance_fields_size : data->static_fields_size;
             for (unsigned i = 0; i < count; i++) {
                 dex_field_id *f = &meta->field_ids[fields[i].field_id];
-                idx_member(&built, 0, name, dex_str_of_idx(meta, f->name_idx),
+                idx_member(&built, 0, dex_fid(meta, fields[i].field_id),
+                           dex_str_of_idx(meta, f->name_idx),
                            dex_str_of_type_id(meta, f->type_idx), fields[i].access_flags);
             }
         }
@@ -613,7 +876,6 @@ char *browse_index_dex_json(jd_meta_dex *meta, dex_class_def *cf) {
                 idx_descriptor_references(&built, built.sigs[i].id, built.sigs[i].desc, "signature");
     char *json = idx_finish(&built, name, cf->access_flags, cf->is_inner || cf->is_anonymous);
     idx_dispose(&built);
-    mem_pool_free(scratch);
     if (tls) tls->pool = previous_pool; else global_pool = previous_pool;
     return json;
 }

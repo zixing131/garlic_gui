@@ -221,27 +221,47 @@ static void index_dex_classes(jd_apk *apk, jd_meta_dex *meta) {
     }
     pthread_mutex_t lock; pthread_mutex_init(&lock, NULL);
     pthread_cond_t changed; pthread_cond_init(&changed, NULL);
-    for (u4 start = 0; start < meta->header->class_defs_size; start += 128) {
-        index_class_job jobs[128] = {0};
-        u4 count = meta->header->class_defs_size - start;
-        if (count > 128) count = 128;
-        for (u4 i = 0; i < count; ++i) {
-            jobs[i].meta = meta; jobs[i].cf = &meta->class_defs[start + i];
-            jobs[i].lock = &lock; jobs[i].changed = &changed;
-            if (threadpool_add(apk->threadpool, index_class_worker, &jobs[i], 0) != 0) {
-                // A lock/notification error may occur after enqueueing. Never
-                // retry the same stack job and risk executing it twice.
-                fprintf(stderr, "Failed to queue metadata index task\n");
-                exit(EXIT_FAILURE);
+    /* One batch is built while the previous batch is written, so the workers
+     * do not sit idle behind the index file. */
+    index_class_job batch[2][128];
+    int active = -1;
+    u4 active_count = 0;
+    u4 next = 0;
+    while (next < meta->header->class_defs_size || active >= 0) {
+        int fill = active < 0 ? 0 : 1 - active;
+        u4 fill_count = 0;
+        if (next < meta->header->class_defs_size) {
+            fill_count = meta->header->class_defs_size - next;
+            if (fill_count > 128) fill_count = 128;
+            memset(batch[fill], 0, sizeof batch[fill]);
+            for (u4 i = 0; i < fill_count; ++i) {
+                index_class_job *job = &batch[fill][i];
+                job->meta = meta;
+                job->cf = &meta->class_defs[next + i];
+                job->lock = &lock;
+                job->changed = &changed;
+                if (threadpool_add(apk->threadpool, index_class_worker, job, 0) != 0) {
+                    fprintf(stderr, "Failed to queue metadata index task\n");
+                    exit(EXIT_FAILURE);
+                }
+            }
+            next += fill_count;
+        }
+        if (active >= 0) {
+            for (u4 i = 0; i < active_count; ++i) {
+                pthread_mutex_lock(&lock);
+                while (!batch[active][i].ready) pthread_cond_wait(&changed, &lock);
+                char *json = batch[active][i].json;
+                pthread_mutex_unlock(&lock);
+                class_selection_write_line(json);
+                free(json);
             }
         }
-        for (u4 i = 0; i < count; ++i) {
-            pthread_mutex_lock(&lock);
-            while (!jobs[i].ready) pthread_cond_wait(&changed, &lock);
-            char *json = jobs[i].json;
-            pthread_mutex_unlock(&lock);
-            class_selection_write_line(json); free(json);
-        }
+        if (fill_count) {
+            active = fill;
+            active_count = fill_count;
+        } else
+            active = -1;
     }
     pthread_cond_destroy(&changed); pthread_mutex_destroy(&lock);
     browse_index_dex_end();

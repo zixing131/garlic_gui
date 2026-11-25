@@ -111,6 +111,32 @@ mem_pool* mem_pool_init(size_t capacity)
     return pool;
 }
 
+void mem_pool_clear(mem_pool *pool)
+{
+    if (pool == NULL)
+        return;
+    big_block *bbp = pool->big_block_start;
+    while (bbp) {
+        free(bbp->big_buffer);
+        bbp = bbp->next_block;
+    }
+    pool->big_block_start = NULL;
+    small_block *first = pool->small_block_start;
+    small_block *extra = first->next_block;
+    while (extra) {
+        small_block *next = extra->next_block;
+        free(extra);
+        extra = next;
+    }
+    first->next_block = NULL;
+    first->no_enough_times = 0;
+    first->cur_usable_buffer = (u1 *) mem_align_up((size_t)(first + 1));
+    first->buffer_end = first->cur_usable_buffer + pool->small_buffer_capacity;
+    memset(first->cur_usable_buffer, 0, pool->small_buffer_capacity);
+    pool->cur_usable_small_block = first;
+    pool->last_small_block = first;
+}
+
 void mem_pool_free(mem_pool *pool){
     if (pool == NULL)
         return;
