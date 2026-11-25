@@ -651,7 +651,9 @@ void dex_file_analyse(string path, string save_dir, int thread_num, jd_dex_task_
     jd_dex *dex = dex_init(meta, thread_num);
 
     if (class_selection_indexing()) {
+        browse_index_dex_begin(meta);
         for (u4 i=0;i<meta->header->class_defs_size;i++) browse_index_dex(meta,&meta->class_defs[i]);
+        browse_index_dex_end();
     }
     else if (type == JD_DEX_TASK_DECOMPILE) {
         if (thread_num > 1) {

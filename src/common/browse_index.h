@@ -2,6 +2,8 @@
 #define GARLIC_BROWSE_INDEX_H
 #include "parser/class/metadata.h"
 #include "parser/dex/metadata.h"
+void browse_index_dex_begin(jd_meta_dex *meta);
+void browse_index_dex_end(void);
 int browse_index_dex_directory(const unsigned char *data, size_t size);
 void browse_index_dex(jd_meta_dex *meta, dex_class_def *cf);
 char *browse_index_dex_json(jd_meta_dex *meta, dex_class_def *cf);

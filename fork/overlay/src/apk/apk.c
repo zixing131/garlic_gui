@@ -213,8 +213,10 @@ static void index_class_worker(void *opaque) {
     pthread_mutex_unlock(job->lock);
 }
 static void index_dex_classes(jd_apk *apk, jd_meta_dex *meta) {
+    browse_index_dex_begin(meta);
     if (!apk->threadpool) {
         for (u4 j = 0; j < meta->header->class_defs_size; ++j) browse_index_dex(meta, &meta->class_defs[j]);
+        browse_index_dex_end();
         return;
     }
     pthread_mutex_t lock; pthread_mutex_init(&lock, NULL);
@@ -242,6 +244,7 @@ static void index_dex_classes(jd_apk *apk, jd_meta_dex *meta) {
         }
     }
     pthread_cond_destroy(&changed); pthread_mutex_destroy(&lock);
+    browse_index_dex_end();
 }
 
 static void apk_run_dex_tasks(jd_apk *apk, jd_meta_dex *meta);

@@ -15,5 +15,7 @@ int class_selection_close(void);
 int class_selection_indexing(void);
 int class_selection_explicit(void);
 void class_selection_origin(const char *name);
+const char *class_selection_origin_text(void);
+int class_selection_excluded_name(const char *name);
 
 #endif

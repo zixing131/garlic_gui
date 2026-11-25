@@ -9,8 +9,14 @@ static const char *selected_class;
 static int selection_error;
 static int matched;
 static char *origin;
+static int excluded(const char *name, size_t len);
 int class_selection_explicit(void) { return selected_class != NULL; }
 void class_selection_origin(const char *name) { free(origin); origin = name ? strdup(name) : NULL; }
+const char *class_selection_origin_text(void) { return origin; }
+int class_selection_excluded_name(const char *name)
+{
+    return name != NULL && excluded(name, strlen(name));
+}
 
 int class_selection_open(const char *index_path, const char *class_name)
 {
