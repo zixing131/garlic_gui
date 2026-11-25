@@ -27,8 +27,8 @@ jobs:
           # Qt's macOS build is universal, so the Intel runner cross-compiles it.
           - {os: macos-15-intel, platform: macos-arm64, qt-host: mac, qt-arch: clang_64, arch: arm64, launch: false}
           - {os: macos-15-intel, platform: macos-x64, qt-host: mac, qt-arch: clang_64, arch: x86_64, launch: true}
-          - {os: ubuntu-24.04, platform: linux-x64, qt-host: linux, qt-arch: linux_gcc_64, arch: x86_64}
-          - {os: ubuntu-24.04-arm, platform: linux-arm64, qt-host: linux_arm64, qt-arch: linux_gcc_arm64, arch: aarch64}
+          - {os: ubuntu-24.04, platform: linux-x64, qt-host: linux, qt-arch: linux_gcc_64, arch: x86_64, launch: true}
+          - {os: ubuntu-24.04-arm, platform: linux-arm64, qt-host: linux_arm64, qt-arch: linux_gcc_arm64, arch: aarch64, launch: true}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     steps:
@@ -60,12 +60,16 @@ jobs:
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DGARLIC_BUILD_GUI=ON -DGARLIC_GUI_TESTS=ON "${args[@]}"
           cmake --build build --parallel 3
-      - name: Integration tests
-        if: matrix.launch != false
+      - name: Test fixtures
         shell: bash
         run: |
           set -euo pipefail
           python gui/tests/make_fixtures.py build/fixtures
+      - name: Integration tests
+        if: matrix.launch == true
+        shell: bash
+        run: |
+          set -euo pipefail
           if ! ctest --test-dir build --output-on-failure --timeout 120; then
             # The public Actions view hides failed test output for unsigned-in
             # readers.  Re-run the backend suite verbosely so a failing
