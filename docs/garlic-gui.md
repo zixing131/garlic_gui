@@ -1,8 +1,13 @@
-# Garlic GUI 0.5.48（C++ / Qt 6）
+# Garlic GUI 0.5.49（C++ / Qt 6）
 
 原生桌面浏览器，使用本项目的 garlic C 引擎。Qt 界面通过 `QProcess` 调用引擎，
 先建立类型、成员和引用索引，点击类时生成 Java / Smali。索引读取 CLASS / DEX
 元数据与引用，不执行方法反编译。JAR 索引会读取其中的 CLASS 内容。ZIP 容器按文件头和条目判断：里面有 DEX 或嵌套 APK 时走 DEX 解析，不再要求把 `framework.jar` 改名为 `.apk`。
+
+## 0.5.49 索引性能与发布构建
+
+- 目录索引和完整索引减少了 JSON 组装和写出开销。Windows 上的输出路径按 ASCII 折叠大小写，并避开保留设备名。
+- macOS ARM64 发布包在 Intel runner 上交叉编译，避免 ARM64 托管机器排队后被取消。
 
 ## 0.5.48 ZIP 内容识别与上游同步
 

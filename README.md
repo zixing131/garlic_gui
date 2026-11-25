@@ -17,9 +17,9 @@ Tool for produces java source code from class/jar/dex/apk file
 The engine and the sections below are from the original project by **neocanable**:
 [neocanable/garlic](https://github.com/neocanable/garlic).
 
-### This fork: Garlic GUI 0.5.48
+### This fork: Garlic GUI 0.5.49
 
-This repository keeps that engine and adds a Qt 6 desktop browser, **Garlic GUI 0.5.48**.
+This repository keeps that engine and adds a Qt 6 desktop browser, **Garlic GUI 0.5.49**.
 The interface, headless mode, MCP and app metadata share this version (`GARLIC_GUI_VERSION`
 in `gui/CMakeLists.txt`). Local engine edits live in `fork/overlay`; `src/` stays aligned
 with upstream. After fetching upstream, run `scripts/sync-upstream.sh`.

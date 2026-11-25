@@ -15,9 +15,9 @@
 引擎以及后面的功能、编译和使用说明来自原作者 **neocanable** 的项目：
 [neocanable/garlic](https://github.com/neocanable/garlic)。
 
-### 本仓库：Garlic GUI 0.5.48
+### 本仓库：Garlic GUI 0.5.49
 
-这个仓库保留上游引擎，并加上 Qt 6 桌面浏览器 **Garlic GUI 0.5.48**。
+这个仓库保留上游引擎，并加上 Qt 6 桌面浏览器 **Garlic GUI 0.5.49**。
 界面、无头模式、MCP 和应用包元数据共用这个版本号（`gui/CMakeLists.txt` 里的
 `GARLIC_GUI_VERSION`）。对本仓库引擎的本地修改放在 `fork/overlay`，`src/` 与上游保持一致。
 拉取上游后运行 `scripts/sync-upstream.sh`。
